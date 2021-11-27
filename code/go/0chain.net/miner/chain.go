@@ -222,6 +222,7 @@ func (mc *Chain) CreateRound(r *round.Round) *Round {
 	mr.blocksToVerifyChannel = make(chan *block.Block, mc.GetGeneratorsNumOfRound(r.GetRoundNumber()))
 	mr.verificationTickets = make(map[string]*block.BlockVerificationTicket)
 	mr.vrfSharesCache = newVRFSharesCache()
+	mr.verifyBlocksCache = newVerifyBlocksCache()
 	return &mr
 }
 
@@ -510,4 +511,18 @@ func (mc *Chain) SetDKG(dkg *bls.DKG, startingRound int64) error {
 	mc.muDKG.Lock()
 	defer mc.muDKG.Unlock()
 	return mc.roundDkg.Put(dkg, startingRound)
+}
+
+func (mc *Chain) CacheVerifyBlock(b *block.Block) {
+	mr := mc.GetMinerRound(b.Round)
+	mr.verifyBlocksCache.add(b)
+}
+
+func (mc *Chain) GetCachedVerifyBlocks(rn int64) ([]*block.Block, error) {
+	mr := mc.GetMinerRound(rn)
+	if mr == nil {
+		return nil, fmt.Errorf("round does not start yet, round: %v", rn)
+	}
+
+	return mr.verifyBlocksCache.getAll(), nil
 }

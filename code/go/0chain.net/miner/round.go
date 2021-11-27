@@ -22,6 +22,7 @@ type Round struct {
 	vrfShare              *round.VRFShare
 	vrfSharesCache        *vrfSharesCache
 	ownVerificationTicket *block.BlockVerificationTicket
+	verifyBlocksCache     *verifyBlocksCache
 }
 
 func (r *Round) VrfShare() *round.VRFShare {
@@ -88,6 +89,42 @@ func (v *vrfSharesCache) clean(count int) {
 			delete(v.vrfShares, s)
 		}
 	}
+	v.mutex.Unlock()
+}
+
+type verifyBlocksCache struct {
+	// this is the best rancked blcok
+	blocks   []*block.Block
+	existMap map[string]struct{}
+	mutex    sync.Mutex
+}
+
+func newVerifyBlocksCache() *verifyBlocksCache {
+	return &verifyBlocksCache{
+		existMap: make(map[string]struct{}),
+	}
+}
+
+func (v *verifyBlocksCache) add(b *block.Block) {
+	v.mutex.Lock()
+	if _, ok := v.existMap[b.Hash]; !ok {
+		v.blocks = append(v.blocks, b)
+	}
+	v.mutex.Unlock()
+}
+
+func (v *verifyBlocksCache) getAll() []*block.Block {
+	v.mutex.Lock()
+	bs := make([]*block.Block, len(v.blocks))
+	copy(bs[:], v.blocks[:])
+	v.mutex.Unlock()
+	return bs
+}
+
+func (v *verifyBlocksCache) clean() {
+	v.mutex.Lock()
+	v.existMap = make(map[string]struct{})
+	v.blocks = []*block.Block{}
 	v.mutex.Unlock()
 }
 
@@ -216,6 +253,7 @@ func (r *Round) IsVRFComplete() bool {
 func (r *Round) Restart() {
 	r.Round.Restart()
 	r.vrfSharesCache = newVRFSharesCache()
+	r.verifyBlocksCache = newVerifyBlocksCache()
 	r.CancelVerification()
 
 	r.blocksToVerifyChannel = make(chan *block.Block, cap(r.blocksToVerifyChannel))

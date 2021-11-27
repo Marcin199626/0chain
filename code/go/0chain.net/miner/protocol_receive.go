@@ -45,7 +45,7 @@ func (mc *Chain) HandleVerifyBlockMessage(ctx context.Context,
 	}
 }
 
-func (mc *Chain) isVRFComplete(ctx context.Context, r int64, rrs int64) error {
+func (mc *Chain) isVRFComplete(ctx context.Context, r int64, rrs int64) (bool, error) {
 	var (
 		mb           = mc.GetMagicBlock(r)
 		blsThreshold = mb.T
@@ -53,7 +53,7 @@ func (mc *Chain) isVRFComplete(ctx context.Context, r int64, rrs int64) error {
 	)
 
 	if mr == nil {
-		return fmt.Errorf("round not started yet, round: %v", r)
+		return false, fmt.Errorf("round not started yet, round: %v", r)
 	}
 
 	vrfShares := mr.GetVRFShares()
@@ -61,31 +61,38 @@ func (mc *Chain) isVRFComplete(ctx context.Context, r int64, rrs int64) error {
 		roundRRS := mr.GetRandomSeed()
 		if roundRRS == 0 {
 			ts := time.Now()
-			func() {
+			err := func() error {
 				for {
 					select {
 					case <-ctx.Done():
-						return
+						return ctx.Err()
 					case <-time.After(100 * time.Millisecond):
 						if mr.IsVRFComplete() {
 							roundRRS = mr.GetRandomSeed()
-							return
+							return nil
 						}
 					}
 				}
 			}()
+
+			if err == context.DeadlineExceeded {
+				return false, nil
+			}
+
 			logging.Logger.Debug("round is vrf ready after waiting for",
 				zap.Duration("duration", time.Since(ts)),
 				zap.Int64("round", r))
 		}
 
 		if roundRRS == rrs {
-			return nil
+			return true, nil
 		}
-		return fmt.Errorf("RRS does not match, round_rrs: %d, block_rrs: %d", roundRRS, rrs)
+
+		return false, fmt.Errorf("RRS does not match, round_rrs: %d, block_rrs: %d", roundRRS, rrs)
 	}
 
-	return fmt.Errorf("vrf shares not reached threshold, vrf num: %d, threshold: %d", len(vrfShares), blsThreshold)
+	return false, nil
+	//return fmt.Errorf("vrf shares not reached threshold, vrf num: %d, threshold: %d", len(vrfShares), blsThreshold)
 }
 
 func (mc *Chain) pushToBlockVerifyWorker(ctx context.Context, b *block.Block) error {

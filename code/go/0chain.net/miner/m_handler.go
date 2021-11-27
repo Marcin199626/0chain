@@ -2,6 +2,13 @@ package miner
 
 /*This file contains the Miner To Miner send/receive messages */
 import (
+	"context"
+	"encoding/hex"
+	"fmt"
+	"net/http"
+	"strconv"
+	"time"
+
 	"0chain.net/chaincore/block"
 	"0chain.net/chaincore/node"
 	"0chain.net/chaincore/round"
@@ -9,12 +16,7 @@ import (
 	"0chain.net/core/datastore"
 	"0chain.net/core/logging"
 	"0chain.net/core/memorystore"
-	"context"
-	"encoding/hex"
-	"fmt"
 	"go.uber.org/zap"
-	"net/http"
-	"strconv"
 )
 
 var (
@@ -283,18 +285,28 @@ func VerifyBlockHandler(ctx context.Context, entity datastore.Entity) (
 		}
 	}
 
-	//cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	//defer cancel()
-	//if err := mc.isVRFComplete(cctx, b.Round, b.GetRoundRandomSeed()); err != nil {
-	//	logging.Logger.Debug("handle verify block - vrf not complete yet",
-	//		zap.Int64("round", b.Round),
-	//		zap.String("block", b.Hash),
-	//		zap.Error(err))
-	//	return nil, nil
-	//}
+	cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	complete, err := mc.isVRFComplete(cctx, b.Round, b.GetRoundRandomSeed())
+	if err != nil {
+		logging.Logger.Debug("handle verify block - check vrf complete failed",
+			zap.Int64("round", b.Round),
+			zap.String("block", b.Hash),
+			zap.Error(err))
+		return nil, nil
+	}
 
 	if err := node.ValidateSenderSignature(ctx); err != nil {
 		return nil, err
+	}
+
+	if !complete {
+		logging.Logger.Debug("handle verify block - vrf not complete yet, cache the block",
+			zap.Int64("round", b.Round),
+			zap.String("block", b.Hash))
+		// add the block to round cache
+		mc.CacheVerifyBlock(b)
+		return nil, nil
 	}
 
 	var msg = NewBlockMessage(MessageVerify, node.GetSender(ctx), nil, b)

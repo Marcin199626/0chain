@@ -298,6 +298,28 @@ func (mc *Chain) AddVRFShare(ctx context.Context, mr *Round, vrfs *round.VRFShar
 
 	if mc.ThresholdNumBLSSigReceived(ctx, mr, blsThreshold) {
 		mc.StartVerification(ctx, mr)
+
+		go func() {
+			// process cached blocks
+			bs := mr.verifyBlocksCache.getAll()
+			for _, b := range bs {
+
+				if b.GetRoundRandomSeed() != mr.GetRandomSeed() {
+					Logger.Error("process verify block, mismatched RRS",
+						zap.Int64("round RRS", mr.GetRandomSeed()),
+						zap.Int64("block RRS", b.GetRoundRandomSeed()))
+					continue
+				}
+
+				if err := mc.pushToBlockVerifyWorker(ctx, b); err != nil {
+					Logger.Error("process verify block - push to block verify worker failed",
+						zap.Int64("round", b.Round),
+						zap.String("block", b.Hash),
+						zap.Error(err))
+
+				}
+			}
+		}()
 	}
 
 	return true
