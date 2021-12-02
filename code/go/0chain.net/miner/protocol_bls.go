@@ -3,7 +3,6 @@ package miner
 import (
 	"context"
 	"fmt"
-	"github.com/davecgh/go-spew/spew"
 	"math/rand"
 	"strconv"
 	"time"
@@ -86,7 +85,6 @@ func (mc *Chain) SetDKGSFromStore(ctx context.Context, mb *block.MagicBlock) (
 	if summary, err = LoadDKGSummary(ctx, id); err != nil {
 		return
 	}
-	spew.Dump(summary)
 	if summary.SecretShares == nil {
 		return common.NewError("failed to set dkg from store",
 			"no saved shares for dkg")
@@ -103,18 +101,14 @@ func (mc *Chain) SetDKGSFromStore(ctx context.Context, mb *block.MagicBlock) (
 	for k := range mb.Miners.CopyNodesMap() {
 		if savedShare, ok := summary.SecretShares[ComputeBlsID(k)]; ok {
 			if err := newDKG.AddSecretShare(bls.ComputeIDdkg(k), savedShare, false); err != nil {
-				spew.Dump(err)
 			}
 		} else if v, ok := mb.GetShareOrSigns().Get(k); ok {
 			if share, ok := v.ShareOrSigns[node.Self.Underlying().GetKey()]; ok && share.Share != "" {
 				if err := newDKG.AddSecretShare(bls.ComputeIDdkg(k), share.Share, false); err != nil {
-					spew.Dump(err)
 				}
 			}
 		}
 	}
-
-	spew.Dump("before error", newDKG)
 
 	if !newDKG.HasAllSecretShares() {
 		return common.NewError("failed to set dkg from store",
