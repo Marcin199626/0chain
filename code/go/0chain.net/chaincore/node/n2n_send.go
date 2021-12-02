@@ -75,7 +75,7 @@ func (np *Pool) SendAtleast(ctx context.Context, numNodes int, handler SendHandl
 	for _, n := range nodes {
 		strs = append(strs, n.ID)
 	}
-	logging.Logger.Info("Sending to nodes", zap.Strings("nodes", strs))
+	logging.Logger.Info("Sending to nodes", zap.Int("len", len(strs)), zap.Strings("nodes", strs))
 
 	return np.sendTo(ctx, numNodes, nodes, handler)
 }
