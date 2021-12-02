@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/davecgh/go-spew/spew"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
@@ -261,6 +262,7 @@ func main() {
 			}
 
 		}
+spew.Dump(dkgShare)
 		if err = miner.StoreDKGSummary(ctx, dkgShare); err != nil {
 			logging.Logger.Panic(fmt.Sprintf("Failed to store genesis dkg: ERROR: %v", err.Error()))
 		}
