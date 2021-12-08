@@ -2,6 +2,12 @@ package miner
 
 /*This file contains the Miner To Miner send/receive messages */
 import (
+	"context"
+	"encoding/hex"
+	"fmt"
+	"net/http"
+	"strconv"
+
 	"0chain.net/chaincore/block"
 	"0chain.net/chaincore/node"
 	"0chain.net/chaincore/round"
@@ -9,12 +15,7 @@ import (
 	"0chain.net/core/datastore"
 	"0chain.net/core/logging"
 	"0chain.net/core/memorystore"
-	"context"
-	"encoding/hex"
-	"fmt"
 	"go.uber.org/zap"
-	"net/http"
-	"strconv"
 )
 
 var (
@@ -109,6 +110,7 @@ func SetupM2MRequestors() {
 // VRFShareHandler - handle the vrf share.
 func VRFShareHandler(ctx context.Context, entity datastore.Entity) (
 	interface{}, error) {
+
 	vrfs, ok := entity.(*round.VRFShare)
 	if !ok {
 		logging.Logger.Info("VRFShare: returning invalid Entity")
@@ -227,7 +229,7 @@ func VRFShareHandler(ctx context.Context, entity datastore.Entity) (
 		return nil, err
 	}
 
-	var msg = NewBlockMessage(MessageVRFShare, sender, nil, nil)
+	var msg = NewBlockMessage(MessageVRFShare, sender, nil, nil, nil)
 	msg.VRFShare = vrfs
 	mc.PushBlockMessageChannel(msg)
 	return nil, nil
@@ -237,12 +239,15 @@ func VRFShareHandler(ctx context.Context, entity datastore.Entity) (
 func VerifyBlockHandler(ctx context.Context, entity datastore.Entity) (
 	interface{}, error) {
 
-	var b, ok = entity.(*block.Block)
+	var be, ok = entity.(*round.VerifyBlock)
 	if !ok {
 		return nil, common.InvalidRequest("Invalid Entity")
 	}
 
-	mc := GetMinerChain()
+	var (
+		mc = GetMinerChain()
+		b  = be.Block
+	)
 
 	if b.MinerID == node.Self.Underlying().GetKey() {
 		return nil, nil
@@ -295,7 +300,7 @@ func VerifyBlockHandler(ctx context.Context, entity datastore.Entity) (
 		return nil, err
 	}
 
-	var msg = NewBlockMessage(MessageVerify, node.GetSender(ctx), nil, b)
+	var msg = NewBlockMessage(MessageVerify, node.GetSender(ctx), nil, be.Block, be.VRFShares)
 	mc.PushBlockMessageChannel(msg)
 	return nil, nil
 }
@@ -351,7 +356,7 @@ func VerificationTicketReceiptHandler(ctx context.Context, entity datastore.Enti
 		return nil, err
 	}
 
-	msg := NewBlockMessage(MessageVerificationTicket, node.GetSender(ctx), nil, nil)
+	msg := NewBlockMessage(MessageVerificationTicket, node.GetSender(ctx), nil, nil, nil)
 	msg.BlockVerificationTicket = bvt
 	mc.PushBlockMessageChannel(msg)
 	return nil, nil
@@ -392,7 +397,7 @@ func NotarizationReceiptHandler(ctx context.Context, entity datastore.Entity) (
 		return nil, err
 	}
 
-	var msg = NewBlockMessage(MessageNotarization, node.GetSender(ctx), nil, nil)
+	var msg = NewBlockMessage(MessageNotarization, node.GetSender(ctx), nil, nil, nil)
 	msg.Notarization = notarization
 	mc.PushBlockMessageChannel(msg)
 	return nil, nil

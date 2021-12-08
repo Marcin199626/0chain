@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"0chain.net/chaincore/block"
+	"0chain.net/chaincore/round"
+	"0chain.net/chaincore/threshold/bls"
 	"0chain.net/core/common"
 	"0chain.net/core/logging"
 	"go.uber.org/zap"
@@ -34,7 +36,18 @@ func (mc *Chain) HandleVRFShare(ctx context.Context, msg *BlockMessage) {
 func (mc *Chain) HandleVerifyBlockMessage(ctx context.Context,
 	msg *BlockMessage) {
 
-	b := msg.Block
+	var (
+		b         = msg.Block
+		vrfShares = msg.VRFShares
+	)
+
+	if err := mc.mergeBlockVRFShares(ctx, b, vrfShares); err != nil {
+		logging.Logger.Error("handle verify block - failed to merge vrf shares",
+			zap.Int64("round", b.Round),
+			zap.String("block", b.Hash),
+			zap.Error(err))
+		return
+	}
 
 	if err := mc.pushToBlockVerifyWorker(ctx, b); err != nil {
 		logging.Logger.Error("handle verify block - push to block verify worker failed",
@@ -45,7 +58,97 @@ func (mc *Chain) HandleVerifyBlockMessage(ctx context.Context,
 	}
 }
 
-func (mc *Chain) isVRFComplete(ctx context.Context, r int64, rrs int64) error {
+func (mc *Chain) mergeBlockVRFShares(ctx context.Context, b *block.Block, vrfShares map[string]*round.VRFShare) error {
+	// merge vrf shares requests one by one to avoid duplicate share verification
+	return mc.mergeBlockVRFSharesWorker.Run(ctx, func() error {
+		var (
+			mb             = mc.GetMagicBlock(b.Round)
+			blsThreshold   = mb.T
+			mr             = mc.GetMinerRound(b.Round)
+			newVRFShares   = make(map[string]*round.VRFShare)
+			localVRFShares = make(map[string]*round.VRFShare)
+			vrfSharesNum   int
+		)
+
+		if len(vrfShares) < blsThreshold {
+			return errors.New("vrf shares of block not reached threshold")
+		}
+
+		if mr == nil {
+			newVRFShares = vrfShares
+			mr = mc.getOrStartRoundNotAhead(ctx, b.Round)
+		} else {
+			cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			defer cancel()
+			completed, err := mc.isVRFComplete(cctx, b.Round, b.RoundRandomSeed)
+			if err != nil {
+				// round VRF shares already reached threshold
+				return err
+			}
+
+			if completed {
+				return nil
+			}
+
+			localVRFShares = mr.GetVRFShares()
+			vrfSharesNum = len(localVRFShares)
+			if vrfSharesNum < blsThreshold {
+				for partyID, vrfs := range vrfShares {
+					if _, ok := localVRFShares[partyID]; ok {
+						continue
+					}
+					newVRFShares[partyID] = vrfs
+				}
+			}
+		}
+
+		dkg := mc.GetDKG(b.Round)
+
+		for id, vrfs := range newVRFShares {
+			mr.AddTimeoutVote(vrfs.GetRoundTimeoutCount(), id)
+			msg, err := mc.GetBlsMessageForRound(mr.Round)
+			if err != nil {
+				return errors.New("failed to get bls message")
+			}
+
+			var share bls.Sign
+			if err := share.SetHexString(vrfs.Share); err != nil {
+				return fmt.Errorf("failed to decode share string, share: %s", vrfs.Share)
+			}
+
+			nd := mb.Miners.GetNode(id)
+			if nd == nil {
+				return fmt.Errorf("could not find node in magic block, mb_starting_round: %v, id: %v",
+					mb.StartingRound, id)
+			}
+
+			vrfs.SetParty(nd)
+
+			partyID := bls.ComputeIDdkg(id)
+			if !dkg.VerifySignature(&share, msg, partyID) {
+				return fmt.Errorf("failed to verify vrf share signature, id: %s, bls_msg: %s, share: %s",
+					id, msg, vrfs.Share)
+			}
+
+			mr.AddVRFShare(newVRFShares[id], blsThreshold)
+			vrfSharesNum++
+			logging.Logger.Debug("handle verify block - added vrf_share",
+				zap.Int64("round", b.Round),
+				zap.String("block", b.Hash),
+				zap.Int("vrf_share_num", vrfSharesNum))
+			if vrfSharesNum >= blsThreshold {
+				if mc.ThresholdNumBLSSigReceived(ctx, mr, blsThreshold) {
+					mc.StartVerification(ctx, mr)
+				}
+				return nil
+			}
+		}
+
+		return nil
+	})
+}
+
+func (mc *Chain) isVRFComplete(ctx context.Context, r int64, rrs int64) (bool, error) {
 	var (
 		mb           = mc.GetMagicBlock(r)
 		blsThreshold = mb.T
@@ -53,7 +156,7 @@ func (mc *Chain) isVRFComplete(ctx context.Context, r int64, rrs int64) error {
 	)
 
 	if mr == nil {
-		return fmt.Errorf("round not started yet, round: %v", r)
+		return false, fmt.Errorf("round not started yet, round: %v", r)
 	}
 
 	vrfShares := mr.GetVRFShares()
@@ -61,31 +164,39 @@ func (mc *Chain) isVRFComplete(ctx context.Context, r int64, rrs int64) error {
 		roundRRS := mr.GetRandomSeed()
 		if roundRRS == 0 {
 			ts := time.Now()
-			func() {
+			err := func() error {
 				for {
 					select {
 					case <-ctx.Done():
-						return
+						return ctx.Err()
 					case <-time.After(100 * time.Millisecond):
+						// wait for the computing of RRS, the RRS could be 0 when the vrf shares
+						// just meet the threshold and not start to compute the RRS yet.
 						if mr.IsVRFComplete() {
 							roundRRS = mr.GetRandomSeed()
-							return
+							return nil
 						}
 					}
 				}
 			}()
+
+			if err == context.DeadlineExceeded {
+				return false, nil
+			}
+
 			logging.Logger.Debug("round is vrf ready after waiting for",
 				zap.Duration("duration", time.Since(ts)),
-				zap.Int64("round", r))
+				zap.Int64("round", r),
+				zap.Int64("round_rrs", roundRRS))
 		}
 
 		if roundRRS == rrs {
-			return nil
+			return true, nil
 		}
-		return fmt.Errorf("RRS does not match, round_rrs: %d, block_rrs: %d", roundRRS, rrs)
+		return false, fmt.Errorf("RRS does not match, round_rrs: %d, block_rrs: %d", roundRRS, rrs)
 	}
 
-	return fmt.Errorf("vrf shares not reached threshold, vrf num: %d, threshold: %d", len(vrfShares), blsThreshold)
+	return false, nil
 }
 
 func (mc *Chain) pushToBlockVerifyWorker(ctx context.Context, b *block.Block) error {

@@ -655,7 +655,7 @@ func (mc *Chain) GenerateRoundBlock(ctx context.Context, r *Round) (*block.Block
 	mc.addToRoundVerification(r, b)
 	r.AddProposedBlock(b)
 
-	go mc.SendBlock(ctx, b)
+	go mc.SendBlock(ctx, b, r.GetVRFShares())
 	return b, nil
 }
 
@@ -1452,7 +1452,7 @@ func (mc *Chain) handleNoProgress(ctx context.Context, rn int64) {
 					zap.Int64("lfmbr round", lfmbr.Round))
 			}
 			logging.Logger.Info("Sent proposal in handle NoProgress")
-			go mc.SendBlock(context.Background(), b)
+			go mc.SendBlock(context.Background(), b, r.GetVRFShares())
 
 			if r.OwnVerificationTicket() != nil {
 				if mc.GetRoundTimeoutCount() <= 10 {
