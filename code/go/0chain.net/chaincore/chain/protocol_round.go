@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
-	"sync"
 	"time"
 
 	"0chain.net/chaincore/block"
@@ -514,7 +513,7 @@ func (c *Chain) GetHeaviestNotarizedBlockLight(ctx context.Context, r int64) *bl
 
 // GetLatestFinalizedMagicBlockFromShardersOn - request for latest finalized
 // magic blocks from all the sharders. It uses provided MagicBlock to get list
-// of sharders to request data from, and returns the block with highest magic
+// of sharders to request data from, and returns the block with the highest magic
 // block starting round.
 func (c *Chain) GetLatestFinalizedMagicBlockFromShardersOn(ctx context.Context,
 	mb *block.MagicBlock) *block.Block {
@@ -523,32 +522,20 @@ func (c *Chain) GetLatestFinalizedMagicBlockFromShardersOn(ctx context.Context,
 	}
 
 	var (
-		sharders = mb.Sharders
-
-		listMutex sync.Mutex
+		sharders    = mb.Sharders
+		magicBlockC = make(chan *block.Block, sharders.Size())
+		errsC       = make(chan error, sharders.Size())
 	)
 
-	magicBlocks := make([]*block.Block, 0, 1)
-
-	var errs []error
 	var handler = func(ctx context.Context, entity datastore.Entity) (
 		resp interface{}, err error) {
 		var mb, ok = entity.(*block.Block)
 		if !ok || mb == nil {
-			errs = append(errs, datastore.ErrInvalidEntity)
+			errsC <- datastore.ErrInvalidEntity
 			return nil, datastore.ErrInvalidEntity
 		}
 
-		listMutex.Lock()
-		defer listMutex.Unlock()
-
-		for _, b := range magicBlocks {
-			if b.Hash == mb.Hash {
-				return mb, nil
-			}
-		}
-		magicBlocks = append(magicBlocks, mb)
-
+		magicBlockC <- mb
 		return mb, nil
 	}
 
@@ -559,7 +546,23 @@ func (c *Chain) GetLatestFinalizedMagicBlockFromShardersOn(ctx context.Context,
 		params.Add("node-lfmb-hash", lfmb.Hash)
 	}
 
-	sharders.RequestEntityFromAll(ctx, LatestFinalizedMagicBlockRequestor, params, handler)
+	sharders.RequestEntity(ctx, LatestFinalizedMagicBlockRequestor, params, handler)
+	close(magicBlockC)
+	close(errsC)
+
+	magicBlocks := make([]*block.Block, 0, 1)
+	for mb := range magicBlockC {
+		if mb != nil {
+			magicBlocks = append(magicBlocks, mb)
+		}
+	}
+
+	var errs []error
+	for err := range errsC {
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
 
 	if len(magicBlocks) == 0 && len(errs) > 0 {
 		logging.Logger.Error("Get latest finalized magic block from sharders failed", zap.Errors("errors", errs))

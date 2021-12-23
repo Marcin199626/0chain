@@ -311,7 +311,6 @@ type FetchedNotarizedBlockHandler interface {
 	NotarizedBlockFetched(ctx context.Context, b *block.Block)
 }
 
-//go: generate
 //go:generate mockery -name Chainer --case underscore -inpkg -testonly
 // The Chainer represents Chain.
 type Chainer interface {
@@ -410,7 +409,7 @@ func (c *Chain) getFinalizedBlockFromSharders(ctx context.Context,
 
 	doneC := make(chan struct{})
 	go func() {
-		sharders.RequestEntityFromAll(lctx, FBRequestor, &params, handler)
+		sharders.RequestEntity(lctx, FBRequestor, &params, handler)
 		close(doneC)
 		close(blockC)
 	}()
