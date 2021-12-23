@@ -3,7 +3,10 @@ package node
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -20,6 +23,13 @@ import (
 const (
 	FetchStrategyRandom  = 0
 	FetchStrategyNearest = 1
+
+	// defaultRequestNodePercent represents the default percentage of nodes the RequestEntity will
+	// send requests to
+	defaultRequestNodePercent = 10
+	// defaultMinRequestNodeNum represents the default minimum number of nodes the RequestEntity will
+	// send requests to
+	defaultMinRequestNodeNum = 4
 )
 
 //FetchStrategy - when fetching an entity, the strategy to use to select the peer nodes
@@ -35,8 +45,76 @@ func GetFetchStrategy() int {
 	}
 }
 
-// RequestEntity - request an entity from nodes in the pool, returns when any node has response
-func (np *Pool) RequestEntity(ctx context.Context, requestor EntityRequestor, params *url.Values, handler datastore.JSONEntityReqResponderF) *Node {
+// RequestOption has the options that will be used when sending a request
+type RequestOption struct {
+	// percent represents the percentage of all nodes we will send request to
+	// must be value between 0 and 100.
+	percent int
+	// min represents the minimum number of nodes we will send request to
+	min int
+}
+
+// Option represents the optional function signature for RequestEntity
+type Option func(opt *RequestOption) error
+
+// ToNodesPercent sets the percentage of total nodes we will send requests to
+// for example, if we want to send requests to 20 percent of all the nodes,
+// we can call RequestEntity(..., ToNodesPercent(20)) to set the percentage
+// Note: the value must be between 0 and 100
+func ToNodesPercent(pt int) Option {
+	return func(opt *RequestOption) error {
+		if pt > 100 || pt < 0 {
+			return fmt.Errorf("invalid request node percentage num: %v", pt)
+		}
+
+		opt.percent = pt
+		return nil
+	}
+}
+
+// ToNodesMin sets the minimum number of nodes we will send requests to
+func ToNodesMin(n int) Option {
+	return func(opt *RequestOption) error {
+		if n < 0 {
+			return errors.New("minimum send to node number must be greater than zero")
+		}
+
+		opt.min = n
+		return nil
+	}
+}
+
+func calcRequestNum(total, minNum, percent int) int {
+
+	if total < minNum {
+		return total
+	}
+
+	if percent < 0 || percent > 100 {
+		panic("percent value must be between 0 and 100")
+	}
+
+	reqNum := int(math.Round(float64(percent*total) / 100))
+	if reqNum < minNum {
+		reqNum = minNum
+	}
+	return reqNum
+}
+
+//go:generate mockery -name pooler --case underscore -inpkg -testonly
+type pooler interface {
+	shuffleNodes(preferPrevMBNodes bool) (shuffled []*Node)
+	sendRequestConcurrent(ctx context.Context, nds []*Node, handler SendHandler) *Node
+	GetNodesByLargeMessageTime() (sorted []*Node)
+}
+
+func requestEntity(ctx context.Context,
+	np pooler,
+	requestor EntityRequestor,
+	params *url.Values,
+	handler datastore.JSONEntityReqResponderF,
+	options ...Option) *Node {
+
 	rhandler := requestor(params, handler)
 	var nds []*Node
 	if GetFetchStrategy() == FetchStrategyRandom {
@@ -45,22 +123,31 @@ func (np *Pool) RequestEntity(ctx context.Context, requestor EntityRequestor, pa
 		nds = np.GetNodesByLargeMessageTime()
 	}
 
-	var (
-		total  = len(nds)
-		minNum = 4
-		reqNum int
-	)
+	reqOpt := RequestOption{
+		percent: defaultRequestNodePercent,
+		min:     defaultMinRequestNodeNum,
+	}
 
-	if total < minNum {
-		reqNum = total
-	} else {
-		reqNum = (1 / 10) * total
-		if reqNum < minNum {
-			reqNum = minNum
+	for _, optFunc := range options {
+		if err := optFunc(&reqOpt); err != nil {
+			logging.N2n.Error("request entity with invalid options", zap.Error(err))
+			return nil
 		}
 	}
 
-	return sendRequestConcurrent(ctx, nds[:reqNum], rhandler)
+	reqNum := calcRequestNum(len(nds), reqOpt.min, reqOpt.percent)
+
+	return np.sendRequestConcurrent(ctx, nds[:reqNum], rhandler)
+}
+
+// RequestEntity - request an entity from nodes in the pool, returns when any node has response
+func (np *Pool) RequestEntity(ctx context.Context,
+	requestor EntityRequestor,
+	params *url.Values,
+	handler datastore.JSONEntityReqResponderF,
+	options ...Option) *Node {
+
+	return requestEntity(ctx, np, requestor, params, handler, options...)
 
 	//reqNum := (1 / 10) * len(nds)
 	//batchSize := 4
@@ -91,7 +178,7 @@ func (np *Pool) RequestEntity(ctx context.Context, requestor EntityRequestor, pa
 	//return nil
 }
 
-func sendRequestConcurrent(ctx context.Context, nds []*Node, handler SendHandler) *Node {
+func (np *Pool) sendRequestConcurrent(ctx context.Context, nds []*Node, handler SendHandler) *Node {
 	wg := &sync.WaitGroup{}
 	nodeC := make(chan *Node, len(nds))
 	for _, nd := range nds {
@@ -116,12 +203,7 @@ func sendRequestConcurrent(ctx context.Context, nds []*Node, handler SendHandler
 
 	wg.Wait()
 	close(nodeC)
-	n, ok := <-nodeC
-	if ok {
-		return n
-	}
-
-	return nil
+	return <-nodeC
 }
 
 // RequestEntityFromAll - requests an entity from all the nodes

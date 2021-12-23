@@ -33,4 +33,7 @@ mockery --case underscore --name=StateContextI --output=../../../mocks
 cd $BASEDIR/code/go/0chain.net/chaincore/chain || exit
 go generate
 
+cd $BASEDIR/code/go/0chain.net/chaincore/node || exit
+go generate
+
 echo "Mocks files are generated."
