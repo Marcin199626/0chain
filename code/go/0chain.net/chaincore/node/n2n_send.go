@@ -292,6 +292,8 @@ func SendEntityHandler(uri string, options *SendOptions) EntitySendHandler {
 				selfNode *Node
 				resp     *http.Response
 				ts       = time.Now()
+				cctx     context.Context
+				cancel   func()
 			)
 
 			func() {
@@ -302,12 +304,13 @@ func SendEntityHandler(uri string, options *SendOptions) EntitySendHandler {
 				selfNode.SetLastActiveTime(ts)
 				selfNode.InduceDelay(receiver)
 
-				cctx, cancel := context.WithTimeout(ctx, timeout)
-				defer cancel()
+				cctx, cancel = context.WithTimeout(ctx, timeout)
 				req = req.WithContext(cctx)
 				//req = req.WithContext(httptrace.WithClientTrace(req.Context(), n2nTrace))
 				resp, err = httpClient.Do(req)
 			}()
+
+			defer cancel()
 
 			logging.N2n.Info("sending", zap.Int("from", selfNode.SetIndex), zap.Int("to", receiver.SetIndex), zap.String("handler", uri), zap.Duration("duration", time.Since(ts)), zap.String("entity", entity.GetEntityMetadata().GetName()), zap.Any("id", entity.GetKey()))
 			switch err {
