@@ -404,7 +404,9 @@ func (msc *MinerSmartContract) payFees(t *transaction.Transaction,
 	Logger.Debug("Pay fees, get miner id successfully",
 		zap.String("miner id", mb.MinerID),
 		zap.Int64("round", mb.Round),
-		zap.String("block", mb.Hash))
+		zap.String("block", mb.Hash),
+		zap.String("mn_hash", mn.GetHash()),
+		zap.Any("root_hash", balances.GetState().GetRoot()))
 
 	var (
 		// mb reward -- mint for the mb
@@ -456,7 +458,9 @@ func (msc *MinerSmartContract) payFees(t *transaction.Transaction,
 		return "", common.NewErrorf("pay_fees",
 			"saving generator node: %v", err)
 	}
-	Logger.Debug("saved miner node", zap.Any("root_hash", balances.GetState().GetRoot()))
+	Logger.Debug("saved miner node",
+		zap.String("mn_hash", mn.GetHash()),
+		zap.Any("root_hash", balances.GetState().GetRoot()))
 
 	if gn.RewardRoundFrequency != 0 && mb.Round%gn.RewardRoundFrequency == 0 {
 		var lfmb = balances.GetLastestFinalizedMagicBlock().MagicBlock
