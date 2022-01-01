@@ -284,6 +284,8 @@ func (msc *MinerSmartContract) setPhaseNode(balances cstate.StateContextI,
 		return err
 	}
 
+	logging.Logger.Debug("Inserted phase node", zap.Any("root_hash", balances.GetState().GetRoot()))
+
 	return nil
 }
 

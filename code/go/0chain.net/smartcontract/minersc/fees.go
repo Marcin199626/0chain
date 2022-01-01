@@ -209,6 +209,7 @@ func (msc *MinerSmartContract) viewChangePoolsWork(gn *GlobalNode,
 			if _, err := balances.DeleteTrieNode(mn.GetKey()); err != nil {
 				return fmt.Errorf("deleting miner node: %v", err)
 			}
+			Logger.Debug("saved delete miner node", zap.Int("index", i), zap.Any("root_hash", balances.GetState().GetRoot()))
 			minerDelete = true
 			continue
 		}
@@ -221,6 +222,7 @@ func (msc *MinerSmartContract) viewChangePoolsWork(gn *GlobalNode,
 		if err = mn.save(balances); err != nil {
 			return
 		}
+		Logger.Debug("saved miner node", zap.Int("index", i), zap.Any("root_hash", balances.GetState().GetRoot()))
 	}
 
 	// sharders
@@ -248,6 +250,8 @@ func (msc *MinerSmartContract) viewChangePoolsWork(gn *GlobalNode,
 			if err = sn.save(balances); err != nil {
 				return
 			}
+			Logger.Debug("saved delete sharder node", zap.Int("index", i), zap.Any("root_hash", balances.GetState().GetRoot()))
+
 			sharderDelete = true
 			continue
 		}
@@ -260,6 +264,8 @@ func (msc *MinerSmartContract) viewChangePoolsWork(gn *GlobalNode,
 		if err = sn.save(balances); err != nil {
 			return
 		}
+		Logger.Debug("saved sharder node", zap.Int("index", i), zap.Any("root_hash", balances.GetState().GetRoot()))
+
 	}
 
 	// unlockOffline
@@ -267,12 +273,15 @@ func (msc *MinerSmartContract) viewChangePoolsWork(gn *GlobalNode,
 		if err = msc.unlockOffline(mn, balances); err != nil {
 			return
 		}
+		Logger.Debug("unlock miner node", zap.Any("root_hash", balances.GetState().GetRoot()))
 	}
 
 	for _, mn := range shardersOffline {
 		if err = msc.unlockOffline(mn, balances); err != nil {
 			return
 		}
+		Logger.Debug("unlock sharder node", zap.Any("root_hash", balances.GetState().GetRoot()))
+
 	}
 
 	if minerDelete {
@@ -280,6 +289,8 @@ func (msc *MinerSmartContract) viewChangePoolsWork(gn *GlobalNode,
 			return common.NewErrorf("view_change_pools_work",
 				"failed saving all miners list: %v", err)
 		}
+		Logger.Debug("delete miner node", zap.Any("root_hash", balances.GetState().GetRoot()))
+
 	}
 
 	if sharderDelete {
@@ -287,6 +298,8 @@ func (msc *MinerSmartContract) viewChangePoolsWork(gn *GlobalNode,
 			return common.NewErrorf("view_change_pools_work",
 				"failed saving all sharder list: %v", err)
 		}
+		Logger.Debug("delete sharder node", zap.Any("root_hash", balances.GetState().GetRoot()))
+
 	}
 	return
 }
@@ -441,6 +454,7 @@ func (msc *MinerSmartContract) payFees(t *transaction.Transaction,
 		return "", common.NewErrorf("pay_fees",
 			"saving generator node: %v", err)
 	}
+	Logger.Debug("saved miner node", zap.Any("root_hash", balances.GetState().GetRoot()))
 
 	if gn.RewardRoundFrequency != 0 && mb.Round%gn.RewardRoundFrequency == 0 {
 		var lfmb = balances.GetLastestFinalizedMagicBlock().MagicBlock

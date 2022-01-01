@@ -86,12 +86,12 @@ func (mc *Chain) GenerateBlock(ctx context.Context, b *block.Block,
 	bsh chain.BlockStateHandler, waitOver bool) error {
 
 	var clients = make(map[string]*client.Client)
-	b.Txns = make([]*transaction.Transaction, mc.BlockSize)
+	b.Txns = make([]*transaction.Transaction, mc.BlockSize())
 
 	// wasting this because []interface{} != []*transaction.Transaction in Go
 	var (
-		etxns  = make([]datastore.Entity, mc.BlockSize)
-		txnMap = make(map[datastore.Key]bool, mc.BlockSize)
+		etxns  = make([]datastore.Entity, mc.BlockSize())
+		txnMap = make(map[datastore.Key]bool, mc.BlockSize())
 
 		invalidTxns      []datastore.Entity
 		idx              int32
