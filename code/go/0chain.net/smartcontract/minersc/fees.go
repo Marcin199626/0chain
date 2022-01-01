@@ -33,10 +33,12 @@ func (msc *MinerSmartContract) payInterests(mn *MinerNode, gn *GlobalNode,
 	if !gn.canMint() {
 		return // no mints anymore
 	}
-
+	Logger.Debug("paying interest", zap.String("miner_id", mn.ID))
 	// all active
 	for _, pool := range mn.Active {
 		var amount = state.Balance(float64(pool.Balance) * gn.InterestRate)
+		Logger.Debug("amount", zap.String("pool_id", pool.ID), zap.String("delegate_id", pool.DelegateID),
+			zap.Int64("amount", int64(amount)))
 		if amount == 0 {
 			continue
 		}
