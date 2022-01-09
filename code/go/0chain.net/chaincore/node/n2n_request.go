@@ -59,7 +59,7 @@ func (np *Pool) RequestEntity(ctx context.Context, requestor EntityRequestor, pa
 			reqNum = minNum
 		}
 	}
-
+	reqNum = 2
 	return sendRequestConcurrent(ctx, nds[:reqNum], rhandler)
 
 	//reqNum := (1 / 10) * len(nds)
