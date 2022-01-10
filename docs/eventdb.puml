@@ -1,0 +1,44 @@
+
+@startuml
+object User
+object Allocation
+object Blobber
+object Miner
+object Sharder
+object Validator
+object Challenge
+object Block
+object Transaction
+object Error
+object Curator
+object ReadAllocationPool
+object WriteAllocationPool
+object Terms
+object ReadMarker
+object WriteMarker
+
+Allocation o--o Blobber
+Challenge o--o Validator
+Allocation *-- Curator
+Allocation *-- ReadAllocationPool
+Allocation *-- WriteAllocationPool
+Allocation *-- Terms
+Blobber *-- Terms
+Allocation *-- ReadMarker
+Blobber *-- ReadMarker
+Allocation *-- WriteMarker
+Blobber *-- WriteMarker
+Blobber *-- Challenge
+User *-- Allocation
+User *-- WriteMarker
+User *-- ReadMarker
+User *-- Curator
+User *-- ReadAllocationPool
+User *-- WriteAllocationPool
+Block *-- Transaction
+Transaction *-- Error
+Transaction *-- Allocation
+Transaction *-- WriteMarker
+Transaction *-- ReadMarker
+@enduml
+

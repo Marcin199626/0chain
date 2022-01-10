@@ -1,0 +1,43 @@
+@startuml
+boundary chain
+control block
+collections transactions
+control sc
+entity stateContext
+database events
+
+title 0chain events
+
+chain -> block: start block
+block -> transactions: run\ntransactions
+transactions -> sc:smart contract
+sc -> stateContext: emit events
+sc -> transactions: error\nor success
+transactions -> block:  finish
+stateContext -> block: emitted events
+block -> block: update event\nhash MPT
+block -> events: save event list
+block -> chain: done block
+@enduml
+
+@startuml
+actor user
+database stats
+database events
+boundary RestApiHandler
+database 0ChainMPT
+
+title 0chain stats databse
+
+stats -> events: query new database
+events -> stats: new events
+stats -> stats: convert to SQL
+stats -> stats: run SQL
+
+user -> RestApiHandler: user REST API query
+RestApiHandler -> stats: query
+RestApiHandler -> 0ChainMPT: depreciated
+0ChainMPT -> RestApiHandler: depreciated
+stats -> RestApiHandler: data
+RestApiHandler -> user: result
+@enduml

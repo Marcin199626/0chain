@@ -1,0 +1,355 @@
+pay me
+
+@startuml
+title challenge response
+control blobber
+control sc
+entity MPT
+database EDB
+blobber -> sc : challenge_response
+note left
+    validation ticket slice
+    * challenge id
+    * blobber id
+    * validator id
+    * validator key
+    * result
+    * message
+    * message code
+    * timestamp
+    * signatureB
+end note
+    alt [cahllenge does not exists or expired]
+    sc -x blobber : error
+    end
+    sc -> sc : count successes
+    note right
+        validator tickets result. = true
+    end note
+    alt validator passes > validators / 2
+        sc -[#blue]> MPT : remove from\nchallenge list
+        sc -[#blue]> MPT : allocation
+        note right
+            increment passes
+        end note
+        sc -> MPT : challenge pool
+        note right
+            debit challenge amount
+        end note
+        sc -[#blue]> MPT : delegate stake pools
+        note right
+            credit delegate rewards
+        end note
+        sc -[#blue]-> MPT : blobber
+        note right
+            append to slice of
+            recent passed challenge
+        end note
+    else validator passes <= validators / 2
+        sc -[#blue]> MPT : remove from\nchallenge list
+        sc -[#blue]> MPT : allocation
+        note right
+            increment fails
+        end note
+        sc -> MPT : challenge pool
+        note right
+            debit challenge amount
+        end note
+        sc -[#blue]> MPT : blobber stake pool
+        note right
+            debit slash amount
+        end note
+        sc -> MPT : allocation pool
+        note right
+            credit slash amount plus challenge amount
+        end note
+    end
+    sc -[#blue]> MPT : validators
+    note right
+        credit validator rewards
+    end note
+    sc -[#blue]> EDB : delete challenge
+    note right
+        delete from challenges table
+    end note
+@enduml
+
+@startuml
+title blobber block reward
+control chain
+control sc
+entity MPT
+database EDB
+
+chain -> sc : blobber_block_rewards
+    MPT -> sc : blobber partition
+    note right
+        read price == 0
+    end note
+    sc -> sc : get random partition
+    sc -> sc : weight blobers in partition
+    note right
+        blobber weight is product of
+        * completed challenges (period)
+        * total stake
+        * write price
+        * number of reads + 1
+    end note
+    loop blobbers per partition
+        loop blobber delegate
+            sc -> MPT  : reward delegate
+        end
+    end
+    sc -> EDB : emit blobber rewards
+@enduml
+
+@startuml
+title challenge creation
+control blobber
+control sc
+entity MPT
+database EDB
+blobber -> sc : commit_connection\nor read_redeem
+    MPT -[#blue]> sc : blobber partitions
+    loop challenges per generation
+        sc -[#blue]> sc : select random partition
+        sc -[#blue]>sc : weight partition :
+        note right
+            weight is product of
+            * challenges completed (period)
+            * total stake
+            * number of reads + 1 (period)
+        end note
+        sc -[#blue]> sc : randomly select blobber\nby weight
+        MPT -[#blue]> sc : blobber allocation parition
+        sc -[#blue]> sc : randomly select\nan allocation
+        MPT -[#blue]> sc : allocation
+        sc -[#blue]> sc : create challenge\nblobber + allocation
+        sc -[#blue]> MPT : challenge id list
+        note right
+            add new challenge id
+        end note
+        sc -[#blue]> MPT : allocation
+       note right
+          increment open challenges
+       end note
+        sc -[#blue]> EDB : emit challenge
+        note right
+            increment challenges
+        end note
+    end
+@enduml
+
+
+@startuml
+title upload
+
+boundary zbox
+control blobber
+database store
+control 0chain
+entity MPT
+database EDB
+
+zbox -> blobber : upload
+note left
+    * allocation id
+    * file data
+    * remote path
+end note
+    blobber -> store : file
+    blobber -> zbox
+    blobber -> 0chain : commit_connection
+    note left
+         write  marker
+        * allocation root
+        * previous allocation root
+        * allocation id
+        * size
+        * blobber id
+        * timestamp
+        * client id
+        * signature
+    end note
+        0chain -> MPT : allocation
+        note right
+            * allocation root
+            * size
+            * challenge pool integral value
+        end note
+        0chain -> MPT : write pool
+        note right
+            * debit write payment
+        end note
+        0chain -> MPT : challenge pool
+        note right
+            * credit write payment
+        end note
+        0chain -[#blue]> MPT : blobber
+        note right
+            * increment total stored data
+        end note
+        0chain -[#blue]> EDB : write marker
+        note right
+            insert WriteMarker table
+        end note
+@enduml
+
+
+@startuml
+title download
+
+boundary zbox
+control blobber
+database store
+control 0chain
+entity MPT
+database EDB
+
+zbox -> blobber : download
+note left
+    * allocation id
+    * auth ticket + rx_pay
+    * block to download
+    * remotepath
+    * start block
+    * number of blocks
+end note
+    store -> blobber : file
+    blobber -> zbox : file
+    blobber -> 0chain : read_redeem
+    note left
+         read  marker
+        * client id
+        * client public key
+        * blobber id
+        * allocation id
+        * owner id
+        * timestamp
+        * read counter
+        * signature
+        * payer id
+        * auth ticket
+    end note
+        0chain -> MPT : read pools
+        note right
+            debit read payment
+        end note
+        0chain -[#blue]> MPT : blobber delegates
+        note right
+            credit read rewards
+        end note
+        0chain -> MPT : allocation
+        note right
+            reduce min lock demand
+        end note
+        0chain -[#blue]> MPT : blobber
+        note right
+            increment reads
+        end note
+        0chain -> MPT : read marker
+        note right
+            depreciated
+        end note
+        0chain -[#blue]> EDB : read marker
+        note right
+            insert ReadMarker tbale
+        end note
+@enduml
+
+
+@startuml
+title delete
+
+boundary zbox
+control blobber
+database store
+control commit_connection as 0chain
+entity MPT
+database EDB
+
+zbox -> blobber : delete
+note left
+    * allocation id
+    * remote path
+end note
+blobber -> store : delete file
+blobber -> zbox
+blobber -> 0chain : commit_connection
+note left
+     write  marker
+    * allocation root
+    * previous allocation root
+    * allocation id
+    * size (-ve for delete)
+    * blobber id
+    * timestamp
+    * client id
+    * signature
+end note
+    0chain -> MPT : allocation
+    note right
+        * allocation root
+        * size
+        * challenge pool integral value
+    end note
+    0chain -> MPT : challenge pool
+    note right
+        * debit pool
+    end note
+    0chain -> MPT : write pool
+    note right
+        * credit pool
+    end note
+    0chain -[#blue]> MPT : blobber
+    note right
+        decrement total stored data count
+    end note
+    alt challenge created for deleted file
+    0chain -[#blue]> MPT : challenge list
+    note right
+        remove linked challenges
+    end note
+    0chain -[#blue]> MPT : allocation
+    note right
+        decrement challenge count
+    end note
+    0chain -[#blue]> EDB : challenge id
+    note right
+        delete challenge table
+    end note
+    end
+    0chain -[#blue]> EDB : write marker
+    note right
+        insert WriteMarker table
+    end note
+@enduml
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
