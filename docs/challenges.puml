@@ -117,8 +117,7 @@ blobber -> sc : commit_connection\nor read_redeem
         note right
             weight is product of
             * challenges completed (period)
-            * total stake
-            * number of reads + 1 (period)
+            * total data stored on blobber
         end note
         sc -[#blue]> sc : randomly select blobber\nby weight
         MPT -[#blue]> sc : blobber allocation parition
@@ -239,10 +238,6 @@ end note
         note right
             credit read rewards
         end note
-        0chain -> MPT : allocation
-        note right
-            reduce min lock demand
-        end note
         0chain -[#blue]> MPT : blobber
         note right
             increment reads
@@ -253,7 +248,7 @@ end note
         end note
         0chain -[#blue]> EDB : read marker
         note right
-            insert ReadMarker tbale
+            insert ReadMarker table
         end note
 @enduml
 
