@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"io/ioutil"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -59,7 +60,6 @@ func (np *Pool) RequestEntity(ctx context.Context, requestor EntityRequestor, pa
 			reqNum = minNum
 		}
 	}
-	reqNum = 2
 	return sendRequestConcurrent(ctx, nds[:reqNum], rhandler)
 
 	//reqNum := (1 / 10) * len(nds)
@@ -215,7 +215,6 @@ func RequestEntityHandler(uri string, options *SendOptions, entityMetadata datas
 				ts       time.Time
 				selfNode = Self.Underlying()
 				resp     *http.Response
-				cancel   func()
 				eName    string
 			)
 
@@ -226,73 +225,21 @@ func RequestEntityHandler(uri string, options *SendOptions, entityMetadata datas
 			SetRequestHeaders(req, options, entityMeta)
 			// Keep the number of messages to a node bounded
 
-			var (
-				tm       *time.Timer
-				closeTmC = make(chan struct{})
-			)
-			func() {
-				provider.Grab()
-				defer provider.Release()
-				ts = time.Now()
+			provider.Grab()
+			defer provider.Release()
+			ts = time.Now()
 
-				selfNode.SetLastActiveTime(ts)
-				selfNode.InduceDelay(provider)
+			selfNode.SetLastActiveTime(ts)
+			selfNode.InduceDelay(provider)
 
-				var cctx context.Context
-				tm = time.NewTimer(timeout)
-				cctx, cancel = context.WithCancel(ctx)
-				go func() {
-					select {
-					case <-tm.C:
-						cancel()
-					case <-closeTmC:
-					}
-				}()
-				req = req.WithContext(cctx)
-				resp, err = httpClient.Do(req)
-			}()
-			defer cancel()
+			cctx, _ := context.WithTimeout(ctx, timeout)
+			req = req.WithContext(cctx)
+			resp, err = httpClient.Do(req)
 
 			duration := time.Since(ts)
-			var buf bytes.Buffer
-			switch err {
-			case nil:
-				if tm != nil {
-					tm.Stop()
-					close(closeTmC)
-				}
-				defer resp.Body.Close()
-
-				if resp.StatusCode == http.StatusNotModified {
-					provider.SetStatus(NodeStatusActive)
-					provider.SetLastActiveTime(time.Now())
-					provider.SetErrorCount(provider.GetSendErrors())
-					logging.N2n.Debug("requesting - not modified",
-						zap.Int("from", selfNode.SetIndex),
-						zap.Int("to", provider.SetIndex),
-						zap.Duration("duration", duration),
-						zap.String("handler", uri),
-						zap.String("entity", eName),
-						zap.Any("params", params))
-					return true
-				}
-
-				// reset context timeout so that the
-				// following data reading would not be canceled due to timeout
-				_, err := buf.ReadFrom(resp.Body)
-				if err != nil {
-					logging.N2n.Error("requesting - read response failed",
-						zap.Int("from", selfNode.SetIndex),
-						zap.Int("to", provider.SetIndex),
-						zap.Duration("duration", duration),
-						zap.String("handler", uri),
-						zap.String("entity", eName),
-						zap.Any("params", params), zap.Error(err))
-					return false
-				}
-			default:
+			if err != nil {
 				ue, ok := err.(*url.Error)
-				if ok && ue.Unwrap() != context.Canceled {
+				if ok && ue.Timeout() {
 					// requests could be canceled when the miner has received a response
 					// from any of the remotes.
 					provider.AddSendErrors(1)
@@ -302,14 +249,43 @@ func RequestEntityHandler(uri string, options *SendOptions, entityMetadata datas
 				}
 				return false
 			}
+			defer resp.Body.Close()
 
 			// As long as the node is reachable, it is active.
 			provider.SetStatus(NodeStatusActive)
 			provider.SetLastActiveTime(time.Now())
 			provider.SetErrorCount(provider.GetSendErrors())
 
+			if resp.StatusCode == http.StatusNotModified {
+				provider.SetStatus(NodeStatusActive)
+				provider.SetLastActiveTime(time.Now())
+				provider.SetErrorCount(provider.GetSendErrors())
+				logging.N2n.Debug("requesting - not modified",
+					zap.Int("from", selfNode.SetIndex),
+					zap.Int("to", provider.SetIndex),
+					zap.Duration("duration", duration),
+					zap.String("handler", uri),
+					zap.String("entity", eName),
+					zap.Any("params", params))
+				return true
+			}
+
+			// reset context timeout so that the
+			// following data reading would not be canceled due to timeout
+			body, err := ioutil.ReadAll(resp.Body)
+			if err != nil {
+				logging.N2n.Error("requesting - read response failed",
+					zap.Int("from", selfNode.SetIndex),
+					zap.Int("to", provider.SetIndex),
+					zap.Duration("duration", duration),
+					zap.String("handler", uri),
+					zap.String("entity", eName),
+					zap.Any("params", params), zap.Error(err))
+				return false
+			}
+
 			if resp.StatusCode != http.StatusOK {
-				data := string(buf.Bytes())
+				data := string(body)
 				logging.N2n.Error("requesting",
 					zap.Int("from", selfNode.SetIndex),
 					zap.Int("to", provider.SetIndex),
@@ -335,7 +311,7 @@ func RequestEntityHandler(uri string, options *SendOptions, entityMetadata datas
 					zap.String("entity", eName))
 				entityMeta = datastore.GetEntityMetadata(eName)
 				if entityMeta == nil {
-					data := string(buf.Bytes())
+					data := string(body)
 					logging.N2n.Error("requesting - unknown entity",
 						zap.Int("from", selfNode.SetIndex),
 						zap.Int("to", provider.SetIndex),
@@ -347,7 +323,7 @@ func RequestEntityHandler(uri string, options *SendOptions, entityMetadata datas
 				}
 			}
 
-			size, entity, err := getResponseEntity(resp, &buf, entityMeta)
+			size, entity, err := getResponseEntity(resp, bytes.NewReader(body), entityMeta)
 			if err != nil {
 				logging.N2n.Error("requesting", zap.Int("from", selfNode.SetIndex), zap.Int("to", provider.SetIndex), zap.Duration("duration", duration), zap.String("handler", uri), zap.String("entity", eName), zap.Any("params", params), zap.Error(err))
 				return false
