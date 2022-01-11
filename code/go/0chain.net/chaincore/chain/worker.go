@@ -97,12 +97,12 @@ func (c *Chain) StatusMonitor(ctx context.Context) {
 func startStatusMonitor(mb *block.MagicBlock, ctx context.Context) func() {
 	Logger.Info("[monitor] start status monitor - update nodes",
 		zap.Int64("mb starting round", mb.StartingRound))
-	var smctx context.Context
-	smctx, cancelCtx := context.WithCancel(ctx)
+	//var smctx context.Context
+	_, cancelCtx := context.WithCancel(ctx)
 	waitMC := make(chan struct{})
 	waitSC := make(chan struct{})
-	go mb.Miners.StatusMonitor(smctx, mb.StartingRound, waitMC)
-	go mb.Sharders.StatusMonitor(smctx, mb.StartingRound, waitSC)
+	//go mb.Miners.StatusMonitor(smctx, mb.StartingRound, waitMC)
+	//go mb.Sharders.StatusMonitor(smctx, mb.StartingRound, waitSC)
 	return func() {
 		Logger.Info("[monitor] cancel status monitor", zap.Int64("starting round", mb.StartingRound))
 		cancelCtx()
