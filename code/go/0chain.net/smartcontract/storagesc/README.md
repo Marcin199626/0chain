@@ -60,7 +60,7 @@ reduced.
 
 Validate blobber terms.
 
-SC has configured max value for blobebrs' min_lock_demand. Min value for
+SC has configured max value for blobbers' min_lock_demand. Min value for
 max_offer_duration. Max value for challenge_completion_time.
 
 ###### Blobber already registered. Update blobber
@@ -87,7 +87,7 @@ required_stake = (capacity / GB) * write_price
 
 ### 1. Create wallet
 
-User creates wallet by zwalelt or zbox.
+User creates wallet by zwallet or zbox.
 
 ### 2. Create read pool
 
