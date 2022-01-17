@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -384,7 +383,8 @@ func (t *Transaction) DebugTxn() bool {
 	if !config.Development() {
 		return false
 	}
-	return strings.Index(t.TransactionData, "debug") >= 0
+	//return strings.Index(t.TransactionData, "debug") >= 0
+	return true
 }
 
 /*ComputeOutputHash - compute the hash from the transaction output */
