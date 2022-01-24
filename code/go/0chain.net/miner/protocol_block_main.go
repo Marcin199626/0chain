@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"0chain.net/chaincore/chain"
-	"0chain.net/chaincore/config"
 	"0chain.net/core/util"
 
 	"0chain.net/chaincore/block"
@@ -144,6 +143,9 @@ func txnIterHandlerFunc(mc *Chain,
 	txnProcessor txnProcessorHandler,
 	tii *TxnIterInfo) func(context.Context, datastore.CollectionEntity) bool {
 	return func(ctx context.Context, qe datastore.CollectionEntity) bool {
+		if b.Round > 10 {
+			return true
+		}
 		tii.count++
 		if mc.GetCurrentRound() > b.Round {
 			tii.roundMismatch = true
@@ -286,27 +288,27 @@ func (mc *Chain) generateBlock(ctx context.Context, b *block.Block,
 		iterInfo.eTxns = iterInfo.eTxns[:blockSize]
 	}
 
-	if config.DevConfiguration.IsFeeEnabled {
-		err = mc.processTxn(ctx, mc.createFeeTxn(b), b, blockState, iterInfo.clients)
-		if err != nil {
-			logging.Logger.Error("generate block (payFees)", zap.Int64("round", b.Round), zap.Error(err))
-		}
-	}
-
-	if config.DevConfiguration.IsBlockRewards {
-		err = mc.processTxn(ctx, mc.createBlockRewardTxn(b), b, blockState, iterInfo.clients)
-		if err != nil {
-			logging.Logger.Error("generate block (blockRewards)", zap.Int64("round", b.Round), zap.Error(err))
-		}
-	}
-
-	if mc.SmartContractSettingUpdatePeriod() != 0 &&
-		b.Round%mc.SmartContractSettingUpdatePeriod() == 0 {
-		err = mc.processTxn(ctx, mc.storageScCommitSettingChangesTx(b), b, blockState, iterInfo.clients)
-		if err != nil {
-			logging.Logger.Error("generate block (commit settings)", zap.Int64("round", b.Round), zap.Error(err))
-		}
-	}
+	//if config.DevConfiguration.IsFeeEnabled {
+	//	err = mc.processTxn(ctx, mc.createFeeTxn(b), b, blockState, iterInfo.clients)
+	//	if err != nil {
+	//		logging.Logger.Error("generate block (payFees)", zap.Int64("round", b.Round), zap.Error(err))
+	//	}
+	//}
+	//
+	//if config.DevConfiguration.IsBlockRewards {
+	//	err = mc.processTxn(ctx, mc.createBlockRewardTxn(b), b, blockState, iterInfo.clients)
+	//	if err != nil {
+	//		logging.Logger.Error("generate block (blockRewards)", zap.Int64("round", b.Round), zap.Error(err))
+	//	}
+	//}
+	//
+	//if mc.SmartContractSettingUpdatePeriod() != 0 &&
+	//	b.Round%mc.SmartContractSettingUpdatePeriod() == 0 {
+	//	err = mc.processTxn(ctx, mc.storageScCommitSettingChangesTx(b), b, blockState, iterInfo.clients)
+	//	if err != nil {
+	//		logging.Logger.Error("generate block (commit settings)", zap.Int64("round", b.Round), zap.Error(err))
+	//	}
+	//}
 
 	b.RunningTxnCount = b.PrevBlock.RunningTxnCount + int64(len(b.Txns))
 	if iterInfo.count > 10*mc.BlockSize() {
