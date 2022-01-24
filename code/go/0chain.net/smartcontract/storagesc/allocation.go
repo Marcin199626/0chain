@@ -313,7 +313,10 @@ func (sc *StorageSmartContract) newAllocationRequestInternal(
 	balances chainstate.StateContextI,
 ) (resp string, err error) {
 	var allBlobbersList *StorageNodes
+	start := time.Now()
+	println("-----")
 	allBlobbersList, err = sc.getBlobbersList(balances)
+	println("getBlobbersList:" + strconv.Itoa(int(time.Since(start).Microseconds())))
 	if err != nil {
 		return "", common.NewErrorf("allocation_creation_failed",
 			"getting blobber list: %v", err)
@@ -341,9 +344,11 @@ func (sc *StorageSmartContract) newAllocationRequestInternal(
 		return "", common.NewError("allocation_creation_failed",
 			"Failed to create seed for randomizeNodes")
 	}
-
+	start = time.Now()
 	blobberNodes, bSize, err := sc.selectBlobbers(
 		t.CreationDate, *allBlobbersList, sa, seed, balances)
+	println("selectBlobbers:" + strconv.Itoa(int(time.Since(start).Microseconds())))
+
 	if err != nil {
 		return "", common.NewErrorf("allocation_creation_failed", "%v", err)
 	}
@@ -380,27 +385,37 @@ func (sc *StorageSmartContract) newAllocationRequestInternal(
 	sa.StartTime = t.CreationDate
 	sa.Tx = t.Hash
 
+	start = time.Now()
 	if err = sc.addBlobbersOffers(sa, blobberNodes, balances); err != nil {
 		return "", common.NewError("allocation_creation_failed", err.Error())
 	}
+	println("addBlobbersOffers:" + strconv.Itoa(int(time.Since(start).Microseconds())))
 
+	start = time.Now()
 	err = updateBlobbersInAll(allBlobbersList, blobberNodes, balances)
 	if err != nil {
 		return "", common.NewError("allocation_creation_failed", err.Error())
 	}
+	println("updateBlobbersInAll:" + strconv.Itoa(int(time.Since(start).Microseconds())))
 
+	start = time.Now()
 	// create write pool and lock tokens
 	if err = sc.createWritePool(t, sa, mintNewTokens, balances); err != nil {
 		return "", common.NewError("allocation_creation_failed", err.Error())
 	}
+	println("createWritePool:" + strconv.Itoa(int(time.Since(start).Microseconds())))
 
+	start = time.Now()
 	if err = sc.createChallengePool(t, sa, balances); err != nil {
 		return "", common.NewError("allocation_creation_failed", err.Error())
 	}
+	println("createChallengePool:" + strconv.Itoa(int(time.Since(start).Microseconds())))
 
+	start = time.Now()
 	if resp, err = sc.addAllocation(sa, balances); err != nil {
 		return "", common.NewErrorf("allocation_creation_failed", "%v", err)
 	}
+	println("addAllocation:" + strconv.Itoa(int(time.Since(start).Microseconds())))
 
 	return resp, err
 }
@@ -414,23 +429,29 @@ func (sc *StorageSmartContract) selectBlobbers(
 ) ([]*StorageNode, int64, error) {
 	var err error
 	var conf *scConfig
+	start := time.Now()
 	if conf, err = sc.getConfig(balances, true); err != nil {
 		return nil, 0, fmt.Errorf("can't get config: %v", err)
 	}
+	println("getConfig:" + strconv.Itoa(int(time.Since(start).Microseconds())))
 
 	sa.TimeUnit = conf.TimeUnit // keep the initial time unit
 
+	start = time.Now()
 	if err = sa.validate(creationDate, conf); err != nil {
 		return nil, 0, fmt.Errorf("invalid request: %v", err)
 	}
+	println("validate:" + strconv.Itoa(int(time.Since(start).Microseconds())))
 
 	// number of blobbers required
 	var size = sa.DataShards + sa.ParityShards
 	// size of allocation for a blobber
 	var bSize = (sa.Size + int64(size-1)) / int64(size)
+	start = time.Now()
 	var list = sa.filterBlobbers(allBlobbersList.Nodes.copy(), creationDate,
 		bSize, filterHealthyBlobbers(creationDate),
 		sc.filterBlobbersByFreeSpace(creationDate, bSize, balances))
+	println("filterBlobbers:" + strconv.Itoa(int(time.Since(start).Microseconds())))
 
 	if len(list) < size {
 		return nil, 0, errors.New("Not enough blobbers to honor the allocation")
@@ -440,6 +461,7 @@ func (sc *StorageSmartContract) selectBlobbers(
 	sa.Stats = &StorageAllocationStats{}
 
 	var blobberNodes []*StorageNode
+	start = time.Now()
 	if len(sa.PreferredBlobbers) > 0 {
 		blobberNodes, err = getPreferredBlobbers(sa.PreferredBlobbers, list)
 		if err != nil {
@@ -447,7 +469,9 @@ func (sc *StorageSmartContract) selectBlobbers(
 				err.Error())
 		}
 	}
+	println("getPreferredBlobbers:" + strconv.Itoa(int(time.Since(start).Microseconds())))
 
+	start = time.Now()
 	if len(blobberNodes) < size {
 		if sa.DiverseBlobbers {
 			// removed pre selected blobbers from list
@@ -464,6 +488,7 @@ func (sc *StorageSmartContract) selectBlobbers(
 			blobberNodes = randomizeNodes(list, blobberNodes, size, randomSeed)
 		}
 	}
+	println("diversifyBlobbers:" + strconv.Itoa(int(time.Since(start).Microseconds())))
 
 	return blobberNodes[:size], bSize, nil
 }
