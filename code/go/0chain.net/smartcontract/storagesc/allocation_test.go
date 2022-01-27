@@ -45,13 +45,12 @@ func TestSelectBlobbers(t *testing.T) {
 	var now = common.Timestamp(1000000)
 
 	type args struct {
-		diverseBlobbers      bool
-		numBlobbers          int
-		numPreferredBlobbers int
-		dataShards           int
-		parityShards         int
-		allocSize            int64
-		expiration           common.Timestamp
+		diverseBlobbers bool
+		numBlobbers     int
+		dataShards      int
+		parityShards    int
+		allocSize       int64
+		expiration      common.Timestamp
 	}
 	type want struct {
 		blobberIds []int
@@ -82,20 +81,17 @@ func TestSelectBlobbers(t *testing.T) {
 			SmartContract: sci.NewSC(ADDRESS),
 		}
 		var sa = StorageAllocation{
-			PreferredBlobbers: []string{},
-			DataShards:        args.dataShards,
-			ParityShards:      args.parityShards,
-			Owner:             mockOwner,
-			OwnerPublicKey:    mockPublicKey,
-			Expiration:        args.expiration,
-			Size:              args.allocSize,
-			ReadPriceRange:    PriceRange{mockMinPrice, mockMaxPrice},
-			WritePriceRange:   PriceRange{mockMinPrice, mockMaxPrice},
-			DiverseBlobbers:   args.diverseBlobbers,
+			DataShards:      args.dataShards,
+			ParityShards:    args.parityShards,
+			Owner:           mockOwner,
+			OwnerPublicKey:  mockPublicKey,
+			Expiration:      args.expiration,
+			Size:            args.allocSize,
+			ReadPriceRange:  PriceRange{mockMinPrice, mockMaxPrice},
+			WritePriceRange: PriceRange{mockMinPrice, mockMaxPrice},
+			DiverseBlobbers: args.diverseBlobbers,
 		}
-		for i := 0; i < args.numPreferredBlobbers; i++ {
-			sa.PreferredBlobbers = append(sa.PreferredBlobbers, mockURL+strconv.Itoa(i))
-		}
+
 		var sNodes = StorageNodes{}
 		for i := 0; i < args.numBlobbers; i++ {
 			sNodes.Nodes.add(makeMockBlobber(i))
@@ -130,55 +126,24 @@ func TestSelectBlobbers(t *testing.T) {
 		{
 			name: "test_diverse_blobbers",
 			args: args{
-				diverseBlobbers:      true,
-				numBlobbers:          6,
-				numPreferredBlobbers: 2,
-				dataShards:           5,
-				allocSize:            confMinAllocSize,
-				expiration:           common.Timestamp(common.ToTime(now).Add(confMinAllocDuration).Unix()),
+				diverseBlobbers: true,
+				numBlobbers:     6,
+				dataShards:      5,
+				allocSize:       confMinAllocSize,
+				expiration:      common.Timestamp(common.ToTime(now).Add(confMinAllocDuration).Unix()),
 			},
 			want: want{
 				blobberIds: []int{0, 1, 2, 3, 4},
 			},
 		},
 		{
-			name: "test_randomised_blobbers",
-			args: args{
-				diverseBlobbers:      false,
-				numBlobbers:          6,
-				numPreferredBlobbers: 2,
-				dataShards:           5,
-				allocSize:            confMinAllocSize,
-				expiration:           common.Timestamp(common.ToTime(now).Add(confMinAllocDuration).Unix()),
-			},
-			want: want{
-				blobberIds: []int{0, 1, 5, 3, 2},
-			},
-		},
-		{
-			name: "test_excess_preferred_blobbers",
-			args: args{
-				diverseBlobbers:      false,
-				numBlobbers:          6,
-				numPreferredBlobbers: 8,
-				dataShards:           5,
-				allocSize:            confMinAllocSize,
-				expiration:           common.Timestamp(common.ToTime(now).Add(confMinAllocDuration).Unix()),
-			},
-			want: want{
-				err:    true,
-				errMsg: "allocation_creation_failed: invalid preferred blobber URL",
-			},
-		},
-		{
 			name: "test_all_preferred_blobbers",
 			args: args{
-				diverseBlobbers:      false,
-				numBlobbers:          6,
-				numPreferredBlobbers: 6,
-				dataShards:           4,
-				allocSize:            confMinAllocSize,
-				expiration:           common.Timestamp(common.ToTime(now).Add(confMinAllocDuration).Unix()),
+				diverseBlobbers: false,
+				numBlobbers:     6,
+				dataShards:      4,
+				allocSize:       confMinAllocSize,
+				expiration:      common.Timestamp(common.ToTime(now).Add(confMinAllocDuration).Unix()),
 			},
 			want: want{
 				blobberIds: []int{0, 1, 2, 3},
@@ -192,8 +157,7 @@ func TestSelectBlobbers(t *testing.T) {
 			ssc, sa, blobbers, balances := setup(t, tt.args)
 
 			outBlobbers, outSize, err := ssc.selectBlobbers(
-				now, blobbers, &sa, randomSeed, balances,
-			)
+				now, blobbers, &sa, randomSeed, balances)
 
 			require.EqualValues(t, len(tt.want.blobberIds), len(outBlobbers))
 			require.EqualValues(t, tt.want.err, err != nil)
@@ -768,7 +732,7 @@ func Test_newAllocationRequest_storageAllocation(t *testing.T) {
 	nar.Expiration = common.Now()
 	nar.Owner = clientID
 	nar.OwnerPublicKey = clientPk
-	nar.PreferredBlobbers = []string{"one", "two"}
+	nar.Blobbers = []string{"one", "two"}
 	nar.ReadPriceRange = PriceRange{Min: 10, Max: 20}
 	nar.WritePriceRange = PriceRange{Min: 100, Max: 200}
 	var alloc = nar.storageAllocation()
@@ -778,8 +742,6 @@ func Test_newAllocationRequest_storageAllocation(t *testing.T) {
 	require.Equal(t, alloc.Expiration, nar.Expiration)
 	require.Equal(t, alloc.Owner, nar.Owner)
 	require.Equal(t, alloc.OwnerPublicKey, nar.OwnerPublicKey)
-	require.True(t, isEqualStrings(alloc.PreferredBlobbers,
-		nar.PreferredBlobbers))
 	require.Equal(t, alloc.ReadPriceRange, nar.ReadPriceRange)
 	require.Equal(t, alloc.WritePriceRange, nar.WritePriceRange)
 }
@@ -793,7 +755,7 @@ func Test_newAllocationRequest_decode(t *testing.T) {
 	ne.Expiration = 1240
 	ne.Owner = clientID
 	ne.OwnerPublicKey = clientPk
-	ne.PreferredBlobbers = []string{"b1", "b2"}
+	ne.Blobbers = []string{"b1", "b2"}
 	ne.ReadPriceRange = PriceRange{1, 2}
 	ne.WritePriceRange = PriceRange{2, 3}
 	require.NoError(t, nd.decode(mustEncode(t, &ne)))
@@ -1031,7 +993,7 @@ func TestStorageSmartContract_newAllocationRequest(t *testing.T) {
 	nar.Expiration = tx.CreationDate + toSeconds(48*time.Hour)
 	nar.Owner = "" // not set
 	nar.OwnerPublicKey = pubKey
-	nar.PreferredBlobbers = nil                      // not set
+	nar.Blobbers = nil                               // not set
 	nar.MaxChallengeCompletionTime = 200 * time.Hour // max cct
 
 	_, err = ssc.newAllocationRequest(&tx, mustEncode(t, &nar), balances)
@@ -1139,7 +1101,6 @@ func TestStorageSmartContract_newAllocationRequest(t *testing.T) {
 		assert.Zero(t, *aresp.Stats)
 	}
 
-	assert.Nil(t, aresp.PreferredBlobbers)
 	assert.Equal(t, PriceRange{10, 40}, aresp.ReadPriceRange)
 	assert.Equal(t, PriceRange{100, 400}, aresp.WritePriceRange)
 	assert.Equal(t, 15*time.Second, aresp.ChallengeCompletionTime) // max
@@ -1302,7 +1263,7 @@ func createNewTestAllocation(t *testing.T, ssc *StorageSmartContract,
 	nar.Expiration = tx.CreationDate + toSeconds(48*time.Hour)
 	nar.Owner = clientID
 	nar.OwnerPublicKey = pubKey
-	nar.PreferredBlobbers = nil                      // not set
+	nar.Blobbers = nil                               // not set
 	nar.MaxChallengeCompletionTime = 200 * time.Hour //
 
 	nar.Expiration = tx.CreationDate + toSeconds(100*time.Second)
@@ -1808,7 +1769,7 @@ func Test_preferred_blobbers(t *testing.T) {
 			nar = getAllocRequest()
 			pbl = getPreferredBlobbers(blobs, 4)
 		)
-		nar.PreferredBlobbers = pbl
+		nar.Blobbers = pbl
 		var (
 			allocID    = newAlloc(t, nar)
 			alloc, err = ssc.getAllocation(allocID, balances)
@@ -1841,7 +1802,7 @@ func Test_preferred_blobbers(t *testing.T) {
 			pbl = getBlobbersNotExists(4)
 			err error
 		)
-		nar.PreferredBlobbers = pbl
+		nar.Blobbers = pbl
 		tp += 100
 		_, err = nar.callNewAllocReq(t, client.id, 15*x10, ssc, tp, balances)
 		require.Error(t, err) // expected error
@@ -1887,7 +1848,7 @@ func Test_preferred_blobbers(t *testing.T) {
 		}
 
 		nar.Expiration += common.Timestamp(tp)
-		nar.PreferredBlobbers = pbl
+		nar.Blobbers = pbl
 		_, err = nar.callNewAllocReq(t, client.id, 15*x10, ssc, tp, balances)
 		require.Error(t, err) // expected error
 	})

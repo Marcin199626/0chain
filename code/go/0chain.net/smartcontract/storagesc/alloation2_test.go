@@ -58,7 +58,7 @@ func TestNewAllocation(t *testing.T) {
 		ReadPriceRange:             PriceRange{0, zcnToBalance(blobberYaml.readPrice) + 1},
 		WritePriceRange:            PriceRange{0, zcnToBalance(blobberYaml.writePrice) + 1},
 		MaxChallengeCompletionTime: blobberYaml.challengeCompletionTime + 1,
-		PreferredBlobbers:          []string{"mockBaseUrl1", "mockBaseUrl3"},
+		Blobbers:                   []string{"mockBaseUrl1", "mockBaseUrl2", "mockBaseUrl3", "mockBaseUrl4", "mockBaseUrl5", "mockBaseUrl6", "mockBaseUrl7", "mockBaseUrl8"},
 	}
 	var goodBlobber = StorageNode{
 		Capacity: 536870912,
@@ -960,12 +960,9 @@ func testNewAllocation(t *testing.T, request newAllocationRequest, blobbers sort
 	input, err := json.Marshal(request)
 	require.NoError(t, err)
 
-	var blobberList = new(StorageNodes)
-	blobberList.Nodes = blobbers
-	_, err = ctx.InsertTrieNode(ALL_BLOBBERS_KEY, blobberList)
-	require.NoError(t, err)
-
 	for i, blobber := range blobbers {
+		_, err = ctx.InsertTrieNode(blobber.GetKey(ssc.ID), blobber)
+		require.NoError(t, err)
 		var stakePool = newStakePool()
 		stakePool.Pools["paula"] = &delegatePool{}
 		stakePool.Pools["paula"].Balance = state.Balance(stakes[i])

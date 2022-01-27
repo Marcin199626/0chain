@@ -1,10 +1,11 @@
 package storagesc
 
 import (
+	"0chain.net/core/logging"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
+	"go.uber.org/zap"
 	"sort"
 	"strconv"
 	"time"
@@ -171,7 +172,7 @@ type newAllocationRequest struct {
 	Expiration                 common.Timestamp `json:"expiration_date"`
 	Owner                      string           `json:"owner_id"`
 	OwnerPublicKey             string           `json:"owner_public_key"`
-	PreferredBlobbers          []string         `json:"preferred_blobbers"`
+	Blobbers                   []string         `json:"blobbers"`
 	ReadPriceRange             PriceRange       `json:"read_price_range"`
 	WritePriceRange            PriceRange       `json:"write_price_range"`
 	MaxChallengeCompletionTime time.Duration    `json:"max_challenge_completion_time"`
@@ -188,7 +189,6 @@ func (nar *newAllocationRequest) storageAllocation() (sa *StorageAllocation) {
 	sa.Owner = nar.Owner
 	sa.OwnerPublicKey = nar.OwnerPublicKey
 	sa.WritePoolOwners = append(sa.WritePoolOwners, nar.Owner)
-	sa.PreferredBlobbers = nar.PreferredBlobbers
 	sa.ReadPriceRange = nar.ReadPriceRange
 	sa.WritePriceRange = nar.WritePriceRange
 	sa.MaxChallengeCompletionTime = nar.MaxChallengeCompletionTime
@@ -312,16 +312,8 @@ func (sc *StorageSmartContract) newAllocationRequestInternal(
 	mintNewTokens bool,
 	balances chainstate.StateContextI,
 ) (resp string, err error) {
-	var allBlobbersList *StorageNodes
-	allBlobbersList, err = sc.getBlobbersList(balances)
-	if err != nil {
-		return "", common.NewErrorf("allocation_creation_failed",
-			"getting blobber list: %v", err)
-	}
-	if len(allBlobbersList.Nodes) == 0 {
-		return "", common.NewError("allocation_creation_failed",
-			"No Blobbers registered. Failed to create a storage allocation")
-	}
+	var inputBlobbersList = new(StorageNodes)
+	// todo: fetch blobbers based on blobber ids in input
 
 	if t.ClientID == "" {
 		return "", common.NewError("allocation_creation_failed",
@@ -334,6 +326,28 @@ func (sc *StorageSmartContract) newAllocationRequestInternal(
 			"malformed request: %v", err)
 	}
 
+	if len(request.Blobbers) < (request.DataShards + request.ParityShards) {
+		return "", common.NewError("allocation_creation_failed",
+			"Not enough blobbers provided to honor the allocation")
+	}
+
+	// make it parallel
+	for _, b := range request.Blobbers {
+		sn, err := sc.getBlobber(b, balances)
+		if err != nil {
+			logging.Logger.Info("ignoring blobber from input",
+				zap.String("blobber_id", b),
+				zap.Error(err))
+			continue
+		}
+		inputBlobbersList.Nodes = append(inputBlobbersList.Nodes, sn)
+	}
+
+	if len(inputBlobbersList.Nodes) == 0 {
+		return "", common.NewError("allocation_creation_failed",
+			"No Blobbers registered. Failed to create a storage allocation")
+	}
+
 	var sa = request.storageAllocation() // (set fields, including expiration)
 
 	var seed int64
@@ -343,7 +357,7 @@ func (sc *StorageSmartContract) newAllocationRequestInternal(
 	}
 
 	blobberNodes, bSize, err := sc.selectBlobbers(
-		t.CreationDate, *allBlobbersList, sa, seed, balances)
+		t.CreationDate, *inputBlobbersList, sa, seed, balances)
 	if err != nil {
 		return "", common.NewErrorf("allocation_creation_failed", "%v", err)
 	}
@@ -384,7 +398,7 @@ func (sc *StorageSmartContract) newAllocationRequestInternal(
 		return "", common.NewError("allocation_creation_failed", err.Error())
 	}
 
-	err = updateBlobbersInAll(allBlobbersList, blobberNodes, balances)
+	err = updateBlobbersInAll(inputBlobbersList, blobberNodes, balances)
 	if err != nil {
 		return "", common.NewError("allocation_creation_failed", err.Error())
 	}
@@ -425,47 +439,21 @@ func (sc *StorageSmartContract) selectBlobbers(
 	}
 
 	// number of blobbers required
-	var size = sa.DataShards + sa.ParityShards
+	blobbersRequired := sa.DataShards + sa.ParityShards
 	// size of allocation for a blobber
-	var bSize = (sa.Size + int64(size-1)) / int64(size)
-	var list = sa.filterBlobbers(allBlobbersList.Nodes.copy(), creationDate,
+	bSize := (sa.Size + int64(blobbersRequired-1)) / int64(blobbersRequired)
+	filteredBlobbers := sa.filterBlobbers(allBlobbersList.Nodes.copy(), creationDate,
 		bSize, filterHealthyBlobbers(creationDate),
 		sc.filterBlobbersByFreeSpace(creationDate, bSize, balances))
 
-	if len(list) < size {
+	if len(filteredBlobbers) < blobbersRequired {
 		return nil, 0, errors.New("Not enough blobbers to honor the allocation")
 	}
 
 	sa.BlobberDetails = make([]*BlobberAllocation, 0)
 	sa.Stats = &StorageAllocationStats{}
 
-	var blobberNodes []*StorageNode
-	if len(sa.PreferredBlobbers) > 0 {
-		blobberNodes, err = getPreferredBlobbers(sa.PreferredBlobbers, list)
-		if err != nil {
-			return nil, 0, common.NewError("allocation_creation_failed",
-				err.Error())
-		}
-	}
-
-	if len(blobberNodes) < size {
-		if sa.DiverseBlobbers {
-			// removed pre selected blobbers from list
-			for _, preferredBlobber := range blobberNodes {
-				for i, blobber := range list {
-					if blobber.BaseURL == preferredBlobber.BaseURL {
-						list = append(list[:i], list[i+1:]...)
-						break
-					}
-				}
-			}
-			blobberNodes = append(blobberNodes, sa.diversifyBlobbers(list, size-len(blobberNodes))...)
-		} else {
-			blobberNodes = randomizeNodes(list, blobberNodes, size, randomSeed)
-		}
-	}
-
-	return blobberNodes[:size], bSize, nil
+	return filteredBlobbers[:blobbersRequired], bSize, nil
 }
 
 type updateAllocationRequest struct {
@@ -1068,38 +1056,6 @@ func (sc *StorageSmartContract) updateAllocationRequestInternal(
 	}
 
 	return string(alloc.Encode()), nil
-}
-
-func getPreferredBlobbers(preferredBlobbers []string, allBlobbers []*StorageNode) (selectedBlobbers []*StorageNode, err error) {
-	blobberMap := make(map[string]*StorageNode)
-	for _, storageNode := range allBlobbers {
-		blobberMap[storageNode.BaseURL] = storageNode
-	}
-	for _, blobberURL := range preferredBlobbers {
-		selectedBlobber, ok := blobberMap[blobberURL]
-		if !ok {
-			err = errors.New("invalid preferred blobber URL")
-			return
-		}
-		selectedBlobbers = append(selectedBlobbers, selectedBlobber)
-	}
-	return
-}
-
-func randomizeNodes(in []*StorageNode, out []*StorageNode, n int, seed int64) []*StorageNode {
-	nOut := minInt(len(in), n)
-	nOut = maxInt(1, nOut)
-	randGen := rand.New(rand.NewSource(seed))
-	for {
-		i := randGen.Intn(len(in))
-		if !checkExists(in[i], out) {
-			out = append(out, in[i])
-		}
-		if len(out) >= nOut {
-			break
-		}
-	}
-	return out
 }
 
 func minInt(x, y int) int {

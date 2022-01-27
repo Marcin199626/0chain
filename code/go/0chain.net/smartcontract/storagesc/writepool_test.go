@@ -215,7 +215,7 @@ func TestStorageSmartContract_writePoolLock(t *testing.T) {
 
 	balances.balances[client.id] = 200e10
 	var aid, _ = addAllocation(t, ssc, client, 10, int64(toSeconds(time.Hour)),
-		0, balances)
+		4, balances)
 	// lock
 	lr.AllocationID = aid
 	resp, err = ssc.writePoolLock(&tx, mustEncode(t, &lr), balances)
