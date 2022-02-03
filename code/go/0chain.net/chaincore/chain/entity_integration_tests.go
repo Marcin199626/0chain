@@ -1,14 +1,18 @@
+//go:build integration_tests
 // +build integration_tests
 
 package chain
 
 import (
+	"go.uber.org/zap"
+
+	"0chain.net/chaincore/block"
 	"0chain.net/chaincore/node"
 	"0chain.net/chaincore/round"
 	crpc "0chain.net/conductor/conductrpc"
 	"0chain.net/conductor/config"
+	"0chain.net/conductor/config/cases"
 	"0chain.net/core/logging"
-	"go.uber.org/zap"
 )
 
 var myFailingRound int64 // once set, we ignore all restarts for that round
@@ -47,4 +51,34 @@ func (c *Chain) IsRoundGenerator(r round.RoundI, nd *node.Node) bool {
 	}
 
 	return false // is not
+}
+
+func (c *Chain) SetLatestFinalizedBlock(b *block.Block) {
+	nss := isNotifyingSyncState(b)
+	c.setLatestFinalizedBlock(b, nss)
+}
+
+func isNotifyingSyncState(bl *block.Block) bool {
+	if bl == nil || bl.Round == 0 {
+		return false
+	}
+
+	cfg := crpc.Client().State().StateNodesRequestor
+	if cfg == nil || bl.Round != cfg.OnRound {
+		return false
+	}
+
+	mi := createMIByBlock(bl)
+	isReplica0 := !mi.IsGenerator(node.Self.ID) && mi.GetTypeRank(node.Self.ID) == 0
+	return !isReplica0
+}
+
+func createMIByBlock(bl *block.Block) cases.MinerInformer {
+	sChain := GetServerChain()
+	miners := sChain.GetMiners(bl.Round)
+
+	roundI := round.NewRound(bl.Round)
+	roundI.SetRandomSeed(bl.RoundRandomSeed, len(miners.Nodes))
+
+	return cases.NewMinerInformer(roundI, miners, sChain.GetGeneratorsNum())
 }

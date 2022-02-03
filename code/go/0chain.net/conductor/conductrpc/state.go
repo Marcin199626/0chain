@@ -61,6 +61,7 @@ type State struct {
 	HalfNodesDown                         *cases.HalfNodesDown
 	BlockStateChangeRequestor             *cases.BlockStateChangeRequestor
 	MinerNotarisedBlockRequestor          *cases.MinerNotarisedBlockRequestor
+	StateNodesRequestor                   *cases.StateNodesRequestor
 
 	// Blobbers related states
 	StorageTree    *config.Bad // blobber sends bad files/tree responses

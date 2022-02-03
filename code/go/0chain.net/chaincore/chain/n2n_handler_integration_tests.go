@@ -12,6 +12,7 @@ import (
 	"0chain.net/chaincore/block"
 	"0chain.net/chaincore/node"
 	"0chain.net/chaincore/round"
+	"0chain.net/chaincore/state"
 	crpc "0chain.net/conductor/conductrpc"
 	"0chain.net/conductor/conductrpc/stats/middleware"
 	"0chain.net/conductor/config/cases"
@@ -33,7 +34,7 @@ func (c *Chain) BlockStateChangeHandler(ctx context.Context, r *http.Request) (i
 		return c.blockStateChangeHandler(ctx, r)
 	}
 
-	minerInformer := createMinerInformer(r)
+	minerInformer := createMinerInformerFromBlockStateChangeRequest(r)
 	requestorID := r.Header.Get(node.HeaderNodeID)
 
 	cfg.Lock()
@@ -64,7 +65,7 @@ func (c *Chain) BlockStateChangeHandler(ctx context.Context, r *http.Request) (i
 	}
 }
 
-func createMinerInformer(r *http.Request) cases.MinerInformer {
+func createMinerInformerFromBlockStateChangeRequest(r *http.Request) cases.MinerInformer {
 	sChain := GetServerChain()
 	bl, err := sChain.getNotarizedBlock(context.Background(), r.FormValue("round"), r.FormValue("block"))
 	if err != nil {
@@ -135,4 +136,24 @@ func changePartialState(ctx context.Context, r *http.Request) (*block.StateChang
 	prevBSC := block.NewBlockStateChange(prevBlock)
 	prevBSC.Block = bl.Hash
 	return prevBSC, nil
+}
+
+func StateNodesHandler(ctx context.Context, r *http.Request) (interface{}, error) {
+	ns, err := stateNodesHandler(ctx, r)
+	if err != nil {
+		log.Printf("handler err: %v", err) // todo
+		return nil, err
+	}
+
+	createMinerInformerFromStateNodes(ns)
+
+	return ns, nil
+}
+
+func createMinerInformerFromStateNodes(nodes *state.Nodes) cases.MinerInformer {
+	log.Printf("nodes %#v", nodes)
+	for ind, n := range nodes.Nodes {
+		log.Printf("num %d; origin %d, origin tr %#v", ind, n.GetOrigin(), n.GetOriginTracker())
+	}
+	return nil
 }

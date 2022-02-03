@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"sync/atomic"
 	"time"
+
+	"go.uber.org/zap"
 
 	"0chain.net/chaincore/block"
 	"0chain.net/chaincore/config"
@@ -15,7 +18,6 @@ import (
 	"0chain.net/core/common"
 	. "0chain.net/core/logging"
 	"0chain.net/core/util"
-	"go.uber.org/zap"
 )
 
 var UpdateNodes chan int64
@@ -499,7 +501,9 @@ func (c *Chain) SyncLFBStateWorker(ctx context.Context) {
 	}
 }
 
-func (c *Chain) syncRoundStateToStateDB(ctx context.Context, round int64, rootStateHash util.Key) {
+func syncRoundStateToStateDB(ctx context.Context, round int64, rootStateHash util.Key, invalidated bool) {
+	c := GetServerChain()
+
 	Logger.Info("Sync round state from network...")
 	mpt := util.NewMerklePatriciaTrie(c.stateDB, util.Sequence(round), rootStateHash)
 
@@ -525,11 +529,19 @@ func (c *Chain) syncRoundStateToStateDB(ctx context.Context, round int64, rootSt
 		}
 	}
 
+	if round == 29 || round == 30 || round == 31 {
+		log.Printf("syncing 1, r %d, inv %b", round, invalidated)
+	}
+
 	if len(keys) == 0 {
 		Logger.Debug("Found no missing node",
 			zap.Int64("round", round),
 			zap.String("state hash", util.ToHex(rootStateHash)))
 		return
+	}
+
+	if round == 30 || round == 31 {
+		log.Printf("syncing 2, r %d, inv %b", round, invalidated)
 	}
 
 	Logger.Info("Sync round state, found missing nodes",

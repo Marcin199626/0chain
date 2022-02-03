@@ -5,14 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"sort"
 	"sync"
 	"time"
 
-	"0chain.net/smartcontract/dbs/event"
 	"github.com/herumi/bls/ffi/go/bls"
-
 	"go.uber.org/zap"
 
 	"0chain.net/chaincore/block"
@@ -28,6 +27,7 @@ import (
 	"0chain.net/core/encryption"
 	"0chain.net/core/logging"
 	"0chain.net/core/util"
+	"0chain.net/smartcontract/dbs/event"
 	"0chain.net/smartcontract/minersc"
 )
 
@@ -1264,8 +1264,8 @@ func (c *Chain) InitBlockState(b *block.Block) (err error) {
 	return
 }
 
-// SetLatestFinalizedBlock - set the latest finalized block.
-func (c *Chain) SetLatestFinalizedBlock(b *block.Block) {
+// setLatestFinalizedBlock - set the latest finalized block.
+func (c *Chain) setLatestFinalizedBlock(b *block.Block, notifyToSyncState bool) {
 	c.lfbMutex.Lock()
 	c.LatestFinalizedBlock = b
 	if b != nil {
@@ -1276,7 +1276,11 @@ func (c *Chain) SetLatestFinalizedBlock(b *block.Block) {
 		bs := b.GetSummary()
 		c.lfbSummary = bs
 		c.BroadcastLFBTicket(context.Background(), b)
-		go c.notifyToSyncFinalizedRoundState(bs)
+
+		if notifyToSyncState {
+			log.Println("notifying") // todo
+			go c.notifyToSyncFinalizedRoundState(bs)
+		}
 	}
 	c.lfbMutex.Unlock()
 

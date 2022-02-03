@@ -11,10 +11,11 @@ import (
 	"0chain.net/chaincore/node"
 	"0chain.net/core/encryption"
 
+	"go.uber.org/zap"
+
 	"0chain.net/chaincore/block"
 	"0chain.net/core/common"
 	"0chain.net/core/logging"
-	"go.uber.org/zap"
 )
 
 // VerifyTickets verifies tickets aggregately
@@ -153,9 +154,9 @@ func (c *Chain) VerifyRelatedMagicBlockPresence(b *block.Block) (err error) {
 	return // ok, there is
 }
 
-// UpdateBlockNotarization updates the block notarization state,
+// updateBlockNotarization updates the block notarization state,
 // return true if the block reached notarization
-func (c *Chain) UpdateBlockNotarization(b *block.Block) bool {
+func (c *Chain) updateBlockNotarization(b *block.Block) bool {
 	if b.IsBlockNotarized() {
 		return true
 	}

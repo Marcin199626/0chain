@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strconv"
 
+	"go.uber.org/zap"
+
 	"0chain.net/chaincore/block"
 	"0chain.net/chaincore/node"
 	"0chain.net/chaincore/state"
@@ -14,7 +16,6 @@ import (
 	"0chain.net/core/datastore"
 	"0chain.net/core/logging"
 	"0chain.net/core/util"
-	"go.uber.org/zap"
 )
 
 /*SetupNodeHandlers - setup the handlers for the chain */
@@ -84,8 +85,8 @@ func SetupX2XResponders(c *Chain) {
 	http.HandleFunc("/v1/_x2x/block/state_change/get", common.N2NRateLimit(node.ToN2NSendEntityHandler(c.BlockStateChangeHandler)))
 }
 
-//StateNodesHandler - return a list of state nodes
-func StateNodesHandler(ctx context.Context, r *http.Request) (interface{}, error) {
+//stateNodesHandler - return a list of state nodes
+func stateNodesHandler(ctx context.Context, r *http.Request) (*state.Nodes, error) {
 	r.ParseForm() // this is needed as we get multiple values for the same key
 	nodes := r.Form["nodes"]
 	c := GetServerChain()
