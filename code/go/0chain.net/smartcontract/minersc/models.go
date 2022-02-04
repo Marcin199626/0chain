@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"0chain.net/smartcontract"
+	"github.com/vmihailenco/msgpack/v5"
 
 	"0chain.net/chaincore/block"
 	cstate "0chain.net/chaincore/chain/state"
@@ -642,7 +643,7 @@ func (mn *MinerNode) save(balances cstate.StateContextI) error {
 }
 
 func (mn *MinerNode) Encode() []byte {
-	buff, _ := json.Marshal(mn)
+	buff, _ := msgpack.Marshal(mn)
 	return buff
 }
 
@@ -697,7 +698,7 @@ type ZcnTokenPoolWithVCPoolLock struct {
 // Decode decodes the miner node from bytes
 func (mn *MinerNode) Decode(input []byte) error {
 	n := newNodeWithVCPoolLock()
-	if err := json.Unmarshal(input, n); err != nil {
+	if err := msgpack.Unmarshal(input, n); err != nil {
 		return err
 	}
 
@@ -836,16 +837,16 @@ type SimpleNode struct {
 	LastHealthCheck common.Timestamp `json:"last_health_check"`
 
 	// Status will be set either node.NodeStatusActive or node.NodeStatusInactive
-	Status int `json:"-"`
+	Status int `json:"-" msgpack:"-"`
 }
 
 func (smn *SimpleNode) Encode() []byte {
-	buff, _ := json.Marshal(smn)
+	buff, _ := msgpack.Marshal(smn)
 	return buff
 }
 
 func (smn *SimpleNode) Decode(input []byte) error {
-	return json.Unmarshal(input, smn)
+	return msgpack.Unmarshal(input, smn)
 }
 
 func (smn *SimpleNode) Validate() error {
@@ -857,12 +858,12 @@ type MinerNodes struct {
 }
 
 func (mn *MinerNodes) Encode() []byte {
-	buff, _ := json.Marshal(mn)
+	buff, _ := msgpack.Marshal(mn)
 	return buff
 }
 
 func (mn *MinerNodes) Decode(input []byte) error {
-	err := json.Unmarshal(input, mn)
+	err := msgpack.Unmarshal(input, mn)
 	if err != nil {
 		return err
 	}
@@ -926,12 +927,12 @@ type poolStat struct {
 }
 
 func (ps *poolStat) encode() []byte {
-	buff, _ := json.Marshal(ps)
+	buff, _ := msgpack.Marshal(ps)
 	return buff
 }
 
 func (ps *poolStat) decode(input []byte) error {
-	return json.Unmarshal(input, ps)
+	return msgpack.Unmarshal(input, ps)
 }
 
 type delegatePoolStat struct {
@@ -1009,12 +1010,12 @@ func (un *UserNode) deletePool(nodeId, id datastore.Key) error {
 }
 
 func (un *UserNode) Encode() []byte {
-	buff, _ := json.Marshal(un)
+	buff, _ := msgpack.Marshal(un)
 	return buff
 }
 
 func (un *UserNode) Decode(input []byte) error {
-	return json.Unmarshal(input, un)
+	return msgpack.Unmarshal(input, un)
 }
 
 func (un *UserNode) GetKey() datastore.Key {
@@ -1035,12 +1036,12 @@ type deletePool struct {
 }
 
 func (dp *deletePool) Encode() []byte {
-	buff, _ := json.Marshal(dp)
+	buff, _ := msgpack.Marshal(dp)
 	return buff
 }
 
 func (dp *deletePool) Decode(input []byte) error {
-	return json.Unmarshal(input, dp)
+	return msgpack.Unmarshal(input, dp)
 }
 
 type PhaseNode struct {
@@ -1055,12 +1056,12 @@ func (pn *PhaseNode) GetKey() datastore.Key {
 }
 
 func (pn *PhaseNode) Encode() []byte {
-	buff, _ := json.Marshal(pn)
+	buff, _ := msgpack.Marshal(pn)
 	return buff
 }
 
 func (pn *PhaseNode) Decode(input []byte) error {
-	return json.Unmarshal(input, pn)
+	return msgpack.Unmarshal(input, pn)
 }
 
 func HasPool(pools map[string]*sci.DelegatePool, poolID datastore.Key) bool {
@@ -1076,35 +1077,35 @@ func AddPool(pools map[string]*sci.DelegatePool, pool *sci.DelegatePool) error {
 	return nil
 }
 
-func DeletePool(pools map[string]*sci.DelegatePool, poolID datastore.Key) error {
-	if HasPool(pools, poolID) {
-		return common.NewError("can't delete pool", "pool doesn't exist")
-	}
-	delete(pools, poolID)
-	return nil
-}
+//func DeletePool(pools map[string]*sci.DelegatePool, poolID datastore.Key) error {
+//	if HasPool(pools, poolID) {
+//		return common.NewError("can't delete pool", "pool doesn't exist")
+//	}
+//	delete(pools, poolID)
+//	return nil
+//}
 
-func DecodeDelegatePools(pools map[string]*sci.DelegatePool,
-	poolsBytes json.RawMessage, tokenlock tokenpool.TokenLockInterface) error {
-
-	var rawMessagesPools map[string]json.RawMessage
-	err := json.Unmarshal(poolsBytes, &rawMessagesPools)
-	if err != nil {
-		return err
-	}
-	for _, raw := range rawMessagesPools {
-		tempPool := sci.NewDelegatePool()
-		err = tempPool.Decode(raw, tokenlock)
-		if err != nil {
-			return err
-		}
-		err = AddPool(pools, tempPool)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
+//func DecodeDelegatePools(pools map[string]*sci.DelegatePool,
+//	poolsBytes json.RawMessage, tokenlock tokenpool.TokenLockInterface) error {
+//
+//	var rawMessagesPools map[string]json.RawMessage
+//	err := json.Unmarshal(poolsBytes, &rawMessagesPools)
+//	if err != nil {
+//		return err
+//	}
+//	for _, raw := range rawMessagesPools {
+//		tempPool := sci.NewDelegatePool()
+//		err = tempPool.Decode(raw, tokenlock)
+//		if err != nil {
+//			return err
+//		}
+//		err = AddPool(pools, tempPool)
+//		if err != nil {
+//			return err
+//		}
+//	}
+//	return nil
+//}
 
 type DKGMinerNodes struct {
 	MinN     int     `json:"min_n"`
@@ -1212,12 +1213,12 @@ func NewDKGMinerNodes() *DKGMinerNodes {
 }
 
 func (dmn *DKGMinerNodes) Encode() []byte {
-	buff, _ := json.Marshal(dmn)
+	buff, _ := msgpack.Marshal(dmn)
 	return buff
 }
 
 func (dmn *DKGMinerNodes) Decode(input []byte) error {
-	err := json.Unmarshal(input, dmn)
+	err := msgpack.Unmarshal(input, dmn)
 	if err != nil {
 		return err
 	}
