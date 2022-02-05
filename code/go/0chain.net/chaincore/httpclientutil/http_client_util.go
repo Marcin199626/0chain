@@ -19,6 +19,7 @@ import (
 
 	"0chain.net/chaincore/block"
 	"0chain.net/chaincore/node"
+	"0chain.net/chaincore/smartcontract"
 	"0chain.net/chaincore/state"
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
@@ -385,7 +386,7 @@ func MakeSCRestAPICall(ctx context.Context, scAddress string, relativePath strin
 				logging.Logger.Error("SCRestAPI - failed to read body response", zap.String("URL", sharderURL), zap.Any("error", err))
 			}
 			newEntity := reflect.New(entityType).Interface().(util.Serializable)
-			if err := newEntity.Decode(bodyBytes); err != nil {
+			if err := smartcontract.Decode(bodyBytes, newEntity); err != nil {
 				logging.Logger.Error("SCRestAPI - error unmarshalling response", zap.Any("error", err))
 				atomic.AddInt32(&numErrs, 1)
 				errStringC <- sharderURL + ":" + err.Error()
@@ -429,7 +430,7 @@ func MakeSCRestAPICall(ctx context.Context, scAddress string, relativePath strin
 		// choose the first returned entity
 		select {
 		case data := <-respDataC:
-			if err := entity.Decode(data); err != nil {
+			if err := smartcontract.Decode(data, entity); err != nil {
 				logging.Logger.Error("SCRestAPI - decode failed", zap.Error(err))
 				return nil
 			}
@@ -490,19 +491,24 @@ func GetBlockSummaryCall(urls []string, consensus int, magicBlock bool) (*block.
 				continue
 			}
 			bodyBytes, err := ioutil.ReadAll(response.Body)
-			response.Body.Close()
 			if err != nil {
 				logging.Logger.Error("Failed to read body response", zap.String("URL", sharder), zap.Any("error", err))
+				numErrs++
+				errString = errString + sharder + ":" + err.Error()
+				continue
 			}
-			summary.Decode(bodyBytes)
-			logging.Logger.Info("get magic block -- entity", zap.Any("summary", summary))
-			// logging.Logger.Info("get magic block -- entity", zap.Any("magic_block", entity), zap.Any("string of magic block", string(bodyBytes)))
-			if err != nil {
+
+			response.Body.Close()
+
+			if err := smartcontract.Decode(bodyBytes, summary); err != nil {
 				logging.Logger.Error("Error unmarshalling response", zap.Any("error", err))
 				numErrs++
 				errString = errString + sharder + ":" + err.Error()
 				continue
 			}
+
+			logging.Logger.Info("get magic block -- entity", zap.Any("summary", summary))
+			// logging.Logger.Info("get magic block -- entity", zap.Any("magic_block", entity), zap.Any("string of magic block", string(bodyBytes)))
 			retObj = summary
 			numSuccess++
 		}
@@ -574,7 +580,7 @@ func FetchMagicBlockFromSharders(ctx context.Context, sharderURLs []string, numb
 			}
 
 			b := datastore.GetEntityMetadata("block").Instance().(*block.Block)
-			if err := b.Decode(body); err != nil {
+			if err := json.Unmarshal(body, b); err != nil {
 				logging.Logger.Error("fetch_magic_block_from_sharders - decode data failed",
 					zap.String("url", url),
 					zap.Error(err))
@@ -669,7 +675,7 @@ func GetMagicBlockCall(urls []string, magicBlockNumber int64, consensus int) (*b
 			if err != nil {
 				logging.Logger.Error("Failed to read body response", zap.String("URL", sharder), zap.Any("error", err))
 			}
-			err = receivedBlock.Decode(bodyBytes)
+			err = json.Unmarshal(bodyBytes, receivedBlock)
 			if err != nil {
 				logging.Logger.Error("failed to decode block", zap.Any("error", err))
 			}
@@ -710,7 +716,7 @@ func SendSmartContractTxn(txn *Transaction, address string, value, fee int64, sc
 	txn.Value = value
 	txn.Fee = fee
 	txn.TransactionType = TxnTypeSmartContract
-	txnBytes, err := json.Marshal(scData)
+	txnBytes, err := smartcontract.Encode(scData)
 	if err != nil {
 		logging.Logger.Error("Returning error", zap.Error(err))
 		return err

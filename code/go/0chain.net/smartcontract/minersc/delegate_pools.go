@@ -2,6 +2,7 @@ package minersc
 
 import (
 	cstate "0chain.net/chaincore/chain/state"
+	"0chain.net/chaincore/smartcontract"
 	sci "0chain.net/chaincore/smartcontractinterface"
 	"0chain.net/chaincore/state"
 	"0chain.net/chaincore/transaction"
@@ -17,7 +18,7 @@ func (msc *MinerSmartContract) addToDelegatePool(t *transaction.Transaction,
 	resp string, err error) {
 
 	var dp deletePool
-	if err = dp.Decode(inputData); err != nil {
+	if err = smartcontract.Decode(inputData, &dp); err != nil {
 		return "", common.NewErrorf("delegate_pool_add",
 			"decoding request: %v", err)
 	}
@@ -113,7 +114,7 @@ func (msc *MinerSmartContract) deleteFromDelegatePool(
 	balances cstate.StateContextI) (resp string, err error) {
 
 	var dp deletePool
-	if err = dp.Decode(inputData); err != nil {
+	if err = smartcontract.Decode(inputData, &dp); err != nil {
 		return "", common.NewErrorf("delegate_pool_del",
 			"error decoding request: %v", err)
 	}

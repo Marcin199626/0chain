@@ -674,6 +674,27 @@ func newNodeWithVCPoolLock() *nodeWithVCPoolLock {
 	return mn
 }
 
+func (n *nodeWithVCPoolLock) toMinerNode() *MinerNode {
+	mn := &MinerNode{SimpleNode: n.SimpleNode}
+
+	mn.Pending = make(map[string]*sci.DelegatePool, len(n.Pending))
+	for k, pl := range n.Pending {
+		mn.Pending[k] = pl.ToDelegatePool()
+	}
+
+	mn.Active = make(map[string]*sci.DelegatePool, len(n.Active))
+	for k, pl := range n.Active {
+		mn.Active[k] = pl.ToDelegatePool()
+	}
+
+	mn.Deleting = make(map[string]*sci.DelegatePool, len(n.Deleting))
+	for k, pl := range n.Deleting {
+		mn.Deleting[k] = pl.ToDelegatePool()
+	}
+
+	return mn
+}
+
 // DelegatePoolWithVCPoolLock is for decoding delegate pool with ViewChangeLock as the TokenLockInterface
 type DelegatePoolWithVCPoolLock struct {
 	*sci.PoolStats              `json:"stats"`
@@ -702,22 +723,8 @@ func (mn *MinerNode) Decode(input []byte) error {
 		return err
 	}
 
-	mn.SimpleNode = n.SimpleNode
-	mn.Pending = make(map[string]*sci.DelegatePool, len(n.Pending))
-	for k, pl := range n.Pending {
-		mn.Pending[k] = pl.ToDelegatePool()
-	}
-
-	mn.Active = make(map[string]*sci.DelegatePool, len(n.Active))
-	for k, pl := range n.Active {
-		mn.Active[k] = pl.ToDelegatePool()
-	}
-
-	mn.Deleting = make(map[string]*sci.DelegatePool, len(n.Deleting))
-	for k, pl := range n.Deleting {
-		mn.Deleting[k] = pl.ToDelegatePool()
-	}
-
+	nn := n.toMinerNode()
+	*mn = *nn
 	return nil
 }
 
@@ -740,6 +747,18 @@ func (mn *MinerNode) orderedActivePools() (ops []*sci.DelegatePool) {
 		ops = append(ops, mn.Active[key])
 	}
 	return
+}
+
+func (mn *MinerNode) UnmarshalJSON(data []byte) error {
+	n := newNodeWithVCPoolLock()
+	if err := json.Unmarshal(data, n); err != nil {
+		return err
+	}
+
+	nn := n.toMinerNode()
+
+	*mn = *nn
+	return nil
 }
 
 // NodeType used in pools statistic.

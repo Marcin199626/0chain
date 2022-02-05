@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	cstate "0chain.net/chaincore/chain/state"
+	"0chain.net/chaincore/smartcontract"
 	"0chain.net/chaincore/state"
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/common"
@@ -33,8 +34,8 @@ func (msc *MinerSmartContract) AddMiner(t *transaction.Transaction,
 	inputData []byte, gn *GlobalNode, balances cstate.StateContextI) (
 	resp string, err error) {
 
-	var newMiner = NewMinerNode()
-	if err = newMiner.Decode(inputData); err != nil {
+	newMiner := NewMinerNode()
+	if err = smartcontract.Decode(inputData, newMiner); err != nil {
 		return "", common.NewErrorf("add_miner",
 			"decoding request: %v", err)
 	}
@@ -143,8 +144,8 @@ func (msc *MinerSmartContract) DeleteMiner(
 	balances cstate.StateContextI,
 ) (string, error) {
 	var err error
-	var deleteMiner = NewMinerNode()
-	if err = deleteMiner.Decode(inputData); err != nil {
+	deleteMiner := NewMinerNode()
+	if err = smartcontract.Decode(inputData, deleteMiner); err != nil {
 		return "", common.NewErrorf("delete_miner",
 			"decoding request: %v", err)
 	}
@@ -264,8 +265,8 @@ func (msc *MinerSmartContract) UpdateMinerSettings(t *transaction.Transaction,
 	inputData []byte, gn *GlobalNode, balances cstate.StateContextI) (
 	resp string, err error) {
 
-	var update = NewMinerNode()
-	if err = update.Decode(inputData); err != nil {
+	update := NewMinerNode()
+	if err = smartcontract.Decode(inputData, update); err != nil {
 		return "", common.NewErrorf("update_miner_settings",
 			"decoding request: %v", err)
 	}

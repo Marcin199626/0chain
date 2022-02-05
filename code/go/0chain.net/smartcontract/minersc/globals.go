@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	csc "0chain.net/chaincore/smartcontract"
 	"0chain.net/chaincore/smartcontractinterface"
 
 	"0chain.net/core/util"
@@ -531,7 +532,7 @@ func (msc *MinerSmartContract) updateGlobals(
 		return "", err
 	}
 	var changes smartcontract.StringMap
-	if err = changes.Decode(inputData); err != nil {
+	if err = csc.Decode(inputData, changes); err != nil {
 		return "", common.NewError("update_globals", err.Error())
 	}
 

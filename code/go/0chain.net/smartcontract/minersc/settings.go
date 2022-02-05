@@ -1,11 +1,13 @@
 package minersc
 
 import (
-	"0chain.net/chaincore/smartcontractinterface"
 	"encoding/hex"
 	"fmt"
 	"strconv"
 
+	"0chain.net/chaincore/smartcontractinterface"
+
+	csc "0chain.net/chaincore/smartcontract"
 	"0chain.net/smartcontract"
 
 	"0chain.net/chaincore/state"
@@ -237,7 +239,7 @@ func (msc *MinerSmartContract) updateSettings(
 	}
 
 	var changes smartcontract.StringMap
-	if err = changes.Decode(inputData); err != nil {
+	if err = csc.Decode(inputData, changes); err != nil {
 		return "", common.NewError("update_settings", err.Error())
 	}
 

@@ -9,6 +9,7 @@ import (
 	cstate "0chain.net/chaincore/chain/state"
 	"0chain.net/chaincore/config"
 	"0chain.net/chaincore/node"
+	"0chain.net/chaincore/smartcontract"
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/common"
 	"0chain.net/core/logging"
@@ -583,11 +584,12 @@ func (msc *MinerSmartContract) contributeMpk(t *transaction.Transaction,
 	msc.mutexMinerMPK.Lock()
 	defer msc.mutexMinerMPK.Unlock()
 
-	mpk := &block.MPK{ID: t.ClientID}
-	if err := mpk.Decode(inputData); err != nil {
+	mpk := &block.MPK{}
+	if err := smartcontract.Decode(inputData, mpk); err != nil {
 		return "", common.NewErrorf("contribute_mpk_failed",
 			"decoding request: %v", err)
 	}
+	mpk.ID = t.ClientID
 
 	if len(mpk.Mpk) != dmn.T {
 		return "", common.NewErrorf("contribute_mpk_failed",
@@ -663,7 +665,7 @@ func (msc *MinerSmartContract) shareSignsOrShares(t *transaction.Transaction,
 	}
 
 	var sos = block.NewShareOrSigns()
-	if err = sos.Decode(inputData); err != nil {
+	if err = smartcontract.Decode(inputData, sos); err != nil {
 		return "", common.NewErrorf("share_signs_or_shares",
 			"decoding input %v", err)
 	}

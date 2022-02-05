@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	cstate "0chain.net/chaincore/chain/state"
+	"0chain.net/chaincore/smartcontract"
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/common"
 	"0chain.net/core/util"
@@ -17,8 +18,8 @@ func (msc *MinerSmartContract) UpdateSharderSettings(t *transaction.Transaction,
 	inputData []byte, gn *GlobalNode, balances cstate.StateContextI) (
 	resp string, err error) {
 
-	var update = NewMinerNode()
-	if err = update.Decode(inputData); err != nil {
+	update := NewMinerNode()
+	if err = smartcontract.Decode(inputData, update); err != nil {
 		return "", common.NewErrorf("update_sharder_settings",
 			"decoding request: %v", err)
 	}
@@ -66,8 +67,8 @@ func (msc *MinerSmartContract) AddSharder(
 
 	logging.Logger.Info("add_sharder", zap.Any("txn", t))
 
-	var newSharder = NewMinerNode()
-	if err = newSharder.Decode(input); err != nil {
+	newSharder := NewMinerNode()
+	if err = smartcontract.Decode(input, newSharder); err != nil {
 		logging.Logger.Error("Error in decoding the input", zap.Error(err))
 		return "", common.NewErrorf("add_sharder", "decoding request: %v", err)
 	}
@@ -163,8 +164,8 @@ func (msc *MinerSmartContract) DeleteSharder(
 	balances cstate.StateContextI,
 ) (string, error) {
 	var err error
-	var deleteSharder = NewMinerNode()
-	if err = deleteSharder.Decode(inputData); err != nil {
+	deleteSharder := NewMinerNode()
+	if err = smartcontract.Decode(inputData, deleteSharder); err != nil {
 		return "", common.NewErrorf("delete_sharder",
 			"decoding request: %v", err)
 	}
@@ -292,7 +293,7 @@ func (msc *MinerSmartContract) sharderKeep(_ *transaction.Transaction,
 	}
 
 	newSharder := NewMinerNode()
-	err = newSharder.Decode(input)
+	err = smartcontract.Decode(input, newSharder)
 	if err != nil {
 		logging.Logger.Error("Error in decoding the input", zap.Error(err))
 		return "", err
