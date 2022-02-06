@@ -7,6 +7,7 @@ import (
 	"runtime/debug"
 	"sync"
 
+	"0chain.net/chaincore/config"
 	"0chain.net/core/common"
 	"0chain.net/core/logging"
 	"go.uber.org/atomic"
@@ -32,6 +33,7 @@ var (
 	// ErrValueNotPresent - error indicating given path is not present in the
 	// db.
 	ErrValueNotPresent = errors.New("value not present")
+	ErrNodeRebased     = errors.New("node rebased")
 )
 
 // global node db version
@@ -522,24 +524,33 @@ func (lndb *LevelNodeDB) RebaseCurrentDB(ndb NodeDB) {
 }
 
 // Reset is used to free memory when the db is rebase
-func (lndb *LevelNodeDB) Reset() {
+func (lndb *LevelNodeDB) Reset(version int64) bool {
 	lndb.mutex.Lock()
-	Logger.Debug("LevelNodeDB reset", zap.Int64("version", lndb.version))
-	if mdb, ok := lndb.current.(*MemoryNodeDB); ok {
-		mdb.Reset()
-	}
+	defer lndb.mutex.Unlock()
 
 	prev := lndb.prev
 	if prev != nil {
 		if plndb, ok := prev.(*LevelNodeDB); ok {
-			plndb.Reset()
+			if plndb.Reset(version) {
+				lndb.prev = nil
+			}
 		}
 	}
 
-	lndb.current = nil
-	lndb.prev = nil
-	lndb.DeletedNodes = nil
-	lndb.mutex.Unlock()
+	current := lndb.current
+	if current != nil {
+		if int(version-lndb.version) >= 2*config.GetLFBTicketAhead() {
+			if mdb, ok := current.(*MemoryNodeDB); ok {
+				Logger.Debug("LevelNodeDB reset", zap.Int64("version", lndb.version))
+				mdb.Reset()
+				lndb.current = nil
+				lndb.DeletedNodes = nil
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 // MergeState - merge the state from another node db.

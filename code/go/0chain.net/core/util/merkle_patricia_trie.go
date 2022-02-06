@@ -49,7 +49,7 @@ func (mpt *MerklePatriciaTrie) SetNodeDB(ndb NodeDB) {
 	defer mpt.mutex.Unlock()
 
 	if lndb, ok := mpt.db.(*LevelNodeDB); ok {
-		lndb.Reset()
+		lndb.Reset(int64(mpt.Version))
 	}
 
 	mpt.db = ndb
