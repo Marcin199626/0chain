@@ -44,6 +44,7 @@ type StateContextI interface {
 	SetStateContext(st *state.State) error                    // cannot use in smart contracts or REST endpoints
 	GetTrieNode(key datastore.Key) (util.Serializable, error) // Can use in REST endpoints
 	InsertTrieNode(key datastore.Key, node util.Serializable) (datastore.Key, error)
+	InsertTrieNodeSafe(key datastore.Key, node util.Serializable) (datastore.Key, error)
 	DeleteTrieNode(key datastore.Key) (datastore.Key, error)
 	AddTransfer(t *state.Transfer) error
 	AddSignedTransfer(st *state.SignedTransfer)
@@ -293,6 +294,12 @@ func (sc *StateContext) GetTrieNode(key datastore.Key) (util.Serializable, error
 func (sc *StateContext) InsertTrieNode(key datastore.Key, node util.Serializable) (datastore.Key, error) {
 	key_hash := encryption.Hash(key)
 	byteKey, err := sc.state.Insert(util.Path(key_hash), node)
+	return datastore.Key(byteKey), err
+}
+
+func (sc *StateContext) InsertTrieNodeSafe(key datastore.Key, node util.Serializable) (datastore.Key, error) {
+	key_hash := encryption.Hash(key)
+	byteKey, err := sc.state.InsertSafe(util.Path(key_hash), node)
 	return datastore.Key(byteKey), err
 }
 

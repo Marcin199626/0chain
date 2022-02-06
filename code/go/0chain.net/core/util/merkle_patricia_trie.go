@@ -124,6 +124,28 @@ func (mpt *MerklePatriciaTrie) Insert(path Path, value Serializable) (Key, error
 			zap.String("path", string(path)))
 		return mpt.Delete(path)
 	}
+	mpt.mutex.Lock()
+	defer mpt.mutex.Unlock()
+	var err error
+	var newRootHash Key
+	if mpt.root == nil {
+		_, newRootHash, err = mpt.insertLeaf(nil, value, Path(""), path)
+	} else {
+		_, newRootHash, err = mpt.insert(value, mpt.root, Path(""), path)
+	}
+	if err != nil {
+		return nil, err
+	}
+	mpt.setRoot(newRootHash)
+	return newRootHash, nil
+}
+
+func (mpt *MerklePatriciaTrie) InsertSafe(path Path, value Serializable) (Key, error) {
+	if value == nil {
+		Logger.Debug("Insert nil value, delete data on path:",
+			zap.String("path", string(path)))
+		return mpt.Delete(path)
+	}
 	eval := value.Encode()
 	if eval == nil || len(eval) == 0 {
 		Logger.Debug("Insert encoded nil value, delete data on path:",

@@ -33,6 +33,7 @@ type MerklePatriciaTrieI interface {
 
 	GetNodeValue(path Path) (Serializable, error)
 	Insert(path Path, value Serializable) (Key, error)
+	InsertSafe(path Path, value Serializable) (Key, error)
 	Delete(path Path) (Key, error)
 
 	Iterate(ctx context.Context, handler MPTIteratorHandler, visitNodeTypes byte) error

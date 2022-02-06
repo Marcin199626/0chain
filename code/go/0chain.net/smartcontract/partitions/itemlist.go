@@ -29,7 +29,7 @@ func (il *itemList) Decode(b []byte) error {
 }
 
 func (il *itemList) save(balances state.StateContextI) error {
-	_, err := balances.InsertTrieNode(il.Key, il)
+	_, err := balances.InsertTrieNodeSafe(il.Key, il)
 	return err
 }
 

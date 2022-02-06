@@ -507,7 +507,7 @@ func (ms MultiSigSmartContract) putProposal(p *proposal, balances c_state.StateC
 	//	return err
 	//}
 
-	_, err := balances.InsertTrieNode(p.getKey(), p)
+	_, err := balances.InsertTrieNodeSafe(p.getKey(), p)
 	return err
 }
 

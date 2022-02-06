@@ -91,7 +91,7 @@ func (il *validatorItemList) Decode(b []byte) error {
 }
 
 func (il *validatorItemList) save(balances state.StateContextI) error {
-	_, err := balances.InsertTrieNode(il.Key, il)
+	_, err := balances.InsertTrieNodeSafe(il.Key, il)
 	return err
 }
 

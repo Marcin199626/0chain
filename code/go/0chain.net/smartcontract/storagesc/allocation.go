@@ -237,7 +237,7 @@ func updateBlobbersInAll(all *StorageNodes, update []*StorageNode,
 
 	// update the blobbers in all blobbers list
 	for _, b := range update {
-		all.Nodes.update(b)
+		all.Nodes.update(b) // this is not necessary as blobber nodes is pointed to the node in all list
 		// don't replace if blobber has removed from the all blobbers list;
 		// for example, if the blobber has removed, then it shouldn't be
 		// in the all blobbers list
