@@ -47,8 +47,11 @@ func CloneMPT(mpt MerklePatriciaTrieI) *MerklePatriciaTrie {
 func (mpt *MerklePatriciaTrie) SetNodeDB(ndb NodeDB) {
 	mpt.mutex.Lock()
 	defer mpt.mutex.Unlock()
-	// DEBUG: set nil to trigger GC
-	mpt.db = nil
+
+	if lndb, ok := mpt.db.(*LevelNodeDB); ok {
+		lndb.Reset()
+	}
+
 	mpt.db = ndb
 }
 

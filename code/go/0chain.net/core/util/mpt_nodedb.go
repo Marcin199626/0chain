@@ -320,6 +320,12 @@ func (mndb *MemoryNodeDB) Validate(root Node) error {
 	})
 }
 
+func (mndb *MemoryNodeDB) Reset() {
+	mndb.mutex.Lock()
+	mndb.Nodes = nil
+	mndb.mutex.Unlock()
+}
+
 // LevelNodeDB - a multi-level node db. It has a current node db and a previous
 // node db. This is useful to update without changing the previous db.
 type LevelNodeDB struct {
@@ -346,12 +352,12 @@ func NewLevelNodeDB(curNDB NodeDB, prevNDB NodeDB, propagateDeletes bool) *Level
 	return lndb
 }
 
-// GetDBVersion get the current level node db version
-func (lndb *LevelNodeDB) GetDBVersion() int64 {
-	lndb.mutex.RLock()
-	defer lndb.mutex.RUnlock()
-	return lndb.version
-}
+//// GetDBVersion get the current level node db version
+//func (lndb *LevelNodeDB) GetDBVersion() int64 {
+//	lndb.mutex.RLock()
+//	defer lndb.mutex.RUnlock()
+//	return lndb.version
+//}
 
 // GetCurrent returns current node db
 func (lndb *LevelNodeDB) GetCurrent() NodeDB {
@@ -513,6 +519,27 @@ func (lndb *LevelNodeDB) RebaseCurrentDB(ndb NodeDB) {
 	defer lndb.mutex.Unlock()
 	Logger.Debug("LevelNodeDB rebase db")
 	lndb.prev, lndb.current = ndb, ndb
+}
+
+// Reset is used to free memory when the db is rebase
+func (lndb *LevelNodeDB) Reset() {
+	lndb.mutex.Lock()
+	Logger.Debug("LevelNodeDB reset", zap.Int64("version", lndb.version))
+	if mdb, ok := lndb.current.(*MemoryNodeDB); ok {
+		mdb.Reset()
+	}
+
+	prev := lndb.prev
+	if prev != nil {
+		if plndb, ok := prev.(*LevelNodeDB); ok {
+			plndb.Reset()
+		}
+	}
+
+	lndb.current = nil
+	lndb.prev = nil
+	lndb.DeletedNodes = nil
+	lndb.mutex.Unlock()
 }
 
 // MergeState - merge the state from another node db.

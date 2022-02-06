@@ -372,15 +372,12 @@ func (fn *FullNode) Decode(buf []byte) error {
 
 /*Clone - implement interface */
 func (fn *FullNode) Clone() Node {
-	clone := &FullNode{}
+	clone := *fn
 	clone.OriginTrackerNode = fn.OriginTrackerNode.Clone()
-	for idx, ckey := range fn.Children {
-		clone.Children[idx] = ckey // ckey will never be updated inplace and so ok
-	}
 	if fn.HasValue() {
 		clone.SetValue(fn.GetValue())
 	}
-	return clone
+	return &clone
 }
 
 /*GetNodeType - implement interface */
