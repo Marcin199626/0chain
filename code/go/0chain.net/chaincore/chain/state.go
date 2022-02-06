@@ -208,11 +208,11 @@ func (c *Chain) updateState(ctx context.Context, b *block.Block, bState util.Mer
 			sctx.EmitError(err)
 			logging.Logger.Error("Error executing the SC, internal error",
 				zap.Error(err),
+				zap.Duration("time_spent", time.Since(t)),
+				zap.String("txn", scData.FunctionName),
 				zap.String("block", b.Hash),
 				zap.String("begin client state", util.ToHex(startRoot)),
-				zap.String("prev block", b.PrevBlock.Hash),
-				zap.Duration("time_spent", time.Since(t)),
-				zap.Any("txn", txn))
+				zap.String("prev block", b.PrevBlock.Hash))
 			//return original error, to handle upwards
 			return events, err
 		default:
