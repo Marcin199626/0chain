@@ -63,17 +63,17 @@ func (msc *MinerSmartContract) AddSharder(
 	input []byte,
 	gn *GlobalNode,
 	balances cstate.StateContextI,
-) (resp string, err error) {
+) (string, error) {
 
 	logging.Logger.Info("add_sharder", zap.Any("txn", t))
 
 	newSharder := NewMinerNode()
-	if err = smartcontract.Decode(input, newSharder); err != nil {
+	if err := smartcontract.Decode(input, newSharder); err != nil {
 		logging.Logger.Error("Error in decoding the input", zap.Error(err))
 		return "", common.NewErrorf("add_sharder", "decoding request: %v", err)
 	}
 
-	if err = newSharder.Validate(); err != nil {
+	if err := newSharder.Validate(); err != nil {
 		return "", common.NewErrorf("add_sharder", "invalid input: %v", err)
 	}
 
@@ -152,8 +152,7 @@ func (msc *MinerSmartContract) AddSharder(
 	}
 
 	msc.verifyMinerState(balances, "checking all sharders list after insert")
-
-	return string(newSharder.Encode()), nil
+	return smartcontract.EncodeTxnOutput(newSharder), nil
 }
 
 // DeleteSharder Function to handle removing a sharder from the chain

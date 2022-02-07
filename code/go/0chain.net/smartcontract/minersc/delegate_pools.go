@@ -1,6 +1,8 @@
 package minersc
 
 import (
+	"strings"
+
 	cstate "0chain.net/chaincore/chain/state"
 	"0chain.net/chaincore/smartcontract"
 	sci "0chain.net/chaincore/smartcontractinterface"
@@ -104,9 +106,26 @@ func (msc *MinerSmartContract) addToDelegatePool(t *transaction.Transaction,
 		return "", common.NewErrorf("delegate_pool_add",
 			"saving miner node: %v", err)
 	}
+	r := strings.Builder{}
+	v, err := smartcontract.Encode(mn)
+	if err != nil {
+		return "", common.NewErrorf("delegate_pool_add", "encode miner node: %v", err)
+	}
 
-	resp = string(mn.Encode()) + string(transfer.Encode()) + string(un.Encode())
-	return
+	r.Write(v)
+	v, err = smartcontract.Encode(transfer)
+	if err != nil {
+		return "", common.NewErrorf("delegate_pool_add", "encode transfer: %v", err)
+	}
+	r.Write(v)
+
+	v, err = smartcontract.Encode(un)
+	if err != nil {
+		return "", common.NewErrorf("delegate_pool_add", "encode user node: %v", err)
+	}
+	r.Write(v)
+
+	return r.String(), nil
 }
 
 func (msc *MinerSmartContract) deleteFromDelegatePool(

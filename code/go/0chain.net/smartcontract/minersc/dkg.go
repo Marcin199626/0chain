@@ -623,15 +623,19 @@ func (msc *MinerSmartContract) contributeMpk(t *transaction.Transaction,
 		zap.Int64("pn_start_round", pn.StartRound),
 		zap.String("phase", pn.Phase.String()))
 
-	return string(mpk.Encode()), nil
+	v, err := smartcontract.Encode(mpk)
+	if err != nil {
+		return "", common.NewErrorf("contribute_mpk_failed", "%v", err)
+	}
+
+	return string(v), nil
 }
 
 func (msc *MinerSmartContract) shareSignsOrShares(t *transaction.Transaction,
-	inputData []byte, gn *GlobalNode, balances cstate.StateContextI) (
-	resp string, err error) {
+	inputData []byte, gn *GlobalNode, balances cstate.StateContextI) (string, error) {
 
-	var pn *PhaseNode
-	if pn, err = GetPhaseNode(balances); err != nil {
+	pn, err := GetPhaseNode(balances)
+	if err != nil {
 		return "", common.NewErrorf("share_signs_or_shares",
 			"can't get phase node: %v", err)
 	}
@@ -718,7 +722,12 @@ func (msc *MinerSmartContract) shareSignsOrShares(t *transaction.Transaction,
 			"saving DKG miners: %v", err)
 	}
 
-	return string(sos.Encode()), nil
+	v, err := smartcontract.Encode(sos)
+	if err != nil {
+		return "", common.NewErrorf("share_signs_or_shares", "encode sos: %v", err)
+	}
+
+	return string(v), nil
 }
 
 // Wait used to notify SC that DKG summary and magic block data saved by

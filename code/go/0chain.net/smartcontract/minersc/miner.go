@@ -31,16 +31,15 @@ func (msc *MinerSmartContract) doesMinerExist(pkey datastore.Key,
 
 // AddMiner Function to handle miner register
 func (msc *MinerSmartContract) AddMiner(t *transaction.Transaction,
-	inputData []byte, gn *GlobalNode, balances cstate.StateContextI) (
-	resp string, err error) {
+	inputData []byte, gn *GlobalNode, balances cstate.StateContextI) (string, error) {
 
 	newMiner := NewMinerNode()
-	if err = smartcontract.Decode(inputData, newMiner); err != nil {
+	if err := smartcontract.Decode(inputData, newMiner); err != nil {
 		return "", common.NewErrorf("add_miner",
 			"decoding request: %v", err)
 	}
 
-	if err = newMiner.Validate(); err != nil {
+	if err := newMiner.Validate(); err != nil {
 		return "", common.NewErrorf("add_miner", "invalid input: %v", err)
 	}
 
@@ -133,7 +132,7 @@ func (msc *MinerSmartContract) AddMiner(t *transaction.Transaction,
 		logging.Logger.Debug("Add miner already exists", zap.String("ID", newMiner.ID))
 	}
 
-	return string(newMiner.Encode()), nil
+	return smartcontract.EncodeTxnOutput(newMiner), nil
 }
 
 // deleteMiner Function to handle removing a miner from the chain

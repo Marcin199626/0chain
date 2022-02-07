@@ -3,10 +3,12 @@ package minersc
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"0chain.net/chaincore/block"
 	cstate "0chain.net/chaincore/chain/state"
 	"0chain.net/chaincore/config"
+	"0chain.net/chaincore/smartcontract"
 	sci "0chain.net/chaincore/smartcontractinterface"
 	"0chain.net/chaincore/state"
 	"0chain.net/chaincore/transaction"
@@ -317,23 +319,22 @@ func (msc *MinerSmartContract) adjustViewChange(gn *GlobalNode,
 }
 
 func (msc *MinerSmartContract) payFees(t *transaction.Transaction,
-	_ []byte, gn *GlobalNode, balances cstate.StateContextI) (
-	resp string, err error) {
+	_ []byte, gn *GlobalNode, balances cstate.StateContextI) (string, error) {
 
 	if config.DevConfiguration.ViewChange {
 		// TODO: cache the phase node so if when there's no view change happens, we
 		// can avoid unnecessary MPT access
-		var pn *PhaseNode
-		if pn, err = GetPhaseNode(balances); err != nil {
-			return
+		pn, err := GetPhaseNode(balances)
+		if err != nil {
+			return "", err
 		}
 		if err = msc.setPhaseNode(balances, pn, gn, t); err != nil {
 			return "", common.NewErrorf("pay_fees",
 				"error inserting phase node: %v", err)
 		}
 
-		if err = msc.adjustViewChange(gn, balances); err != nil {
-			return // adjusting view change error
+		if err := msc.adjustViewChange(gn, balances); err != nil {
+			return "", err // adjusting view change error
 		}
 	}
 
@@ -353,8 +354,8 @@ func (msc *MinerSmartContract) payFees(t *transaction.Transaction,
 	}
 
 	// the mb generator
-	var mn *MinerNode
-	if mn, err = getMinerNode(mb.MinerID, balances); err != nil {
+	mn, err := getMinerNode(mb.MinerID, balances)
+	if err != nil {
 		return "", common.NewErrorf("pay_fee", "can't get generator '%s': %v",
 			mb.MinerID, err)
 	}
@@ -379,35 +380,37 @@ func (msc *MinerSmartContract) payFees(t *transaction.Transaction,
 		iresp string
 	)
 
+	r := strings.Builder{}
+
 	if mn.numActiveDelegates() == 0 {
 		iresp, err = msc.payNode(charger+restr, chargef+restf, mn, gn, balances)
 		if err != nil {
 			return "", err
 		}
-		resp += iresp
+		r.WriteString(iresp)
 	} else {
 		iresp, err = msc.payNode(charger, chargef, mn, gn, balances)
 		if err != nil {
 			return "", err
 		}
-		resp += iresp
+		r.WriteString(iresp)
 		iresp, err = msc.mintStakeHolders(restr, mn, gn, false, balances)
 		if err != nil {
 			return "", err
 		}
-		resp += iresp
+		r.WriteString(iresp)
 		iresp, err = msc.payStakeHolders(restf, mn, false, balances)
 		if err != nil {
 			return "", err
 		}
-		resp += iresp
+		r.WriteString(iresp)
 	}
 	// pay and mint rest for mb sharders
 	iresp, err = msc.payShardersAndDelegates(sharderf, sharderr, mb, gn, balances)
 	if err != nil {
 		return "", err
 	}
-	resp += iresp
+	r.WriteString(iresp)
 
 	// save node first, for the VC pools work
 	if err = mn.save(balances); err != nil {
@@ -437,7 +440,7 @@ func (msc *MinerSmartContract) payFees(t *transaction.Transaction,
 			"saving global node: %v", err)
 	}
 
-	return resp, nil
+	return r.String(), nil
 }
 
 func (msc *MinerSmartContract) sumFee(b *block.Block,
@@ -478,6 +481,7 @@ func (msc *MinerSmartContract) mintStakeHolders(value state.Balance,
 
 	var totalStaked = node.TotalStaked
 
+	r := strings.Builder{}
 	for _, pool := range node.orderedActivePools() {
 		var (
 			ratio    = float64(pool.Balance) / float64(totalStaked)
@@ -494,16 +498,21 @@ func (msc *MinerSmartContract) mintStakeHolders(value state.Balance,
 
 		var mint = state.NewMint(ADDRESS, pool.DelegateID, userMint)
 		if err = balances.AddMint(mint); err != nil {
-			resp += fmt.Sprintf("pay_fee/minting - adding mint: %v", err)
+			r.WriteString(fmt.Sprintf("pay_fee/minting - adding mint: %v", err))
 			continue
 		}
 		msc.addMint(gn, mint.Amount)
 		pool.AddRewards(userMint)
 
-		resp += string(mint.Encode())
+		v, err := smartcontract.Encode(mint)
+		if err != nil {
+			return "", fmt.Errorf("encode mint failed: %v", err)
+		}
+
+		r.WriteString(string(v))
 	}
 
-	return resp, nil
+	return r.String(), nil
 }
 
 func (msc *MinerSmartContract) payStakeHolders(value state.Balance,
@@ -522,6 +531,7 @@ func (msc *MinerSmartContract) payStakeHolders(value state.Balance,
 
 	var totalStaked = node.TotalStaked
 
+	r := strings.Builder{}
 	for _, pool := range node.orderedActivePools() {
 		var (
 			ratio   = float64(pool.Balance) / float64(totalStaked)
@@ -542,10 +552,15 @@ func (msc *MinerSmartContract) payStakeHolders(value state.Balance,
 		}
 
 		pool.AddRewards(userFee)
-		resp += string(transfer.Encode())
+		v, err := smartcontract.Encode(transfer)
+		if err != nil {
+			return "", fmt.Errorf("encode transfer: %v", err)
+		}
+
+		r.WriteString(string(v))
 	}
 
-	return resp, nil
+	return r.String(), nil
 }
 
 func (msc *MinerSmartContract) getBlockSharders(block *block.Block,
@@ -594,6 +609,7 @@ func (msc *MinerSmartContract) payShardersAndDelegates(fee, mint state.Balance,
 		partm = state.Balance(float64(mint) / float64(len(sharders)))
 	)
 
+	r := strings.Builder{}
 	// part for every sharder
 	for _, sh := range sharders {
 		var sresp string
@@ -607,7 +623,7 @@ func (msc *MinerSmartContract) payShardersAndDelegates(fee, mint state.Balance,
 			if err != nil {
 				return "", err
 			}
-			resp += sresp
+			r.WriteString(sresp)
 
 			sresp, err = msc.payStakeHolders(delegateFees, sh, true, balances)
 			if err != nil {
@@ -615,20 +631,20 @@ func (msc *MinerSmartContract) payShardersAndDelegates(fee, mint state.Balance,
 					"paying block sharder fees: %v", err)
 			}
 
-			resp += sresp
+			r.WriteString(sresp)
 
 			sresp, err = msc.mintStakeHolders(delegateBr, sh, gn, true, balances)
 			if err != nil {
 				return "", common.NewErrorf("pay_fees/mint_sharders",
 					"minting block sharder reward: %v", err)
 			}
-			resp += sresp
+			r.WriteString(sresp)
 		} else {
 			sresp, err = msc.payNode(partm, partf, sh, gn, balances)
 			if err != nil {
 				return "", err
 			}
-			resp += sresp
+			r.WriteString(sresp)
 		}
 
 		if err = sh.save(balances); err != nil {
@@ -637,28 +653,32 @@ func (msc *MinerSmartContract) payShardersAndDelegates(fee, mint state.Balance,
 		}
 	}
 
-	return
+	return r.String(), nil
 }
 
 func (msc *MinerSmartContract) payNode(reward, fee state.Balance, mn *MinerNode,
 	gn *GlobalNode, balances cstate.StateContextI) (
 	resp string, err error) {
-
+	r := strings.Builder{}
 	if reward != 0 {
-		Logger.Info("pay "+mn.NodeType.String()+" service charge",
+		Logger.Info(fmt.Sprintf("pay %s service charge", mn.NodeType.String()),
 			zap.Any("delegate_wallet", mn.DelegateWallet),
 			zap.Any("service_charge_reward", reward))
 
 		mn.Stat.GeneratorRewards += reward
 		var mint = state.NewMint(ADDRESS, mn.DelegateWallet, reward)
 		if err = balances.AddMint(mint); err != nil {
-			resp += fmt.Sprintf("pay_fee/minting - adding mint: %v", err)
+			r.WriteString(fmt.Sprintf("pay_fee/minting - adding mint: %v", err))
 		}
 		msc.addMint(gn, mint.Amount)
-		resp += string(mint.Encode())
+		v, err := smartcontract.Encode(mint)
+		if err != nil {
+			return "", fmt.Errorf("encode mint failed: %v", err)
+		}
+		r.WriteString(string(v))
 	}
 	if fee != 0 {
-		Logger.Info("pay "+mn.NodeType.String()+" service charge",
+		Logger.Info(fmt.Sprintf("pay %s service charge", mn.NodeType.String()),
 			zap.Any("delegate_wallet", mn.DelegateWallet),
 			zap.Any("service_charge_fee", fee))
 
@@ -667,8 +687,12 @@ func (msc *MinerSmartContract) payNode(reward, fee state.Balance, mn *MinerNode,
 		if err = balances.AddTransfer(transfer); err != nil {
 			return "", fmt.Errorf("adding transfer: %v", err)
 		}
-		resp += string(transfer.Encode())
+		v, err := smartcontract.Encode(transfer)
+		if err != nil {
+			return "", fmt.Errorf("encode transfer failed: %v", err)
+		}
+		r.WriteString(string(v))
 	}
 
-	return resp, nil
+	return r.String(), nil
 }

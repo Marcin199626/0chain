@@ -2,14 +2,14 @@ package minersc
 
 import (
 	cstate "0chain.net/chaincore/chain/state"
+	"0chain.net/chaincore/smartcontract"
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/common"
 	"0chain.net/core/util"
 )
 
 func (msc *MinerSmartContract) minerHealthCheck(t *transaction.Transaction,
-	inputData []byte, gn *GlobalNode, balances cstate.StateContextI) (
-	resp string, err error) {
+	inputData []byte, gn *GlobalNode, balances cstate.StateContextI) (string, error) {
 	all, err := getMinersList(balances)
 	if err != nil {
 		return "", common.NewError("miner_health_check_failed",
@@ -53,12 +53,11 @@ func (msc *MinerSmartContract) minerHealthCheck(t *transaction.Transaction,
 			"can't save miner: "+err.Error())
 	}
 
-	return string(existingMiner.Encode()), nil
+	return smartcontract.EncodeTxnOutput(existingMiner), nil
 }
 
 func (msc *MinerSmartContract) sharderHealthCheck(t *transaction.Transaction,
-	inputData []byte, gn *GlobalNode, balances cstate.StateContextI) (
-	resp string, err error) {
+	inputData []byte, gn *GlobalNode, balances cstate.StateContextI) (string, error) {
 	all, err := getAllShardersList(balances)
 	if err != nil {
 		return "", common.NewError("sharder_health_check_failed",
@@ -100,5 +99,5 @@ func (msc *MinerSmartContract) sharderHealthCheck(t *transaction.Transaction,
 			"can't save sharder: "+err.Error())
 	}
 
-	return string(existingSharder.Encode()), nil
+	return smartcontract.EncodeTxnOutput(existingSharder), nil
 }
