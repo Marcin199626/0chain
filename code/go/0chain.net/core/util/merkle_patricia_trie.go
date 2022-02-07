@@ -48,11 +48,11 @@ func (mpt *MerklePatriciaTrie) SetNodeDB(ndb NodeDB) {
 	mpt.mutex.Lock()
 	defer mpt.mutex.Unlock()
 
-	//if lndb, ok := mpt.db.(*LevelNodeDB); ok {
-	//	lndb.RebaseCurrentDB(ndb)
-	//}
+	if lndb, ok := mpt.db.(*LevelNodeDB); ok {
+		lndb.RebaseCurrentDB(ndb)
+	}
 
-	mpt.db = ndb
+	//mpt.db = ndb
 }
 
 /*GetNodeDB - implement interface */
@@ -127,22 +127,29 @@ func (mpt *MerklePatriciaTrie) Insert(path Path, value Serializable) (Key, error
 			zap.String("path", string(path)))
 		return mpt.Delete(path)
 	}
-	eval := value.Encode()
-	if eval == nil || len(eval) == 0 {
+
+	if value == nil {
 		Logger.Debug("Insert encoded nil value, delete data on path:",
 			zap.String("path", string(path)))
 		return mpt.Delete(path)
 	}
 
-	valueCopy := &SecureSerializableValue{eval}
+	//eval := value.Encode()
+	//if eval == nil || len(eval) == 0 {
+	//	Logger.Debug("Insert encoded nil value, delete data on path:",
+	//		zap.String("path", string(path)))
+	//	return mpt.Delete(path)
+	//}
+
+	//valueCopy := &SecureSerializableValue{eval}
 	mpt.mutex.Lock()
 	defer mpt.mutex.Unlock()
 	var err error
 	var newRootHash Key
 	if mpt.root == nil {
-		_, newRootHash, err = mpt.insertLeaf(nil, valueCopy, Path(""), path)
+		_, newRootHash, err = mpt.insertLeaf(nil, value, Path(""), path)
 	} else {
-		_, newRootHash, err = mpt.insert(valueCopy, mpt.root, Path(""), path)
+		_, newRootHash, err = mpt.insert(value, mpt.root, Path(""), path)
 	}
 	if err != nil {
 		return nil, err

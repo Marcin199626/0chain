@@ -111,19 +111,19 @@ func (msc *MinerSmartContract) addToDelegatePool(t *transaction.Transaction,
 	if err != nil {
 		return "", common.NewErrorf("delegate_pool_add", "encode miner node: %v", err)
 	}
+	r.WriteString(string(v))
 
-	r.Write(v)
 	v, err = smartcontract.Encode(transfer)
 	if err != nil {
 		return "", common.NewErrorf("delegate_pool_add", "encode transfer: %v", err)
 	}
-	r.Write(v)
+	r.WriteString(string(v))
 
 	v, err = smartcontract.Encode(un)
 	if err != nil {
 		return "", common.NewErrorf("delegate_pool_add", "encode user node: %v", err)
 	}
-	r.Write(v)
+	r.WriteString(string(v))
 
 	return r.String(), nil
 }
