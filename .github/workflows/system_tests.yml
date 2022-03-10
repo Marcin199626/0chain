@@ -48,8 +48,8 @@ jobs:
     uses: 0chain/actions/.github/workflows/manual_system_tests.yml@feature/debug-docker--image-not-found
     with:
       system_tests_branch: ${{ github.event.inputs.system_tests_branch }}
-      miner_branch: ${{ github.ref_name }}
-      sharder_branch: ${{ github.ref_name }}
+      miner_branch: staging
+      sharder_branch: staging
       zbox_cli_branch: ${{ github.event.inputs.zbox_cli_branch }}
       zwallet_cli_branch: ${{ github.event.inputs.zwallet_cli_branch }}
       blobber_branch: ${{ github.event.inputs.blobber_branch }}
