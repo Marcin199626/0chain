@@ -5,12 +5,14 @@ import (
 	"math/rand"
 	"strconv"
 	"testing"
+	"time"
 
 	"0chain.net/chaincore/mocks"
 
+	"github.com/stretchr/testify/require"
+
 	"0chain.net/chaincore/chain/state"
 	"0chain.net/core/util"
-	"github.com/stretchr/testify/require"
 )
 
 func TestFuzzyRandom(t *testing.T) {
@@ -146,4 +148,68 @@ func TestFuzzyRandom(t *testing.T) {
 	}
 	require.EqualValues(t, count, len(items))
 
+}
+
+func Test_randomSelector_UnmarshalMsg(t *testing.T) {
+	want := mockRandomSelector([]PartitionItemList{mockItemList(2), mockItemList(2)})
+	blob, err := want.MarshalMsg(nil)
+	require.NoError(t, err)
+
+	type args struct {
+		b []byte
+	}
+	tests := []struct {
+		name    string
+		rs      *randomSelector
+		args    args
+		want    *randomSelector
+		wantErr bool
+	}{
+		{
+			name: "UnmarshalMsg_OK",
+			rs:   &randomSelector{},
+			args: args{
+				b: blob,
+			},
+			want: want,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tt.rs.UnmarshalMsg(tt.args.b)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("UnmarshalMsg() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			require.Equal(t, tt.rs, tt.want)
+		})
+	}
+}
+
+func mockRandomSelector(partitions []PartitionItemList) *randomSelector {
+	return &randomSelector{
+		PartitionSize: 50,
+		Partitions:    partitions,
+	}
+}
+
+func mockItemList(len int) *itemList {
+	items := make([]StringItem, len)
+	for idx := range items {
+		items[idx] = mockStringItem()
+	}
+
+	return &itemList{
+		Items:   items,
+		Changed: true,
+	}
+}
+
+func mockStringItem() StringItem {
+	source := rand.NewSource(time.Now().UnixNano())
+	r := rand.New(source)
+
+	return StringItem{
+		Item: fmt.Sprintf("item-%d", r.Int63()),
+	}
 }
