@@ -256,6 +256,14 @@ func (rs *randomSelector) Size(balances state.StateContextI) (int, error) {
 	return (rs.NumPartitions-1)*rs.PartitionSize + lastPartition.length(), nil
 }
 
+func (rs *randomSelector) ComputeLength() (length int) {
+	for _, part := range rs.Partitions {
+		length += part.length()
+	}
+
+	return
+}
+
 func (rs *randomSelector) Save(balances state.StateContextI) error {
 	var numPartitions = 0
 	for i, partition := range rs.Partitions {
@@ -401,4 +409,33 @@ func (rs *randomSelector) GetItem(
 	}
 
 	return nil, errors.New("item not present")
+}
+
+// GetItemAndInfo implements Partition interface.
+func (rs *randomSelector) GetItemAndInfo(itemName string, balances state.StateContextI) (PartitionItem, Info, error) {
+	for i := 0; i < rs.NumPartitions; i++ {
+		part, err := rs.getPartition(i, balances)
+		if err != nil {
+			return nil, nil, err
+		}
+		for itemIdx, item := range part.itemRange(0, part.length()) {
+			if item.Name() == itemName {
+				return item, newInfo(i, itemIdx), nil
+			}
+		}
+	}
+
+	return nil, nil, ItemNotFoundErr
+}
+
+func (rs *randomSelector) Iterate(proccessor ItemProccessor) error {
+	for _, part := range rs.Partitions {
+		for _, item := range part.itemRange(0, part.length()) {
+			if err := proccessor(item); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }

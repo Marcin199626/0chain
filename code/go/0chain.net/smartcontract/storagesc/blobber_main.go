@@ -6,8 +6,11 @@
 package storagesc
 
 import (
+	"errors"
 	"fmt"
 
+	"0chain.net/core/util"
+	"0chain.net/smartcontract/partitions"
 	"0chain.net/smartcontract/stakepool/spenum"
 
 	cstate "0chain.net/chaincore/chain/state"
@@ -16,14 +19,30 @@ import (
 
 // insert new blobber, filling its stake pool
 func (sc *StorageSmartContract) insertBlobber(t *transaction.Transaction,
-	conf *Config, blobber *StorageNode, blobbers *StorageNodes,
+	conf *Config, blobber *StorageNode,
 	balances cstate.StateContextI,
 ) (err error) {
-	// check for duplicates
-	for _, b := range blobbers.Nodes {
-		if b.ID == blobber.ID || b.BaseURL == blobber.BaseURL {
-			return sc.updateBlobber(t, conf, blobber, blobbers, balances)
+
+	blobbers, err := getBlobbersPartitions(balances)
+	if err != nil {
+		return err // todo
+	}
+
+	err = balances.GetTrieNode(blobber.GetKey(sc.ID), &StorageNode{})
+	switch {
+	case err != nil && !errors.Is(err, util.ErrValueNotPresent):
+		return err // todo
+
+	case err == nil:
+		err = sc.updateBlobber(t, conf, blobber, balances)
+		if err != nil {
+			return err // todo
 		}
+		if err = blobbers.Save(balances); err != nil {
+			return err // todo
+		}
+
+		return nil
 	}
 
 	// check params
@@ -46,7 +65,17 @@ func (sc *StorageSmartContract) insertBlobber(t *transaction.Transaction,
 	}
 
 	// update the list
-	blobbers.Nodes.add(blobber)
+	partItem := &partitions.BlobberNode{
+		ID:  blobber.ID,
+		Url: blobber.BaseURL,
+	}
+	if _, err = blobbers.Add(partItem, balances); err != nil {
+		return err // todo
+	}
+	if err = blobbers.Save(balances); err != nil {
+		return err // todo
+	}
+
 	if err := emitAddOrOverwriteBlobber(blobber, sp, balances); err != nil {
 		return fmt.Errorf("emmiting blobber %v: %v", blobber, err)
 	}

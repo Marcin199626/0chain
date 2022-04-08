@@ -31,16 +31,29 @@ type PartitionItemList interface {
 
 type ChangePartitionCallback = func(PartitionItem, int, int, state.StateContextI) error
 
+type ItemProccessor = func(item PartitionItem) error
+
 type Partition interface {
 	util.Serializable
 	Add(PartitionItem, state.StateContextI) (int, error)
 	Remove(PartitionItem, int, state.StateContextI) error
+
+	GetItemAndInfo(itemName string, balances state.StateContextI) (PartitionItem, Info, error)
+
+	//ComputeLength() int
+
+	//Iterate(ItemProccessor) error
 
 	SetCallback(ChangePartitionCallback)
 	Size(state.StateContextI) (int, error)
 	Save(state.StateContextI) error
 	UpdateItem(partIndex int, it PartitionItem, balances state.StateContextI) error
 	GetItem(partIndex int, itemName string, balances state.StateContextI) (PartitionItem, error)
+}
+
+type Info interface {
+	PartitionIndex() int
+	ItemIndex() int
 }
 
 type RandPartition interface {

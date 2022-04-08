@@ -13,10 +13,11 @@ import (
 
 	"0chain.net/smartcontract/dbs/event"
 
+	"github.com/spf13/viper"
+
 	sci "0chain.net/chaincore/smartcontractinterface"
 	"0chain.net/core/encryption"
 	sc "0chain.net/smartcontract/benchmark"
-	"github.com/spf13/viper"
 
 	cstate "0chain.net/chaincore/chain/state"
 	"0chain.net/chaincore/state"
@@ -314,100 +315,102 @@ func AddMockBlobbers(
 	eventDb *event.EventDb,
 	balances cstate.StateContextI,
 ) []*StorageNode {
+	//
+	//numRewardPartitionBlobbers := viper.GetInt(sc.NumRewardPartitionBlobber)
+	//numBlobbers := viper.GetInt(sc.NumBlobbers)
+	//if numRewardPartitionBlobbers > numBlobbers {
+	//	log.Fatal("reward_partition_blobber cannot be greater than total blobbers")
+	//}
+	//
+	//partition, err := getActivePassedBlobbersList(balances, viper.GetInt64(sc.StorageBlockRewardTriggerPeriod))
+	//if err != nil {
+	//	panic(err)
+	//}
+	//
+	//var sscId = StorageSmartContract{
+	//	SmartContract: sci.NewSC(ADDRESS),
+	//}.ID
+	//var blobbers StorageNodes
+	//var rtvBlobbers []*StorageNode
+	//var now = common.Timestamp(time.Now().Unix())
+	//const maxLatitude float64 = 88
+	//const maxLongitude float64 = 175
+	//latitudeStep := 2 * maxLatitude / float64(viper.GetInt(sc.NumBlobbers))
+	//longitudeStep := 2 * maxLongitude / float64(viper.GetInt(sc.NumBlobbers))
+	//for i := 0; i < viper.GetInt(sc.NumBlobbers); i++ {
+	//	id := getMockBlobberId(i)
+	//	blobber := &StorageNode{
+	//		ID:      id,
+	//		BaseURL: id + ".com",
+	//		Geolocation: StorageNodeGeolocation{
+	//			Latitude:  latitudeStep*float64(i) - maxLatitude,
+	//			Longitude: longitudeStep*float64(i) - maxLongitude,
+	//		},
+	//		Terms:             getMockBlobberTerms(),
+	//		Capacity:          viper.GetInt64(sc.StorageMinBlobberCapacity) * 10000,
+	//		Used:              0,
+	//		LastHealthCheck:   now, //common.Timestamp(viper.GetInt64(sc.Now) - 1),
+	//		PublicKey:         "",
+	//		StakePoolSettings: getMockStakePoolSettings(id),
+	//	}
+	//	blobbers.Nodes.add(blobber)
+	//	rtvBlobbers = append(rtvBlobbers, blobber)
+	//	_, err := balances.InsertTrieNode(blobber.GetKey(sscId), blobber)
+	//	if err != nil {
+	//		panic(err)
+	//	}
+	//	if viper.GetBool(sc.EventDbEnabled) {
+	//		blobberDb := event.Blobber{
+	//			BlobberID:               blobber.ID,
+	//			BaseURL:                 blobber.BaseURL,
+	//			Latitude:                blobber.Geolocation.Latitude,
+	//			Longitude:               blobber.Geolocation.Longitude,
+	//			ReadPrice:               int64(blobber.Terms.ReadPrice),
+	//			WritePrice:              int64(blobber.Terms.WritePrice),
+	//			MinLockDemand:           blobber.Terms.MinLockDemand,
+	//			MaxOfferDuration:        blobber.Terms.MaxOfferDuration.String(),
+	//			ChallengeCompletionTime: blobber.Terms.ChallengeCompletionTime.String(),
+	//			Capacity:                blobber.Capacity,
+	//			Used:                    blobber.Used,
+	//			LastHealthCheck:         int64(blobber.LastHealthCheck),
+	//			DelegateWallet:          blobber.StakePoolSettings.DelegateWallet,
+	//			MinStake:                int64(blobber.StakePoolSettings.MaxStake),
+	//			MaxStake:                int64(blobber.StakePoolSettings.MaxStake),
+	//			NumDelegates:            blobber.StakePoolSettings.MaxNumDelegates,
+	//			ServiceCharge:           blobber.StakePoolSettings.ServiceCharge,
+	//		}
+	//		result := eventDb.Store.Get().Create(&blobberDb)
+	//		if result.Error != nil {
+	//			panic(result.Error)
+	//		}
+	//	}
+	//
+	//	if i < numRewardPartitionBlobbers {
+	//		_, err = partition.Add(&partitions.BlobberRewardNode{
+	//			ID:                blobber.ID,
+	//			SuccessChallenges: 10,
+	//			WritePrice:        blobber.Terms.WritePrice,
+	//			ReadPrice:         blobber.Terms.ReadPrice,
+	//			TotalData:         sizeInGB(int64(i * 1000)),
+	//			DataRead:          float64(i) * 0.1,
+	//		}, balances)
+	//		if err != nil {
+	//			panic(err)
+	//		}
+	//	}
+	//}
+	//_, err = balances.InsertTrieNode(ALL_BLOBBERS_KEY, &blobbers)
+	//if err != nil {
+	//	panic(err)
+	//}
+	//
+	//err = partition.Save(balances)
+	//if err != nil {
+	//	panic(err)
+	//}
+	//return rtvBlobbers
 
-	numRewardPartitionBlobbers := viper.GetInt(sc.NumRewardPartitionBlobber)
-	numBlobbers := viper.GetInt(sc.NumBlobbers)
-	if numRewardPartitionBlobbers > numBlobbers {
-		log.Fatal("reward_partition_blobber cannot be greater than total blobbers")
-	}
-
-	partition, err := getActivePassedBlobbersList(balances, viper.GetInt64(sc.StorageBlockRewardTriggerPeriod))
-	if err != nil {
-		panic(err)
-	}
-
-	var sscId = StorageSmartContract{
-		SmartContract: sci.NewSC(ADDRESS),
-	}.ID
-	var blobbers StorageNodes
-	var rtvBlobbers []*StorageNode
-	var now = common.Timestamp(time.Now().Unix())
-	const maxLatitude float64 = 88
-	const maxLongitude float64 = 175
-	latitudeStep := 2 * maxLatitude / float64(viper.GetInt(sc.NumBlobbers))
-	longitudeStep := 2 * maxLongitude / float64(viper.GetInt(sc.NumBlobbers))
-	for i := 0; i < viper.GetInt(sc.NumBlobbers); i++ {
-		id := getMockBlobberId(i)
-		blobber := &StorageNode{
-			ID:      id,
-			BaseURL: id + ".com",
-			Geolocation: StorageNodeGeolocation{
-				Latitude:  latitudeStep*float64(i) - maxLatitude,
-				Longitude: longitudeStep*float64(i) - maxLongitude,
-			},
-			Terms:             getMockBlobberTerms(),
-			Capacity:          viper.GetInt64(sc.StorageMinBlobberCapacity) * 10000,
-			Used:              0,
-			LastHealthCheck:   now, //common.Timestamp(viper.GetInt64(sc.Now) - 1),
-			PublicKey:         "",
-			StakePoolSettings: getMockStakePoolSettings(id),
-		}
-		blobbers.Nodes.add(blobber)
-		rtvBlobbers = append(rtvBlobbers, blobber)
-		_, err := balances.InsertTrieNode(blobber.GetKey(sscId), blobber)
-		if err != nil {
-			panic(err)
-		}
-		if viper.GetBool(sc.EventDbEnabled) {
-			blobberDb := event.Blobber{
-				BlobberID:               blobber.ID,
-				BaseURL:                 blobber.BaseURL,
-				Latitude:                blobber.Geolocation.Latitude,
-				Longitude:               blobber.Geolocation.Longitude,
-				ReadPrice:               int64(blobber.Terms.ReadPrice),
-				WritePrice:              int64(blobber.Terms.WritePrice),
-				MinLockDemand:           blobber.Terms.MinLockDemand,
-				MaxOfferDuration:        blobber.Terms.MaxOfferDuration.String(),
-				ChallengeCompletionTime: blobber.Terms.ChallengeCompletionTime.String(),
-				Capacity:                blobber.Capacity,
-				Used:                    blobber.Used,
-				LastHealthCheck:         int64(blobber.LastHealthCheck),
-				DelegateWallet:          blobber.StakePoolSettings.DelegateWallet,
-				MinStake:                int64(blobber.StakePoolSettings.MaxStake),
-				MaxStake:                int64(blobber.StakePoolSettings.MaxStake),
-				NumDelegates:            blobber.StakePoolSettings.MaxNumDelegates,
-				ServiceCharge:           blobber.StakePoolSettings.ServiceCharge,
-			}
-			result := eventDb.Store.Get().Create(&blobberDb)
-			if result.Error != nil {
-				panic(result.Error)
-			}
-		}
-
-		if i < numRewardPartitionBlobbers {
-			_, err = partition.Add(&partitions.BlobberRewardNode{
-				ID:                blobber.ID,
-				SuccessChallenges: 10,
-				WritePrice:        blobber.Terms.WritePrice,
-				ReadPrice:         blobber.Terms.ReadPrice,
-				TotalData:         sizeInGB(int64(i * 1000)),
-				DataRead:          float64(i) * 0.1,
-			}, balances)
-			if err != nil {
-				panic(err)
-			}
-		}
-	}
-	_, err = balances.InsertTrieNode(ALL_BLOBBERS_KEY, &blobbers)
-	if err != nil {
-		panic(err)
-	}
-
-	err = partition.Save(balances)
-	if err != nil {
-		panic(err)
-	}
-	return rtvBlobbers
+	return nil
 }
 
 func AddMockValidators(
