@@ -419,3 +419,36 @@ func (rs *randomSelector) GetItem(
 
 	return nil, errors.New("item not present")
 }
+
+// GetItemAndInfo implements Partition interface.
+func (rs *randomSelector) GetItemAndInfo(itemName string, balances state.StateContextI) (PartitionItem, ItemInformer, error) {
+	for i := 0; i < rs.NumPartitions; i++ {
+		part, err := rs.getPartition(i, balances)
+		if err != nil {
+			return nil, nil, err
+		}
+		for itemIdx, item := range part.itemRange(0, part.length()) {
+			if item.Name() == itemName {
+				return item, newInfo(i, itemIdx), nil
+			}
+		}
+	}
+
+	return nil, nil, ItemNotFoundErr
+}
+
+// LoadAll implements Partition interface.
+func (rs *randomSelector) LoadAll(balances state.StateContextI) ([]PartitionItem, error) {
+	items := make([]PartitionItem, 0)
+	for i := 0; i < rs.NumPartitions; i++ {
+		part, err := rs.getPartition(i, balances)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range part.itemRange(0, part.length()) {
+			items = append(items, item)
+		}
+	}
+
+	return items, nil
+}

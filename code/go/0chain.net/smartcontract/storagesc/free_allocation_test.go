@@ -9,20 +9,18 @@ import (
 	"testing"
 	"time"
 
-	"0chain.net/smartcontract/dbs/event"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
 	cstate "0chain.net/chaincore/chain/state"
-
-	"0chain.net/core/encryption"
-
 	"0chain.net/chaincore/mocks"
 	sci "0chain.net/chaincore/smartcontractinterface"
 	"0chain.net/chaincore/state"
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/common"
+	"0chain.net/core/encryption"
 	"0chain.net/core/util"
-	"github.com/stretchr/testify/mock"
-	"github.com/stretchr/testify/require"
+	"0chain.net/smartcontract/dbs/event"
 )
 
 func mockSetValue(v interface{}) interface{} {
@@ -226,7 +224,7 @@ func TestFreeAllocationRequest(t *testing.T) {
 			Duration:                   24 * 365 * time.Hour,
 			ReadPoolFraction:           mockReadPoolFraction,
 		}
-		mockAllBlobbers = &StorageNodes{}
+		mockAllBlobbers = []*StorageNode{}
 		conf            = &Config{
 			MinAllocSize:               1027,
 			MinAllocDuration:           5 * time.Minute,
@@ -255,7 +253,7 @@ func TestFreeAllocationRequest(t *testing.T) {
 			},
 			LastHealthCheck: now - blobberHealthTime + 1,
 		}
-		mockAllBlobbers.Nodes.add(mockBlobber)
+		mockAllBlobbers = append(mockAllBlobbers, mockBlobber)
 	}
 
 	type args struct {
@@ -312,24 +310,21 @@ func TestFreeAllocationRequest(t *testing.T) {
 		balances.On("GetTrieNode", scConfigKey(ssc.ID),
 			mockSetValue(conf)).Return(nil)
 
-		balances.On("GetTrieNode", ALL_BLOBBERS_KEY,
-			mockSetValue(mockAllBlobbers)).Return(nil).Once()
-
-		for _, blobber := range mockAllBlobbers.Nodes {
+		for _, blobber := range mockAllBlobbers {
 			balances.On(
 				"GetTrieNode", stakePoolKey(ssc.ID, blobber.ID),
 				mockSetValue(newStakePool())).Return(nil).Twice()
-			balances.On(
-				"InsertTrieNode", blobber.GetKey(ssc.ID), mock.Anything,
-			).Return("", nil).Once()
 			balances.On(
 				"InsertTrieNode", stakePoolKey(ssc.ID, blobber.ID), mock.Anything,
 			).Return("", nil).Once()
 		}
 
-		balances.On(
-			"InsertTrieNode", ALL_BLOBBERS_KEY, mock.Anything,
-		).Return("", nil).Once()
+		setupBalancesMockForStore(balances)
+		addBlobbers(ssc, mockAllBlobbers, balances, t)
+
+		_, err = balances.InsertTrieNode(scConfigKey(ssc.ID), conf)
+		require.NoError(t, err)
+
 		balances.On(
 			"GetTrieNode", writePoolKey(ssc.ID, p.marker.Recipient), mock.Anything,
 		).Return(util.ErrValueNotPresent).Once()
@@ -611,7 +606,7 @@ func TestUpdateFreeStorageRequest(t *testing.T) {
 		MaxChallengeCompletionTime: 1 * time.Hour,
 		Duration:                   24 * 365 * time.Hour,
 	}
-	var mockAllBlobbers = &StorageNodes{}
+	var mockAllBlobbers = []*StorageNode{}
 	var conf = &Config{
 		MinAllocSize:               1027,
 		MinAllocDuration:           5 * time.Minute,
@@ -633,7 +628,7 @@ func TestUpdateFreeStorageRequest(t *testing.T) {
 			},
 			LastHealthCheck: now - blobberHealthTime + 1,
 		}
-		mockAllBlobbers.Nodes.add(mockBlobber)
+		mockAllBlobbers = append(mockAllBlobbers, mockBlobber)
 	}
 
 	type args struct {
@@ -700,9 +695,6 @@ func TestUpdateFreeStorageRequest(t *testing.T) {
 		balances.On("GetTrieNode", scConfigKey(ssc.ID),
 			mockSetValue(conf)).Return(nil).Once()
 
-		balances.On("GetTrieNode", ALL_BLOBBERS_KEY,
-			mockSetValue(mockAllBlobbers)).Return(nil).Once()
-
 		ca := ClientAllocation{
 			ClientID:    p.marker.Recipient,
 			Allocations: &Allocations{},
@@ -719,27 +711,22 @@ func TestUpdateFreeStorageRequest(t *testing.T) {
 			ParityShards: conf.FreeAllocationSettings.ParityShards,
 			TimeUnit:     mockTimeUnit,
 		}
-		for _, blobber := range mockAllBlobbers.Nodes {
-			balances.On(
-				"GetTrieNode", blobber.GetKey(ssc.ID),
-				mockSetValue(blobber)).Return(nil).Once()
-			balances.On(
-				"InsertTrieNode", blobber.GetKey(ssc.ID), mock.Anything,
-			).Return("", nil).Once()
+		for _, blobber := range mockAllBlobbers {
 			sa.BlobberDetails = append(sa.BlobberDetails, &BlobberAllocation{
 				BlobberID:    blobber.ID,
 				AllocationID: p.allocationId,
 			})
 		}
+
+		setupBalancesMockForStore(balances)
+		addBlobbers(ssc, mockAllBlobbers, balances, t)
+
 		balances.On("GetTrieNode", sa.GetKey(ssc.ID),
 			mockSetValue(&sa)).Return(nil).Once()
 		balances.On(
 			"InsertTrieNode", sa.GetKey(ssc.ID), mock.Anything,
 		).Return("", nil).Once()
 
-		balances.On(
-			"InsertTrieNode", ALL_BLOBBERS_KEY, mock.Anything,
-		).Return("", nil).Once()
 		balances.On(
 			"GetTrieNode", writePoolKey(ssc.ID, p.marker.Recipient),
 			mockSetValue(&writePool{})).Return(nil).Once()

@@ -500,31 +500,6 @@ func (bcpl *BlobberChallengePartitionLocation) Decode(input []byte) error {
 	return nil
 }
 
-type StorageNodes struct {
-	Nodes SortedBlobbers
-}
-
-func (sn *StorageNodes) Decode(input []byte) error {
-	err := json.Unmarshal(input, sn)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func (sn *StorageNodes) Encode() []byte {
-	buff, _ := json.Marshal(sn)
-	return buff
-}
-
-func (sn *StorageNodes) GetHash() string {
-	return util.ToHex(sn.GetHashBytes())
-}
-
-func (sn *StorageNodes) GetHashBytes() []byte {
-	return encryption.RawHash(sn.Encode())
-}
-
 type StorageAllocationStats struct {
 	UsedSize                  int64  `json:"used_size"`
 	NumWrites                 int64  `json:"num_of_writes"`

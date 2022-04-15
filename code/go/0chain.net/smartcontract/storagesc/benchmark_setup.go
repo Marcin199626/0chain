@@ -5,22 +5,18 @@ import (
 	"strconv"
 	"time"
 
-	"0chain.net/smartcontract/stakepool/spenum"
-
-	"0chain.net/smartcontract/stakepool"
-
-	"0chain.net/smartcontract/partitions"
-
-	"0chain.net/smartcontract/dbs/event"
-
-	sci "0chain.net/chaincore/smartcontractinterface"
-	"0chain.net/core/encryption"
-	sc "0chain.net/smartcontract/benchmark"
 	"github.com/spf13/viper"
 
 	cstate "0chain.net/chaincore/chain/state"
+	sci "0chain.net/chaincore/smartcontractinterface"
 	"0chain.net/chaincore/state"
 	"0chain.net/core/common"
+	"0chain.net/core/encryption"
+	sc "0chain.net/smartcontract/benchmark"
+	"0chain.net/smartcontract/dbs/event"
+	"0chain.net/smartcontract/partitions"
+	"0chain.net/smartcontract/stakepool"
+	"0chain.net/smartcontract/stakepool/spenum"
 )
 
 const mockMinLockDemand = 1
@@ -364,7 +360,7 @@ func AddMockBlobbers(
 	var sscId = StorageSmartContract{
 		SmartContract: sci.NewSC(ADDRESS),
 	}.ID
-	var blobbers StorageNodes
+	var blobbers []*StorageNode
 	var rtvBlobbers []*StorageNode
 	var now = common.Timestamp(time.Now().Unix())
 	const maxLatitude float64 = 88
@@ -387,7 +383,7 @@ func AddMockBlobbers(
 			PublicKey:         "",
 			StakePoolSettings: getMockStakePoolSettings(id),
 		}
-		blobbers.Nodes.add(blobber)
+		blobbers = append(blobbers, blobber)
 		rtvBlobbers = append(rtvBlobbers, blobber)
 		_, err := balances.InsertTrieNode(blobber.GetKey(sscId), blobber)
 		if err != nil {
@@ -432,10 +428,6 @@ func AddMockBlobbers(
 				panic(err)
 			}
 		}
-	}
-	_, err = balances.InsertTrieNode(ALL_BLOBBERS_KEY, &blobbers)
-	if err != nil {
-		panic(err)
 	}
 
 	err = partition.Save(balances)

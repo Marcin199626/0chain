@@ -109,7 +109,7 @@ func (ssc *StorageSmartContract) GetBlobberHandlerDepreciated(ctx context.Contex
 func (ssc *StorageSmartContract) GetBlobbersHandlerDeprecated(ctx context.Context,
 	params url.Values, balances cstate.StateContextI) (interface{}, error) {
 
-	blobbers, err := ssc.getBlobbersList(balances)
+	blobbers, err := ssc.loadAllBlobbers(balances)
 	if err != nil {
 		return nil, smartcontract.NewErrNoResourceOrErrInternal(err, true, "can't get blobbers list")
 	}
@@ -435,20 +435,18 @@ func (ssc *StorageSmartContract) GetAllocationMinLockHandler(ctx context.Context
 		return "", common.NewErrInternal("can't decode allocation request", err.Error())
 	}
 
-	var allBlobbersList *StorageNodes
-	allBlobbersList, err = ssc.getBlobbersList(balances)
+	size, err := getBlobbersSize(balances)
 	if err != nil {
-		return "", common.NewErrInternal("can't get blobbers list", err.Error())
+		return "", err // todo
 	}
-	if len(allBlobbersList.Nodes) == 0 {
-		return "", common.NewErrInternal("can't get blobbers list",
-			"no blobbers found")
+	if size == 0 {
+		return "", common.NewError("allocation_creation_failed",
+			"No Blobbers registered. Failed to create a storage allocation")
 	}
 
 	var sa = request.storageAllocation()
 
-	blobberNodes, bSize, err := ssc.selectBlobbers(
-		creationDate, *allBlobbersList, sa, int64(creationDate), balances)
+	blobberNodes, bSize, err := ssc.selectBlobbers(creationDate, sa, int64(creationDate), balances)
 	if err != nil {
 		return "", common.NewErrInternal("selecting blobbers", err.Error())
 	}
@@ -865,13 +863,12 @@ func (ssc *StorageSmartContract) GetBlocksHandler(_ context.Context, params url.
 
 func (ssc *StorageSmartContract) GetTotalData(_ context.Context, balances cstate.StateContextI) (int64, error) {
 	if ssc != nil {
-		storageNodes, err := ssc.getBlobbersList(balances)
+		blobbers, err := ssc.loadAllBlobbers(balances)
 		if err != nil {
-			return 0, fmt.Errorf("error from getBlobbersList in GetTotalData: %v", err)
+			return 0, err // todo
 		}
-
 		var totalSavedData int64
-		for _, sn := range storageNodes.Nodes {
+		for _, sn := range blobbers {
 			totalSavedData += sn.SavedData
 		}
 

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"0chain.net/smartcontract/stakepool"
+	"github.com/stretchr/testify/require"
 
 	cstate "0chain.net/chaincore/chain/state"
 	sci "0chain.net/chaincore/smartcontractinterface"
@@ -17,7 +17,7 @@ import (
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
 	"0chain.net/core/util"
-	"github.com/stretchr/testify/require"
+	"0chain.net/smartcontract/stakepool"
 )
 
 type blobberStakes []int64
@@ -74,7 +74,7 @@ func TestNewAllocation(t *testing.T) {
 	var blobbers = new(SortedBlobbers)
 	var stake = int64(scYaml.MaxStake)
 	var writePrice = blobberYaml.writePrice
-	for i := 0; i < request.DataShards+request.ParityShards+4; i++ {
+	for i := 0; i < request.DataShards+request.ParityShards; i++ {
 		var nextBlobber = goodBlobber
 		nextBlobber.ID = strconv.Itoa(i)
 		nextBlobber.Terms.WritePrice = zcnToBalance(writePrice)
@@ -391,10 +391,8 @@ func testCancelAllocation(
 
 	var newScYaml = &Config{}
 	newScYaml, err = ssc.getConfig(ctx, false)
+	require.NoError(t, err)
 
-	require.NoError(t, err)
-	newAllb, err := ssc.getBlobbersList(ctx)
-	require.NoError(t, err)
 	newCp, err := ssc.getChallengePool(sAllocation.ID, ctx)
 	require.NoError(t, err)
 	newWp, err := ssc.getWritePool(sAllocation.Owner, ctx)
@@ -409,7 +407,7 @@ func testCancelAllocation(
 		sps = append(sps, sp)
 	}
 
-	confirmFinalizeAllocation(t, f, *newScYaml, *newAllb, *newCp, *newWp, *newAlloc, wpBalance, sps, ctx)
+	confirmFinalizeAllocation(t, f, *newScYaml, *newCp, *newWp, *newAlloc, wpBalance, sps, ctx)
 	return nil
 }
 
@@ -452,8 +450,6 @@ func testFinalizeAllocation(
 	newScYaml, err = ssc.getConfig(ctx, false)
 
 	require.NoError(t, err)
-	newAllb, err := ssc.getBlobbersList(ctx)
-	require.NoError(t, err)
 	newCp, err := ssc.getChallengePool(sAllocation.ID, ctx)
 	require.NoError(t, err)
 	newWp, err := ssc.getWritePool(sAllocation.Owner, ctx)
@@ -468,7 +464,7 @@ func testFinalizeAllocation(
 		sps = append(sps, sp)
 	}
 
-	confirmFinalizeAllocation(t, f, *newScYaml, *newAllb, *newCp, *newWp, *newAlloc, wpBalance, sps, ctx)
+	confirmFinalizeAllocation(t, f, *newScYaml, *newCp, *newWp, *newAlloc, wpBalance, sps, ctx)
 	return nil
 }
 
@@ -476,7 +472,6 @@ func confirmFinalizeAllocation(
 	t *testing.T,
 	f formulaeFinalizeAllocation,
 	scYaml Config,
-	_ StorageNodes,
 	challengePool challengePool,
 	allocationWritePool writePool,
 	allocation StorageAllocation,
@@ -607,11 +602,6 @@ func setupMocksFinishAllocation(
 	}
 	require.NoError(t, wPool.save(ssc.ID, sAllocation.Owner, ctx))
 	require.NoError(t, awp.saveWritePools(ssc.ID, ctx))
-
-	var blobberList = new(StorageNodes)
-	blobberList.Nodes = blobbers
-	_, err = ctx.InsertTrieNode(ALL_BLOBBERS_KEY, blobberList)
-	require.NoError(t, err)
 
 	require.EqualValues(t, len(blobbers), len(bStakes))
 	for i, blobber := range blobbers {
@@ -820,10 +810,7 @@ func testNewAllocation(t *testing.T, request newAllocationRequest, blobbers Sort
 	input, err := json.Marshal(request)
 	require.NoError(t, err)
 
-	var blobberList = new(StorageNodes)
-	blobberList.Nodes = blobbers
-	_, err = ctx.InsertTrieNode(ALL_BLOBBERS_KEY, blobberList)
-	require.NoError(t, err)
+	addBlobbers(ssc, blobbers, ctx, t)
 
 	for i, blobber := range blobbers {
 		var stakePool = newStakePool()
@@ -843,10 +830,10 @@ func testNewAllocation(t *testing.T, request newAllocationRequest, blobbers Sort
 		return err
 	}
 
-	allBlobbersList, err := ssc.getBlobbersList(ctx)
+	allBlobbersList, err := ssc.loadAllBlobbers(ctx)
 	require.NoError(t, err)
 	var individualBlobbers = SortedBlobbers{}
-	for _, blobber := range allBlobbersList.Nodes {
+	for _, blobber := range allBlobbersList {
 		var b *StorageNode
 		b, err = ssc.getBlobber(blobber.ID, ctx)
 		if err != nil && err.Error() == errValueNotPresent {
@@ -857,7 +844,7 @@ func testNewAllocation(t *testing.T, request newAllocationRequest, blobbers Sort
 	}
 
 	var newStakePools = []*stakePool{}
-	for _, blobber := range allBlobbersList.Nodes {
+	for _, blobber := range allBlobbersList {
 		var sp, err = ssc.getStakePool(blobber.ID, ctx)
 		require.NoError(t, err)
 		newStakePools = append(newStakePools, sp)
@@ -866,7 +853,7 @@ func testNewAllocation(t *testing.T, request newAllocationRequest, blobbers Sort
 	wp, err = ssc.getWritePool(clientId, ctx)
 	require.NoError(t, err)
 
-	confirmTestNewAllocation(t, f, allBlobbersList.Nodes, individualBlobbers, newStakePools, *wp, ctx)
+	confirmTestNewAllocation(t, f, allBlobbersList, individualBlobbers, newStakePools, *wp, ctx)
 
 	return nil
 }

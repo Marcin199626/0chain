@@ -1,14 +1,12 @@
 package partitions
 
 import (
-	"0chain.net/core/common"
 	"math/rand"
 
-	"0chain.net/core/datastore"
-
-	"0chain.net/core/util"
-
 	"0chain.net/chaincore/chain/state"
+	"0chain.net/core/common"
+	"0chain.net/core/datastore"
+	"0chain.net/core/util"
 )
 
 type PartitionItem interface {
@@ -37,11 +35,22 @@ type Partition interface {
 	Add(PartitionItem, state.StateContextI) (int, error)
 	Remove(PartitionItem, int, state.StateContextI) error
 
+	// GetItemAndInfo looks for item with provided item name and returns it with corresponding ItemInformer.
+	GetItemAndInfo(itemName string, balances state.StateContextI) (PartitionItem, ItemInformer, error)
+
+	// LoadAll loads all stored in the provided state.StateContextI partition items
+	LoadAll(balances state.StateContextI) ([]PartitionItem, error)
+
 	SetCallback(ChangePartitionCallback)
 	Size(state.StateContextI) (int, error)
 	Save(state.StateContextI) error
 	UpdateItem(partIndex int, it PartitionItem, balances state.StateContextI) error
 	GetItem(partIndex int, itemName string, balances state.StateContextI) (PartitionItem, error)
+}
+
+type ItemInformer interface {
+	PartitionIndex() int
+	ItemIndex() int
 }
 
 type RandPartition interface {

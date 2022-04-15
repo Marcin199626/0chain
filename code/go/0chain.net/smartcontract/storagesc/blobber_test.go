@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	chainState "0chain.net/chaincore/chain/state"
 	"0chain.net/chaincore/state"
 	"0chain.net/core/common"
 	"0chain.net/core/encryption"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestStorageSmartContract_addBlobber(t *testing.T) {
@@ -40,10 +40,9 @@ func TestStorageSmartContract_addBlobber(t *testing.T) {
 	_, err = updateBlobber(t, b, 0, tp, ssc, balances)
 	require.NoError(t, err)
 
-	var all *StorageNodes
-	all, err = ssc.getBlobbersList(balances)
+	all, err := ssc.loadAllBlobbers(balances)
 	require.NoError(t, err)
-	require.Len(t, all.Nodes, 0)
+	require.Len(t, all, 0)
 
 	// reborn
 	b.Capacity = 2 * GB
@@ -51,11 +50,11 @@ func TestStorageSmartContract_addBlobber(t *testing.T) {
 	_, err = updateBlobber(t, b, 10*x10, tp, ssc, balances)
 	require.NoError(t, err)
 
-	all, err = ssc.getBlobbersList(balances)
+	all, err = ssc.loadAllBlobbers(balances)
 	require.NoError(t, err)
-	require.Len(t, all.Nodes, 1)
-	var ab, ok = all.Nodes.get(b.ID)
-	require.True(t, ok)
+	require.Len(t, all, 1)
+
+	ab := retrieveFromBlobbers(all, b.ID)
 	require.NotNil(t, ab)
 
 	// update (incl. url)
@@ -66,14 +65,24 @@ func TestStorageSmartContract_addBlobber(t *testing.T) {
 	_, err = updateBlobber(t, b, 0, tp, ssc, balances)
 	require.NoError(t, err)
 
-	all, err = ssc.getBlobbersList(balances)
+	all, err = ssc.loadAllBlobbers(balances)
 	require.NoError(t, err)
-	require.Len(t, all.Nodes, 1)
+	require.Len(t, all, 1)
 
-	ab, ok = all.Nodes.get(b.ID)
-	require.True(t, ok)
+	ab = retrieveFromBlobbers(all, b.ID)
+	require.NotNil(t, ab)
 	require.Equal(t, ab.BaseURL, NEW_BASE_URL)
 	require.Equal(t, ab.Capacity, b.Capacity)
+}
+
+func retrieveFromBlobbers(blobbers []*StorageNode, id string) *StorageNode {
+	for _, bl := range blobbers {
+		if bl.ID == id {
+			return bl
+		}
+	}
+
+	return nil
 }
 
 func TestStorageSmartContract_addBlobber_invalidParams(t *testing.T) {
@@ -119,7 +128,7 @@ func TestStorageSmartContract_addBlobber_preventDuplicates(t *testing.T) {
 		ssc            = newTestStorageSC()
 		balances       = newTestBalances(t, false)
 		tp       int64 = 100
-		blobbers *StorageNodes
+		blobbers []*StorageNode
 		err      error
 	)
 
@@ -135,9 +144,9 @@ func TestStorageSmartContract_addBlobber_preventDuplicates(t *testing.T) {
 	_, err = blob.callAddBlobber(t, ssc, tp, balances)
 	require.NoError(t, err)
 
-	blobbers, err = ssc.getBlobbersList(balances)
+	blobbers, err = ssc.loadAllBlobbers(balances)
 	require.NoError(t, err)
-	require.Equal(t, 1, len(blobbers.Nodes))
+	require.Equal(t, 1, len(blobbers))
 }
 
 func TestStorageSmartContract_addBlobber_updateSettings(t *testing.T) {
@@ -145,7 +154,7 @@ func TestStorageSmartContract_addBlobber_updateSettings(t *testing.T) {
 		ssc            = newTestStorageSC()
 		balances       = newTestBalances(t, false)
 		tp       int64 = 100
-		blobbers *StorageNodes
+		blobbers []*StorageNode
 		err      error
 	)
 
@@ -161,9 +170,9 @@ func TestStorageSmartContract_addBlobber_updateSettings(t *testing.T) {
 	_, err = blob.callAddBlobber(t, ssc, tp, balances)
 	require.NoError(t, err)
 
-	blobbers, err = ssc.getBlobbersList(balances)
+	blobbers, err = ssc.loadAllBlobbers(balances)
 	require.NoError(t, err)
-	require.Equal(t, 1, len(blobbers.Nodes))
+	require.Equal(t, 1, len(blobbers))
 }
 
 // - create allocation
@@ -1302,7 +1311,6 @@ func Test_flow_no_challenge_responses_cancel(t *testing.T) {
 // Blobber makes an agreement with itself for a huge amount of
 // very cheap storage, in the hopes of starving other blobbers.
 func Test_blobber_choose_randomization(t *testing.T) {
-
 	var (
 		ssc      = newTestStorageSC()
 		balances = newTestBalances(t, false)
@@ -1372,11 +1380,6 @@ func Test_blobber_choose_randomization(t *testing.T) {
 		return deco.ID
 	}
 
-	// sort blobs, since all blobbers list is sorted
-	sort.Slice(blobs, func(i, j int) bool {
-		return blobs[i].id < blobs[j].id
-	})
-
 	const n = 10 + 10 // n is blobbers required for an allocation (data+parity)
 
 	for i := 0; i < 100; i++ {
@@ -1415,6 +1418,13 @@ func Test_blobber_choose_randomization(t *testing.T) {
 		for _, d := range alloc.BlobberDetails {
 			got = append(got, d.BlobberID)
 		}
+
+		sort.Slice(expected, func(i, j int) bool {
+			return expected[i] > expected[j]
+		})
+		sort.Slice(got, func(i, j int) bool {
+			return got[i] > got[j]
+		})
 
 		require.Equal(t, expected, got)
 	}

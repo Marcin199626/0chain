@@ -7,26 +7,47 @@ package storagesc
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-
-	"0chain.net/smartcontract/dbs"
-	"0chain.net/smartcontract/dbs/event"
-	"0chain.net/smartcontract/stakepool/spenum"
 
 	cstate "0chain.net/chaincore/chain/state"
 	"0chain.net/chaincore/transaction"
+	"0chain.net/core/common"
+	"0chain.net/core/util"
+	"0chain.net/smartcontract/dbs"
+	"0chain.net/smartcontract/dbs/event"
+	"0chain.net/smartcontract/stakepool/spenum"
+)
+
+const (
+	insertBlobberErrCode = "insert_blobber"
 )
 
 // insert new blobber, filling its stake pool
 func (sc *StorageSmartContract) insertBlobber(t *transaction.Transaction,
-	conf *Config, blobber *StorageNode, blobbers *StorageNodes,
+	conf *Config, blobber *StorageNode,
 	balances cstate.StateContextI,
 ) (err error) {
-	// check for duplicates
-	for _, b := range blobbers.Nodes {
-		if b.ID == blobber.ID || b.BaseURL == blobber.BaseURL {
-			return sc.updateBlobber(t, conf, blobber, blobbers, balances)
+
+	storedBlobber := &StorageNode{}
+	err = balances.GetTrieNode(blobber.GetKey(sc.ID), storedBlobber)
+	switch {
+	case err != nil && !errors.Is(err, util.ErrValueNotPresent):
+		return fmt.Errorf("can't insert blobber: %w", err)
+
+	case err == nil:
+		if err = sc.updateBlobber(t, conf, blobber, balances); err != nil {
+			return common.NewErrorf(insertBlobberErrCode, "can't update blobber: %w", err)
 		}
+
+		// if blobber was removed from partitions at the last update and need to add it now
+		if storedBlobber.Capacity <= 0 && blobber.Capacity > 0 {
+			if err := addBlobberToPartitions(blobber, balances); err != nil {
+				return common.NewErrorf(insertBlobberErrCode, "can't update blobber on partitions: %w", err)
+			}
+		}
+
+		return nil
 	}
 
 	// check params
@@ -57,9 +78,8 @@ func (sc *StorageSmartContract) insertBlobber(t *transaction.Transaction,
 	balances.EmitEvent(event.TypeStats, event.TagUpdateBlobber, t.ClientID, string(data))
 
 	// update the list
-	blobbers.Nodes.add(blobber)
-	if err := emitAddOrOverwriteBlobber(blobber, sp, balances); err != nil {
-		return fmt.Errorf("emmiting blobber %v: %v", blobber, err)
+	if err := addBlobberToPartitions(blobber, balances); err != nil {
+		return fmt.Errorf("can't add blobber to partitions: %w", err)
 	}
 
 	// update statistic
