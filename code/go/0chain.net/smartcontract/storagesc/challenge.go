@@ -34,6 +34,9 @@ func (sc *StorageSmartContract) completeChallengeForBlobber(
 	blobberChallengeObj *BlobberChallenge, challengeCompleted *StorageChallenge,
 	challengeResponse *ChallengeResponse, balances c_state.StateContextI) bool {
 
+	Logger.Info("verify_challenge_debug",
+		zap.Any("blobber challenge", *blobberChallengeObj))
+
 	found := false
 	if len(blobberChallengeObj.ChallengeIDs) > 0 {
 		latestOpenChallengeID := blobberChallengeObj.ChallengeIDs[0]
@@ -369,6 +372,8 @@ func (sc *StorageSmartContract) blobberPenalty(t *transaction.Transaction,
 func (sc *StorageSmartContract) verifyChallenge(t *transaction.Transaction,
 	input []byte, balances c_state.StateContextI) (resp string, err error) {
 
+	Logger.Info("verify_challenge_debug",
+		zap.String("client_id", t.ClientID))
 	var challResp ChallengeResponse
 
 	conf, err := sc.getConfig(balances, true)
@@ -474,6 +479,12 @@ func (sc *StorageSmartContract) verifyChallenge(t *transaction.Transaction,
 		fresh = challReq.Created+cct >= t.CreationDate
 	)
 
+	Logger.Info("verify_challenge_debug",
+		zap.Any("pass", pass),
+		zap.Any("fresh", fresh),
+		zap.Any("threshold", threshold),
+		zap.Any("challenge_id", challResp.ID),
+		zap.Any("storage_chall", *challReq))
 	// verification, or partial verification
 	if pass && fresh {
 		blobber, err := sc.getBlobber(t.ClientID, balances)
