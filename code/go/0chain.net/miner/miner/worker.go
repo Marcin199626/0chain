@@ -92,7 +92,7 @@ func TransactionGenerator(c *chain.Chain, workdir string) {
 
 	//Ensure the initial set of transactions succeed or become invalid
 	txnCount := int32(txnMetadataProvider.GetStore().GetCollectionSize(ctx, txnMetadataProvider, collectionName))
-	for txnCount > blockSize {
+	for int32(txnCount) > blockSize {
 		time.Sleep(20 * time.Millisecond)
 		txnCount = int32(txnMetadataProvider.GetStore().GetCollectionSize(ctx, txnMetadataProvider, collectionName))
 	}
@@ -138,7 +138,7 @@ func TransactionGenerator(c *chain.Chain, workdir string) {
 			}
 			wg := sync.WaitGroup{}
 			for i := 0; i < numWorkers; i++ {
-				ctx := datastore.WithAsyncChannel(common.GetRootContext(), transaction.TransactionEntityChannel)
+				//ctx := datastore.WithAsyncChannel(common.GetRootContext(), transaction.TransactionEntityChannel)
 				wg.Add(1)
 				go func() {
 					ctx = memorystore.WithEntityConnection(ctx, txnMetadataProvider)
@@ -236,7 +236,8 @@ func GenerateClients(c *chain.Chain, numClients int, workdir string) {
 	txnMetadataProvider := datastore.GetEntityMetadata("txn")
 	tctx := memorystore.WithEntityConnection(common.GetRootContext(), txnMetadataProvider)
 	defer memorystore.Close(tctx)
-	tctx = datastore.WithAsyncChannel(ctx, transaction.TransactionEntityChannel)
+
+	//tctx = datastore.WithAsyncChannel(ctx, transaction.TransactionEntityChannel)
 
 	for i := 0; i < numClients; i++ {
 		//client side code

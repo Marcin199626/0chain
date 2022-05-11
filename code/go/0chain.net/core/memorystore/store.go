@@ -53,6 +53,30 @@ func (ms *Store) Read(ctx context.Context, key datastore.Key, entity datastore.E
 	return entity.ComputeProperties()
 }
 
+func Write(c *Conn, entity datastore.Entity) error {
+	buffer := encode(entity)
+	redisKey := GetEntityKey(entity)
+	emd := entity.GetEntityMetadata()
+	if err := c.Send("SET", redisKey, buffer); err != nil {
+		return err
+	}
+
+	if err := c.Flush(); err != nil {
+		return err
+	}
+
+	data, err := c.Receive()
+	if err != nil {
+		return err
+	}
+
+	if val, ok := data.(int64); ok && val == 0 {
+		return common.NewError("duplicate_entity", fmt.Sprintf("%v with key %v already exists", emd.GetName(), entity.GetKey()))
+	}
+
+	return nil
+}
+
 /*Write an entity to the datastore */
 func (ms *Store) Write(ctx context.Context, entity datastore.Entity) error {
 	return writeAux(ctx, entity, true)
@@ -428,6 +452,27 @@ func (ms *Store) multiDeleteFromCollectionAux(ctx context.Context, entityMetadat
 	}
 	_, err := con.Receive()
 	return err
+}
+
+func GetCollectionSize(conn *Conn, name string) int64 {
+	if err := conn.Send("ZCARD", name); err != nil {
+		return -1
+	}
+
+	if err := conn.Flush(); err != nil {
+		return -1
+	}
+
+	data, err := conn.Receive()
+	if err != nil {
+		return -1
+	}
+
+	val, ok := data.(int64)
+	if !ok {
+		return -1
+	}
+	return val
 }
 
 func (ms *Store) GetCollectionSize(ctx context.Context, entityMetadata datastore.EntityMetadata, collectionName string) int64 {
