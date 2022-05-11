@@ -138,11 +138,11 @@ func TransactionGenerator(c *chain.Chain, workdir string) {
 			}
 			wg := sync.WaitGroup{}
 			for i := 0; i < numWorkers; i++ {
-				//ctx := datastore.WithAsyncChannel(common.GetRootContext(), transaction.TransactionEntityChannel)
+				ctx := datastore.WithAsyncChannel(common.GetRootContext(), transaction.TransactionEntityChannel)
 				wg.Add(1)
 				go func() {
-					ctx = memorystore.WithEntityConnection(ctx, txnMetadataProvider)
-					defer memorystore.Close(ctx)
+					//ctx = memorystore.WithEntityConnection(ctx, txnMetadataProvider)
+					//defer memorystore.Close(ctx)
 					rs := rand.NewSource(time.Now().UnixNano())
 					prng := rand.New(rs)
 					var txn *transaction.Transaction

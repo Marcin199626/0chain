@@ -82,10 +82,10 @@ func PutTransactionWithoutVerifySig(ctx context.Context, entity datastore.Entity
 		return nil, common.NewError("put transaction error", fmt.Sprintf("client %v doesn't exist, please register", txn.ClientID))
 	}
 
-	//if datastore.DoAsync(ctx, txn) {
-	//	IncTransactionCount()
-	//	return txn, nil
-	//}
+	if datastore.DoAsync(ctx, txn) {
+		IncTransactionCount()
+		return txn, nil
+	}
 
 	err = entity.GetEntityMetadata().GetStore().Write(ctx, txn)
 	if err != nil {
