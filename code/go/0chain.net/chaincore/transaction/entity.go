@@ -374,7 +374,7 @@ func SetupEntity(store datastore.Store) {
 		MaxHoldupTime:    250 * time.Millisecond,
 		NumChunkCreators: 1,
 		ChunkSize:        128,
-		ChunkBufferSize:  64,
+		ChunkBufferSize:  4,
 		NumChunkStorers:  16,
 	}
 	TransactionEntityChannel = memorystore.SetupWorkers(common.GetRootContext(), &chunkingOptions)
