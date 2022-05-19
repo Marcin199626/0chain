@@ -82,11 +82,17 @@ func hasDST(pb, b []*transaction.Transaction) (has bool) {
 func (mc *Chain) UpdateFinalizedBlock(ctx context.Context, b *block.Block) {
 	mc.updateFinalizedBlock(ctx, b)
 
-	if isTestingOnUpdateFinalizedBlock(b.Round) {
+	if isTestingOnUpdateFinalizedBlock(b.Round) || isTestingRoundHasFinalized() {
 		if err := chain.AddRoundInfoResult(mc.GetRound(b.Round), b.Hash); err != nil {
 			log.Panicf("Conductor: error while sending round info result: %v", err)
 		}
 	}
+}
+
+func isTestingRoundHasFinalized() bool {
+	state := crpc.Client().State()
+
+	return state.RoundHasFinalized != nil
 }
 
 func isTestingOnUpdateFinalizedBlock(round int64) bool {
