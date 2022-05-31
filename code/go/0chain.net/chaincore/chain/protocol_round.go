@@ -703,3 +703,8 @@ func GetNodeTypeAndTypeRank(roundNum int64) (nodeType, typeRank int) {
 	}
 	return nodeType, typeRank
 }
+
+const (
+	generator = iota
+	replica
+)

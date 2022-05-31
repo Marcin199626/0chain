@@ -47,11 +47,6 @@ func addResultOnFinalizeRoundIfNeeded(r round.RoundI) {
 	cfg.Resulted = true
 }
 
-const (
-	generator = iota
-	replica
-)
-
 func AddRoundInfoResult(r round.RoundI, finalisedBlockHash string) error {
 	res := roundInfo(r.GetRoundNumber(), finalisedBlockHash)
 	blob, err := res.Encode()
