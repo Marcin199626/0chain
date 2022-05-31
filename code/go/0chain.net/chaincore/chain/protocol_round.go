@@ -674,3 +674,32 @@ func getMagicBlockBrief(b *block.Block) *MagicBlockBrief {
 		ShardersN2NURLs:  b.MagicBlock.Sharders.N2NURLs(),
 	}
 }
+
+// GetNodeTypeAndTypeRank returns node type
+//and type rank.
+// If ranks is not computed, returns -1, -1.
+//
+// 	Explaining type rank example:
+//		Generators num = 2
+// 		len(miners) = 4
+// 		Generator0:	rank = 0; typeRank = 0.
+// 		Generator1:	rank = 1; typeRank = 1.
+// 		Replica0:	rank = 2; typeRank = 0.
+// 		Replica1:	rank = 3; typeRank = 1.
+func GetNodeTypeAndTypeRank(roundNum int64) (nodeType, typeRank int) {
+	sChain := GetServerChain()
+
+	r := sChain.GetRound(roundNum)
+	if !r.IsRanksComputed() {
+		logging.Logger.Warn("Conductor: ranks is not computed yet", zap.Int64("round", roundNum))
+		return -1, -1
+	}
+
+	isGenerator := sChain.IsRoundGenerator(r, node.Self.Node)
+	nodeType, typeRank = generator, r.GetMinerRank(node.Self.Node)
+	if !isGenerator {
+		nodeType = replica
+		typeRank = typeRank - sChain.GetGeneratorsNumOfRound(roundNum)
+	}
+	return nodeType, typeRank
+}
