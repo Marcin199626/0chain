@@ -408,133 +408,133 @@ func (c *Chain) PruneClientStateWorker(ctx context.Context) {
 	}
 }
 
-// SyncLFBStateWorker is a worker for syncing state of latest finalized round block.
-// The worker would not sync state for every LFB as it will cause performance issue,
-// only when it detects BC stuck will the synch process start.
-func (c *Chain) SyncLFBStateWorker(ctx context.Context) {
-	Logger.Debug("SyncLFBStateWorker start")
-	defer func() {
-		Logger.Debug("SyncLFBStateWorker stopped")
-	}()
-
-	lfb := c.GetLatestFinalizedBlock()
-
-	// lastRound records the last latest finalized round info, which will be
-	// updated once a new LFB is found. If its timestamp is not updated for specific
-	// time duration (100s currently), we can say the BC is stuck, and the process for
-	// syncing state will be triggered.
-	var lastRound = struct {
-		round     int64
-		stateHash util.Key
-		tm        time.Time
-	}{
-		round:     lfb.Round,
-		stateHash: lfb.ClientStateHash,
-		tm:        time.Now(),
-	}
-
-	// context and cancel function will be used to cancel a running state syncing process when
-	// the BC starts to move again.
-	var cctx context.Context
-	var cancel context.CancelFunc
-
-	// ticker to check if the BC is stuck
-	tk := time.NewTicker(c.bcStuckCheckInterval)
-	var isSynching bool
-	synchingStopC := make(chan struct{})
-
-	for {
-		select {
-		case bs := <-c.syncLFBStateC:
-			// got a new finalized block summary
-			if bs.Round > lastRound.round && lastRound.round > 0 {
-				Logger.Debug("BC is moving",
-					zap.Int64("current_lfb_round", bs.Round),
-					zap.Int64("last_round", lastRound.round))
-				// call cancel to stop state syncing process in case it was started
-				if cancel != nil && isSynching {
-					cancel()
-					cancel = nil
-				}
-
-				// update to latest finalized round
-				lastRound.round = bs.Round
-				lastRound.stateHash = bs.ClientStateHash
-				lastRound.tm = time.Now()
-				continue
-			}
-		case <-tk.C:
-			// last round could be 0 when miners or sharders start
-			lfb := c.GetLatestFinalizedBlock()
-			if lastRound.round == 0 {
-				lastRound.round = lfb.Round
-				lastRound.stateHash = lfb.ClientStateHash
-				lastRound.tm = time.Now()
-				continue
-			}
-
-			// time since the last finalized round arrived
-			ts := time.Since(lastRound.tm)
-			if ts <= c.bcStuckTimeThreshold {
-				// reset sync state and continue as the BC is not stuck
-				isSynching = false
-				continue
-			}
-
-			// continue if state is syncing
-			if isSynching {
-				continue
-			}
-
-			Logger.Debug("BC may get stuck",
-				zap.Int64("lastRound", lastRound.round),
-				zap.String("state_hash", util.ToHex(lastRound.stateHash)),
-				zap.Any("stuck time", ts))
-
-			cctx, cancel = context.WithCancel(ctx)
-			isSynching = true
-			go func() {
-				defer func() {
-					synchingStopC <- struct{}{}
-				}()
-				if lfb == nil {
-					return
-				}
-
-				c.syncRoundStateToStateDB(cctx, lfb.Round, lfb.ClientStateHash)
-			}()
-		case <-c.syncLFBStateNowC:
-			if isSynching {
-				continue
-			}
-
-			lfb := c.GetLatestFinalizedBlock()
-			Logger.Info("Sync LFB immediately", zap.Int64("lfb round", lfb.Round),
-				zap.Int64("current round", c.GetCurrentRound()))
-
-			cctx, cancel = context.WithCancel(ctx)
-			isSynching = true
-			go func() {
-				defer func() {
-					synchingStopC <- struct{}{}
-				}()
-				if lfb == nil {
-					return
-				}
-
-				c.syncRoundStateToStateDB(cctx, lfb.Round, lfb.ClientStateHash)
-			}()
-		case <-synchingStopC:
-			isSynching = false
-		case <-ctx.Done():
-			Logger.Info("Context done, stop SyncLFBStateWorker")
-			if cancel != nil {
-				cancel()
-			}
-			return
-		}
-	}
-}
+//// SyncLFBStateWorker is a worker for syncing state of latest finalized round block.
+//// The worker would not sync state for every LFB as it will cause performance issue,
+//// only when it detects BC stuck will the sync process start.
+//func (c *Chain) SyncLFBStateWorker(ctx context.Context) {
+//	Logger.Debug("SyncLFBStateWorker start")
+//	defer func() {
+//		Logger.Debug("SyncLFBStateWorker stopped")
+//	}()
+//
+//	lfb := c.GetLatestFinalizedBlock()
+//
+//	// lastRound records the last latest finalized round info, which will be
+//	// updated once a new LFB is found. If its timestamp is not updated for specific
+//	// time duration (100s currently), we can say the BC is stuck, and the process for
+//	// syncing state will be triggered.
+//	var lastRound = struct {
+//		round     int64
+//		stateHash util.Key
+//		tm        time.Time
+//	}{
+//		round:     lfb.Round,
+//		stateHash: lfb.ClientStateHash,
+//		tm:        time.Now(),
+//	}
+//
+//	// context and cancel function will be used to cancel a running state syncing process when
+//	// the BC starts to move again.
+//	var cctx context.Context
+//	var cancel context.CancelFunc
+//
+//	// ticker to check if the BC is stuck
+//	tk := time.NewTicker(c.bcStuckCheckInterval)
+//	var isSynching bool
+//	synchingStopC := make(chan struct{})
+//
+//	for {
+//		select {
+//		case bs := <-c.syncLFBStateC:
+//			// got a new finalized block summary
+//			if bs.Round > lastRound.round && lastRound.round > 0 {
+//				Logger.Debug("BC is moving",
+//					zap.Int64("current_lfb_round", bs.Round),
+//					zap.Int64("last_round", lastRound.round))
+//				// call cancel to stop state syncing process in case it was started
+//				if cancel != nil && isSynching {
+//					cancel()
+//					cancel = nil
+//				}
+//
+//				// update to latest finalized round
+//				lastRound.round = bs.Round
+//				lastRound.stateHash = bs.ClientStateHash
+//				lastRound.tm = time.Now()
+//				continue
+//			}
+//		case <-tk.C:
+//			// last round could be 0 when miners or sharders start
+//			lfb := c.GetLatestFinalizedBlock()
+//			if lastRound.round == 0 {
+//				lastRound.round = lfb.Round
+//				lastRound.stateHash = lfb.ClientStateHash
+//				lastRound.tm = time.Now()
+//				continue
+//			}
+//
+//			// time since the last finalized round arrived
+//			ts := time.Since(lastRound.tm)
+//			if ts <= c.bcStuckTimeThreshold {
+//				// reset sync state and continue as the BC is not stuck
+//				isSynching = false
+//				continue
+//			}
+//
+//			// continue if state is syncing
+//			if isSynching {
+//				continue
+//			}
+//
+//			Logger.Debug("BC may get stuck",
+//				zap.Int64("lastRound", lastRound.round),
+//				zap.String("state_hash", util.ToHex(lastRound.stateHash)),
+//				zap.Any("stuck time", ts))
+//
+//			cctx, cancel = context.WithCancel(ctx)
+//			isSynching = true
+//			go func() {
+//				defer func() {
+//					synchingStopC <- struct{}{}
+//				}()
+//				if lfb == nil {
+//					return
+//				}
+//
+//				c.syncRoundStateToStateDB(cctx, lfb.Round, lfb.ClientStateHash)
+//			}()
+//		case <-c.syncLFBStateNowC:
+//			if isSynching {
+//				continue
+//			}
+//
+//			lfb := c.GetLatestFinalizedBlock()
+//			Logger.Info("Sync LFB immediately", zap.Int64("lfb round", lfb.Round),
+//				zap.Int64("current round", c.GetCurrentRound()))
+//
+//			cctx, cancel = context.WithCancel(ctx)
+//			isSynching = true
+//			go func() {
+//				defer func() {
+//					synchingStopC <- struct{}{}
+//				}()
+//				if lfb == nil {
+//					return
+//				}
+//
+//				c.syncRoundStateToStateDB(cctx, lfb.Round, lfb.ClientStateHash)
+//			}()
+//		case <-synchingStopC:
+//			isSynching = false
+//		case <-ctx.Done():
+//			Logger.Info("Context done, stop SyncLFBStateWorker")
+//			if cancel != nil {
+//				cancel()
+//			}
+//			return
+//		}
+//	}
+//}
 
 func (c *Chain) syncRoundStateToStateDB(ctx context.Context, round int64, rootStateHash util.Key) {
 	Logger.Info("Sync round state from network...")
