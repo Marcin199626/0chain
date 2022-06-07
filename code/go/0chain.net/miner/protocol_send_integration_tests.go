@@ -140,7 +140,7 @@ func (mc *Chain) SendVRFSSpam(ctx context.Context, vrfs *round.VRFShare) {
 	v.Round = r.GetRoundNumber()
 	v.Share, err = mc.GetBlsShare(ctx, r.Round)
 
-	if err := configureRoundHasFinalizedTest(int(currentRoundId)); err != nil {
+	if err := configureRoundHasFinalizedTest(int(vrfs.Round)); err != nil {
 		log.Fatalf("Conductor: RoundHasFinalized: error while configuring test case: %v", err)
 		return
 	}
