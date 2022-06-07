@@ -1,12 +1,10 @@
 package utils
 
 import (
-	"0chain.net/chaincore/chain"
 	"0chain.net/chaincore/node"
 	"0chain.net/core/encryption"
 
 	crpc "0chain.net/conductor/conductrpc"
-	"0chain.net/conductor/config/cases"
 )
 
 var signature = encryption.NewBLS0ChainScheme()
@@ -46,29 +44,4 @@ func Filter(s *crpc.State, ib crpc.IsBy, nodes []*node.Node) (
 		}
 	}
 	return
-}
-
-// IsSpammer checks whether a node is a spammer.
-// A list of spammers names with format "miner-x" are passed, then the x is extracted and compared with the node index.
-func IsSpammer(spammers []cases.NodeTypeTypeRank, roundNum int64) (isSpammer bool) {
-	isSpammer = false
-
-	nodeType, typeRank := chain.GetNodeTypeAndTypeRank(roundNum)
-
-	for _, spammer := range spammers {
-		if spammer.NodeType == nodeType && spammer.TypeRank == typeRank {
-			return true
-		}
-	}
-
-	return
-}
-
-// IsSpamReceiver checks whether a node is the spam receiver set in the round_has_finalized configuration.
-func IsSpamReceiver(state *crpc.State, roundNum int64) (isSpamReceiver bool) {
-	isSpamReceiver = false
-
-	nodeType, typeRank := chain.GetNodeTypeAndTypeRank(roundNum)
-
-	return state.RoundHasFinalizedConfig.SpammingReceiver.NodeType == nodeType && state.RoundHasFinalizedConfig.SpammingReceiver.TypeRank == typeRank
 }
