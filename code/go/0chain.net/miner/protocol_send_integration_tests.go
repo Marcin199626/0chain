@@ -49,10 +49,10 @@ func (mc *Chain) SendVRFShare(ctx context.Context, vrfs *round.VRFShare) {
 		good, bad []*node.Node
 	)
 
-	if state.RoundHasFinalized != nil && state.RoundHasFinalized.Spammers != nil {
-		isSpammer := chain.IsSpammer(state.RoundHasFinalized.Spammers, vrfs.Round)
+	if state.RoundHasFinalizedConfig != nil && state.RoundHasFinalizedConfig.Spammers != nil {
+		isSpammer := chain.IsSpammer(state.RoundHasFinalizedConfig.Spammers, vrfs.Round)
 
-		if isSpammer && vrfs.Round == int64(state.RoundHasFinalized.Round) {
+		if isSpammer && vrfs.Round == int64(state.RoundHasFinalizedConfig.Round) {
 			mc.SendVRFSSpam(ctx, vrfs)
 			return
 		}

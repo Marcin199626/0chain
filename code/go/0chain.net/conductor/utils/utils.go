@@ -70,5 +70,5 @@ func IsSpamReceiver(state *crpc.State, roundNum int64) (isSpamReceiver bool) {
 
 	nodeType, typeRank := chain.GetNodeTypeAndTypeRank(roundNum)
 
-	return state.RoundHasFinalized.SpammingReceiver.NodeType == nodeType && state.RoundHasFinalized.SpammingReceiver.TypeRank == typeRank
+	return state.RoundHasFinalizedConfig.SpammingReceiver.NodeType == nodeType && state.RoundHasFinalizedConfig.SpammingReceiver.TypeRank == typeRank
 }

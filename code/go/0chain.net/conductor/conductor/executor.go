@@ -838,7 +838,7 @@ func (r *Runner) ConfigureTestCase(configurator cases.TestCaseConfigurator) erro
 			state.MissingLFBTicket = cfg
 
 		case *cases.RoundHasFinalized:
-			state.RoundHasFinalized = cfg
+			state.RoundHasFinalizedConfig = cfg
 
 		default:
 			log.Panicf("unknown test case name: %s", configurator.Name())
