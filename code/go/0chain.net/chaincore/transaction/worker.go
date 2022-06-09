@@ -28,6 +28,7 @@ func CleanupWorker(ctx context.Context) {
 	var (
 		invalidHashes = make([]datastore.Entity, 0, 1024)
 		invalidTxns   = make([]datastore.Entity, 0, 1024)
+		ihashes       = make([]string, 0, 1024)
 	)
 	transactionEntityMetadata := datastore.GetEntityMetadata("txn")
 	txn := transactionEntityMetadata.Instance().(*Transaction)
@@ -43,6 +44,7 @@ func CleanupWorker(ctx context.Context) {
 		}
 		if !common.Within(int64(txn.CreationDate), TXN_TIME_TOLERANCE-1) {
 			invalidTxns = append(invalidTxns, txn)
+			ihashes = append(ihashes, txn.Hash)
 		}
 		err := transactionEntityMetadata.GetStore().Read(ctx, txn.Hash, txn)
 		cerr, ok := err.(*common.Error)
@@ -62,7 +64,11 @@ func CleanupWorker(ctx context.Context) {
 				logging.Logger.Error("Error in IterateCollectionAsc", zap.Error(err))
 			}
 			if len(invalidTxns) > 0 {
-				logging.Logger.Info("transactions cleanup", zap.String("collection", collectionName), zap.Int("invalid_count", len(invalidTxns)), zap.Any("collection_size", mstore.GetCollectionSize(cctx, transactionEntityMetadata, collectionName)))
+				logging.Logger.Info("transactions cleanup",
+					zap.String("collection", collectionName),
+					zap.Int("invalid_count", len(invalidTxns)),
+					zap.Strings("invalidTxns", ihashes),
+					zap.Any("collection_size", mstore.GetCollectionSize(cctx, transactionEntityMetadata, collectionName)))
 				err = transactionEntityMetadata.GetStore().MultiDelete(cctx, transactionEntityMetadata, invalidTxns)
 				if err != nil {
 					logging.Logger.Error("Error in MultiDelete", zap.Error(err))
