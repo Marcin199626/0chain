@@ -956,6 +956,9 @@ func (sc *StorageSmartContract) generateChallenge(t *transaction.Transaction,
 		return common.NewErrorf("generate_challenge", "error getting blobber challenge size: %v", err)
 	}
 
+	logging.Logger.Info("generate_challenge_debug",
+		zap.Int("blobber_challenge_size", bcNum))
+
 	if bcNum == 0 {
 		logging.Logger.Info("skipping generate challenge: empty blobber challenge partition")
 		return nil

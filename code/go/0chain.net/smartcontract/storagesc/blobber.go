@@ -1,6 +1,10 @@
 package storagesc
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
+
 	cstate "0chain.net/chaincore/chain/state"
 	"0chain.net/chaincore/currency"
 	"0chain.net/chaincore/transaction"
@@ -11,9 +15,6 @@ import (
 	"0chain.net/smartcontract/dbs"
 	"0chain.net/smartcontract/dbs/event"
 	"0chain.net/smartcontract/stakepool/spenum"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"go.uber.org/zap"
 )
 
@@ -691,6 +692,8 @@ func (sc *StorageSmartContract) commitBlobberConnection(
 			return "", common.NewErrorf("commit_connection_failed", err.Error())
 		}
 	}
+
+	logging.Logger.Info("commit_connection_debug added to blobber partition")
 
 	startRound := GetCurrentRewardRound(balances.GetBlock().Round, conf.BlockReward.TriggerPeriod)
 
