@@ -779,6 +779,14 @@ func txnIterHandlerFunc(mc *Chain,
 	tii *TxnIterInfo) func(context.Context, datastore.CollectionEntity) bool {
 	return func(ctx context.Context, qe datastore.CollectionEntity) bool {
 		tii.count++
+		txn, ok := qe.(*transaction.Transaction)
+		if !ok {
+			logging.Logger.Error("generate block (invalid entity)", zap.Any("entity", qe))
+			return true
+		}
+
+		logging.Logger.Debug("iterate txn pool", zap.String("txn hash", txn.Hash))
+
 		if ctx.Err() != nil {
 			return false
 		}
@@ -790,11 +798,11 @@ func txnIterHandlerFunc(mc *Chain,
 			tii.roundTimeout = true
 			return false
 		}
-		txn, ok := qe.(*transaction.Transaction)
-		if !ok {
-			logging.Logger.Error("generate block (invalid entity)", zap.Any("entity", qe))
-			return true
-		}
+		//txn, ok := qe.(*transaction.Transaction)
+		//if !ok {
+		//	logging.Logger.Error("generate block (invalid entity)", zap.Any("entity", qe))
+		//	return true
+		//}
 
 		if lfb.ClientState == nil {
 			logging.Logger.Warn("generate block, chain is not ready yet",
