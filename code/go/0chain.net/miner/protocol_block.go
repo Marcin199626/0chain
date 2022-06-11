@@ -785,17 +785,21 @@ func txnIterHandlerFunc(mc *Chain,
 			return true
 		}
 
-		logging.Logger.Debug("iterate txn pool", zap.String("txn hash", txn.Hash))
+		logging.Logger.Debug("iterate txn pool", zap.String("txn", txn.Hash))
 
 		if ctx.Err() != nil {
+			logging.Logger.Debug("iterate txn pool - ctx.Err() != nil",
+				zap.String("txn", txn.Hash), zap.Error(ctx.Err()))
 			return false
 		}
 		if mc.GetCurrentRound() > b.Round {
 			tii.roundMismatch = true
+			logging.Logger.Debug("iterate txn pool - round mismatch", zap.String("txn", txn.Hash))
 			return false
 		}
 		if tii.roundTimeoutCount != mc.GetRoundTimeoutCount() {
 			tii.roundTimeout = true
+			logging.Logger.Debug("iterate txn pool - round timeout", zap.String("txn", txn.Hash))
 			return false
 		}
 		//txn, ok := qe.(*transaction.Transaction)
@@ -808,17 +812,21 @@ func txnIterHandlerFunc(mc *Chain,
 			logging.Logger.Warn("generate block, chain is not ready yet",
 				zap.Int64("round", b.Round),
 				zap.String("hash", b.Hash),
+				zap.String("txn", txn.Hash),
 				zap.Error(ErrLFBClientStateNil))
+
 			return false
 		}
 
 		cost, err := mc.EstimateTransactionCost(ctx, lfb, lfb.ClientState, txn)
 		if err != nil {
-			logging.Logger.Debug("Bad transaction cost", zap.Error(err))
+			logging.Logger.Debug("Bad transaction cost",
+				zap.String("txn", txn.Hash),
+				zap.Error(err))
 			return true
 		}
 		if tii.cost+cost >= mc.Config.MaxBlockCost() {
-			logging.Logger.Debug("generate block (too big cost, skipping)")
+			logging.Logger.Debug("generate block (too big cost, skipping)", zap.String("txn", txn.Hash))
 			return true
 		}
 
@@ -833,9 +841,12 @@ func txnIterHandlerFunc(mc *Chain,
 					zap.Int64("byte size", tii.byteSize),
 					zap.Int64("max byte size", mc.Config.MaxByteSize()),
 					zap.Int32("count", tii.count),
+					zap.String("txn", txn.Hash),
 					zap.Int("txns", len(b.Txns)))
 				return false
 			}
+		} else {
+			logging.Logger.Debug("generate block txnProcess false", zap.String("txn", txn.Hash))
 		}
 		return true
 	}
