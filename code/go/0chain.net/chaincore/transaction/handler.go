@@ -46,10 +46,12 @@ func PutTransaction(ctx context.Context, entity datastore.Entity) (interface{}, 
 
 	cli, err := txn.GetClient(ctx)
 	if err != nil || cli == nil || cli.PublicKey == "" {
+		logging.Logger.Debug("put transaction - client is nil", zap.String("hash", txn.Hash))
 		return nil, common.NewError("put transaction error", fmt.Sprintf("client %v doesn't exist, please register", txn.ClientID))
 	}
 	if datastore.DoAsync(ctx, txn) {
 		IncTransactionCount()
+		logging.Logger.Debug("put transaction - do async return", zap.String("hash", txn.Hash))
 		return txn, nil
 	}
 	err = entity.GetEntityMetadata().GetStore().Write(ctx, txn)
