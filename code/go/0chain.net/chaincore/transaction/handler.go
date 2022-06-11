@@ -62,6 +62,8 @@ func PutTransaction(ctx context.Context, entity datastore.Entity) (interface{}, 
 	if err := datastore.GetEntityMetadata("txn").GetStore().Read(ctx, txn.Hash, &txn2); err != nil {
 		logging.Logger.Error("put transaction - get checking, could not find from store",
 			zap.String("hash", txn.Hash), zap.Error(err))
+	} else {
+		logging.Logger.Debug("put transaction - checking success, find from store", zap.String("hash", txn.Hash))
 	}
 
 	IncTransactionCount()
