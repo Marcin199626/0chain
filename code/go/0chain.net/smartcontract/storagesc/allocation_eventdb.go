@@ -1,6 +1,8 @@
 package storagesc
 
 import (
+	"0chain.net/chaincore/transaction"
+	"0chain.net/core/logging"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -276,4 +278,60 @@ func getClientAllocationsFromDb(clientID string, eventDb *event.EventDb, limit c
 	}
 
 	return sas, nil
+}
+
+func (sa *StorageAllocation) ToAllocBlobberTerms() []event.AllocationBlobberTerm {
+	var terms []event.AllocationBlobberTerm
+
+	for _, blobber := range sa.BlobberAllocs {
+		terms = append(terms, event.AllocationBlobberTerm{
+			BlobberID:               blobber.BlobberID,
+			AllocationID:            blobber.AllocationID,
+			ReadPrice:               int64(blobber.Terms.ReadPrice),
+			WritePrice:              int64(blobber.Terms.WritePrice),
+			MinLockDemand:           blobber.Terms.MinLockDemand,
+			MaxOfferDuration:        blobber.Terms.MaxOfferDuration,
+		})
+	}
+
+	return terms
+}
+
+func emitAddOrOverwriteAllocationBlobberTerms(sa *StorageAllocation, balances cstate.StateContextI, t *transaction.Transaction) error {
+	logging.Logger.Info("emitting add or override terms event")
+
+	data, err := json.Marshal(sa.ToAllocBlobberTerms())
+	if err != nil {
+		return fmt.Errorf("failed to marshal allocaction: %v", err)
+	}
+
+	balances.EmitEvent(event.TypeStats, event.TagAddOrOverwriteAllocationBlobberTerm, t.Hash, string(data))
+
+	return nil
+}
+
+func emitUpdateAllocationBlobberTerms(sa *StorageAllocation, balances cstate.StateContextI, t *transaction.Transaction) error {
+	logging.Logger.Info("emitting update terms event")
+
+	data, err := json.Marshal(sa.ToAllocBlobberTerms())
+	if err != nil {
+		return fmt.Errorf("marshalling update: %v", err)
+	}
+
+	balances.EmitEvent(event.TypeStats, event.TagUpdateAllocationBlobberTerm, t.Hash, string(data))
+
+	return nil
+}
+
+func emitDeleteAllocationBlobberTerms(sa *StorageAllocation, balances cstate.StateContextI, t *transaction.Transaction) error {
+	logging.Logger.Info("emitting delete terms event")
+
+	data, err := json.Marshal(sa.ToAllocBlobberTerms())
+	if err != nil {
+		return fmt.Errorf("marshalling update: %v", err)
+	}
+
+	balances.EmitEvent(event.TypeStats, event.TagDeleteAllocationBlobberTerm, t.Hash, string(data))
+
+	return nil
 }

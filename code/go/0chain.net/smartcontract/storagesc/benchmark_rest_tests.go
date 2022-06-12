@@ -405,6 +405,14 @@ func BenchmarkRestTests(
 				},
 				Endpoint: srh.getFreeAllocationBlobbers,
 			},
+			{
+				FuncName: "alloc-blobber-term",
+				Params: map[string]string{
+					"allocation_id": getMockAllocationId(0),
+					"blobber_id":    getMockBlobberId(0),
+				},
+				Endpoint: srh.getAllocBlobberTerms,
+			},
 		},
 		ADDRESS,
 		srh,

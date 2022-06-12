@@ -90,6 +90,7 @@ func GetEndpoints(rh rest.RestHandlerI) []rest.Endpoint {
 		rest.MakeEndpoint(storage+"/free_alloc_blobbers", srh.getFreeAllocationBlobbers),
 		rest.MakeEndpoint(storage+"/average-write-price", srh.getAverageWritePrice),
 		rest.MakeEndpoint(storage+"/total-blobber-capacity", srh.getTotalBlobberCapacity),
+		rest.MakeEndpoint(storage+"/alloc-blobber-term", srh.getAllocBlobberTerms),
 	}
 }
 
@@ -2247,6 +2248,51 @@ func (srh StorageRestHandler) getBlobber(w http.ResponseWriter, r *http.Request)
 
 	sn := blobberTableToStorageNode(*blobber)
 	common.Respond(w, r, sn, nil)
+}
+
+// swagger:route GET /v1/screst/6dba10422e368813802877a85039d3985d96760ed844092319743fb3a76712d7/alloc-blobber-term getAllocBlobberTerms
+// Gets statistic for all locked tokens of a stake pool
+//
+// parameters:
+//    + name: allocation_id
+//      description: id of allocation
+//      required: false
+//      in: query
+//      type: string
+//    + name: blobber_id
+//      description: id of blobber
+//      required: false
+//      in: query
+//      type: string
+//
+// responses:
+//  200: Terms
+//  400:
+//  500:
+func (srh *StorageRestHandler) getAllocBlobberTerms(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		common.Respond(w, r, nil, common.NewErrBadRequest("GET method only"))
+		return
+	}
+	blobberID := r.URL.Query().Get("blobber_id")
+	allocationID := r.URL.Query().Get("allocation_id")
+	edb := srh.GetQueryStateContext().GetEventDB()
+	if edb == nil {
+		common.Respond(w, r, nil, common.NewErrInternal("no db connection"))
+	}
+	var resp interface{}
+	var err error
+	if allocationID != "" && blobberID != "" {
+		resp, err = edb.GetAllocationBlobberTerm(allocationID, blobberID)
+	} else {
+		resp, err = edb.GetAllocationBlobberTerms(allocationID, blobberID)
+	}
+	if err != nil {
+		common.Respond(w, r, nil, common.NewErrBadRequest("error finding term(s):"+err.Error()))
+		return
+	}
+
+	common.Respond(w, r, resp, nil)
 }
 
 // swagger:model readMarkersCount
