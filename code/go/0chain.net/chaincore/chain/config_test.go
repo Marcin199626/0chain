@@ -2,6 +2,7 @@ package chain
 
 import (
 	"bytes"
+	"fmt"
 
 	"0chain.net/smartcontract/minersc"
 	"github.com/spf13/viper"
@@ -103,8 +104,31 @@ func TestUpdate(t *testing.T) {
 	}
 }
 
+func TestGetUint64(t *testing.T) {
+	err := viper.ReadConfig(bytes.NewBuffer(yamlExample))
+	require.NoError(t, err)
+	fmt.Println(viper.Get("name")) // this would be "steve"
+}
+
+// any approach to require this configuration into your program.
+var yamlExample = []byte(`
+Hacker: true
+name: steve
+hobbies:
+- skateboarding
+- snowboarding
+- go
+clothing:
+  jacket: leather
+  trousers: denim
+age: 35
+eyes : brown
+beard: true
+`)
+
 const exampleZChainYaml string = `
 development:
+  test: 1
   state: true
   dkg: true
   view_change: false
@@ -167,7 +191,7 @@ server_chain:
     payload:
       max_size: 98304 # bytes
     timeout: 30s # seconds
-    min_fee: 0
+    min_fee: 1
   client:
     signature_scheme: bls0chain # ed25519 or bls0chain
     discover: true

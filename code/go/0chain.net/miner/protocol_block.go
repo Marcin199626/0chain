@@ -158,6 +158,7 @@ func (mc *Chain) validateTransaction(b *block.Block, bState util.MerklePatriciaT
 	}
 
 	if txn.Nonce-state.Nonce > 1 {
+		logging.Logger.Debug("future txns", zap.Int64("current", state.Nonce), zap.Int64("txn nonce", txn.Nonce))
 		return FutureTransaction
 	}
 
@@ -669,11 +670,11 @@ func txnProcessorHandlerFunc(mc *Chain, b *block.Block) txnProcessorHandler {
 			return false
 		}
 
-		if debugTxn {
-			logging.Logger.Info("generate block (debug transaction)",
-				zap.String("txn", txn.Hash), zap.Int32("idx", tii.idx),
-				zap.String("txn_object", datastore.ToJSON(txn).String()))
-		}
+		//if debugTxn {
+		logging.Logger.Info("generate block (debug transaction)",
+			zap.String("txn", txn.Hash), zap.Int32("idx", tii.idx),
+			zap.String("txn_object", datastore.ToJSON(txn).String()))
+		//}
 		events, err := mc.UpdateState(ctx, b, bState, txn)
 		b.Events = append(b.Events, events...)
 		if err != nil {
