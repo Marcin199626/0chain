@@ -159,6 +159,7 @@ func (mc *Chain) validateTransaction(b *block.Block, bState util.MerklePatriciaT
 
 	if txn.Nonce-state.Nonce > 1 {
 		logging.Logger.Debug("future txns",
+			zap.String("client id", txn.ClientID),
 			zap.String("txn", txn.Hash),
 			zap.Int64("txn nonce", txn.Nonce),
 			zap.Int64("current", state.Nonce))
