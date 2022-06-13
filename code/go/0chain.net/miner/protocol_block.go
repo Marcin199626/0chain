@@ -167,6 +167,11 @@ func (mc *Chain) validateTransaction(b *block.Block, bState util.MerklePatriciaT
 	}
 
 	if txn.Nonce-state.Nonce < 1 {
+		logging.Logger.Debug("past txns",
+			zap.String("client id", txn.ClientID),
+			zap.String("txn", txn.Hash),
+			zap.Int64("txn nonce", txn.Nonce),
+			zap.Int64("current", state.Nonce))
 		return PastTransaction
 	}
 
@@ -922,7 +927,8 @@ func (mc *Chain) generateBlock(ctx context.Context, b *block.Block,
 		for _, txn := range iterInfo.pastTxns {
 			keys = append(keys, txn.GetKey())
 		}
-		logging.Logger.Info("generate block (found pastTxns transactions)", zap.Any("round", b.Round), zap.Strings("txn", keys))
+		logging.Logger.Info("generate block (found pastTxns transactions)",
+			zap.Any("round", b.Round), zap.Strings("txn", keys))
 	}
 	if iterInfo.roundMismatch {
 		logging.Logger.Debug("generate block (round mismatch)", zap.Any("round", b.Round), zap.Any("current_round", mc.GetCurrentRound()))
