@@ -5,8 +5,10 @@ import (
 	"0chain.net/chaincore/currency"
 	"0chain.net/chaincore/state"
 	"0chain.net/chaincore/transaction"
+	"0chain.net/core/logging"
 	"0chain.net/core/util"
 	"0chain.net/smartcontract/minersc"
+	"go.uber.org/zap"
 )
 
 func mockUpdateState(txn *transaction.Transaction, balances cstate.StateContextI) {
@@ -71,22 +73,30 @@ func mockTransferAmount(
 	balances cstate.StateContextI,
 ) {
 	fromState := state.State{}
-	err := clientState.GetNodeValue(util.Path(from), &fromState)
+	err := clientState.GetNodeValue(from, &fromState)
 	if err != nil && err != util.ErrValueNotPresent {
 		return
 	}
 	if err != util.ErrValueNotPresent {
 		_ = balances.SetStateContext(&fromState)
-		fromState.Balance -= amount
-		_, _ = clientState.Insert(util.Path(from), &fromState)
+		fromState.Balance, err = currency.MinusCoin(fromState.Balance, amount)
+		if err != nil {
+			logging.Logger.Error("unable to minus amount from source client",
+				zap.Error(err))
+		}
+		_, _ = clientState.Insert(from, &fromState)
 	}
 
 	toState := state.State{}
-	err = clientState.GetNodeValue(util.Path(to), &toState)
+	err = clientState.GetNodeValue(to, &toState)
 	if err != nil {
 		return
 	}
 	_ = balances.SetStateContext(&toState)
-	toState.Balance += amount
-	_, _ = clientState.Insert(util.Path(to), &toState)
+	toState.Balance, err = currency.AddCoin(toState.Balance, amount)
+	if err != nil {
+		logging.Logger.Error("unable to add amount to destination client",
+			zap.Error(err))
+	}
+	_, _ = clientState.Insert(to, &toState)
 }
