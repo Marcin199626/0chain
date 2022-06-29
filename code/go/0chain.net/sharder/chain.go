@@ -353,8 +353,8 @@ func (sc *Chain) walkDownLookingForLFB(iter *gorocksdb.Iterator,
 			continue
 		}
 
-		// check if we can load config from the lfb, otherwise choose previous one
-		if lfb.Round > 0 && !sc.HasConfig(lfb) {
+		// check if lfb has full state
+		if !sc.HasFullState(lfb) {
 			Logger.Warn("load_lfb, missing config",
 				zap.Int64("round", r.Number),
 				zap.String("block_hash", r.BlockHash))
@@ -477,15 +477,22 @@ func (sc *Chain) SaveMagicBlock() chain.MagicBlockSaveFunc {
 	return chain.MagicBlockSaveFunc(sc.SaveMagicBlockHandler)
 }
 
-func (sc *Chain) HasConfig(b *block.Block) bool {
+func (sc *Chain) HasFullState(b *block.Block) bool {
 	if err := sc.InitBlockState(b); err != nil {
 		Logger.Warn("load_lfb, init block state failed", zap.Int64("round", b.Round), zap.String("block", b.Hash))
 		return false
 	}
 
-	_, err := chain.GetConfigMap(b.ClientState)
+	_, keys, err := b.ClientState.FindMissingNodes(context.Background())
 	if err != nil {
-		Logger.Warn("load_lfb, can not load config from lfb", zap.Int64("round", b.Round), zap.String("block", b.Hash))
+		Logger.Warn("load_lfb, find missing nodes failed",
+			zap.Int64("round", b.Round), zap.String("block", b.Hash), zap.Error(err))
+		return false
+	}
+
+	if len(keys) > 0 {
+		Logger.Warn("load_lfb, lfb has missing nodes",
+			zap.Int64("round", b.Round), zap.String("block", b.Hash))
 		return false
 	}
 
