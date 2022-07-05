@@ -211,7 +211,7 @@ func setUpMpt(
 	}
 
 	timer = time.Now()
-	clients, publicKeys, privateKeys := addMockClients(context.Background(), pMpt, balances)
+	clients, publicKeys, privateKeys := addMockClients(context.Background(), pMpt, eventDb)
 	log.Println("added clients\t", time.Since(timer))
 
 	timer = time.Now()
@@ -561,7 +561,7 @@ func newEventsDb() *event.EventDb {
 
 func addMockClients(ctx context.Context,
 	pMpt *util.MerklePatriciaTrie,
-	balances cstate.StateContextI,
+	eventDB *event.EventDb,
 ) ([]string, []string, []string) {
 	var clientIds, publicKeys, privateKeys []string
 	activeClients := viper.GetInt(benchmark.NumActiveClients)
@@ -592,7 +592,7 @@ func addMockClients(ctx context.Context,
 					return err
 				}
 
-				if balances.GetEventDB() != nil {
+				if viper.GetBool(benchmark.EventDbEnabled) {
 					usr := &event.User{
 						UserID:  clientID,
 						TxnHash: is.TxnHash,
@@ -600,7 +600,7 @@ func addMockClients(ctx context.Context,
 						Round:   is.Round,
 						Nonce:   is.Nonce,
 					}
-					balances.EmitEvent(event.TypeStats, event.TagAddOrOverwriteUser, "", usr)
+					_ = eventDB.Store.Get().Create(usr)
 				}
 				return nil
 			}
