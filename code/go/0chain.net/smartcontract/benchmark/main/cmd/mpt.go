@@ -593,6 +593,7 @@ func addMockClients(ctx context.Context,
 				}
 
 				if viper.GetBool(benchmark.EventDbEnabled) {
+					log.Println("inserting client: ", clientID)
 					usr := &event.User{
 						UserID:  clientID,
 						TxnHash: is.TxnHash,
