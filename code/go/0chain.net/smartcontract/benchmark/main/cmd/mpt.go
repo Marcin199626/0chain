@@ -179,20 +179,12 @@ func setUpMpt(
 	pMpt := util.NewMerklePatriciaTrie(pNode, 1, nil)
 	log.Println("made empty blockchain")
 
-	timer := time.Now()
-	clients, publicKeys, privateKeys := addMockClients(context.Background(), pMpt)
-	log.Println("added clients\t", time.Since(timer))
-
-	timer = time.Now()
-	faucetsc.FundMockFaucetSmartContract(pMpt)
-	log.Println("funded faucet\t", time.Since(timer))
-
-	timer = time.Now()
-	pMpt.GetNodeDB().(*util.PNodeDB).TrackDBVersion(1)
-
 	bk := &block.Block{}
 	magicBlock := &block.MagicBlock{}
 	signatureScheme := &encryption.BLS0ChainScheme{}
+
+	timer := time.Now()
+	pMpt.GetNodeDB().(*util.PNodeDB).TrackDBVersion(1)
 
 	balances := cstate.NewStateContext(
 		bk,
@@ -217,6 +209,14 @@ func setUpMpt(
 	if viper.GetBool(benchmark.EventDbEnabled) {
 		eventDb = createEventsDb()
 	}
+
+	timer = time.Now()
+	clients, publicKeys, privateKeys := addMockClients(context.Background(), pMpt, balances)
+	log.Println("added clients\t", time.Since(timer))
+
+	timer = time.Now()
+	faucetsc.FundMockFaucetSmartContract(pMpt)
+	log.Println("funded faucet\t", time.Since(timer))
 
 	var wg sync.WaitGroup
 	var (
@@ -561,6 +561,7 @@ func newEventsDb() *event.EventDb {
 
 func addMockClients(ctx context.Context,
 	pMpt *util.MerklePatriciaTrie,
+	balances cstate.StateContextI,
 ) ([]string, []string, []string) {
 	var clientIds, publicKeys, privateKeys []string
 	activeClients := viper.GetInt(benchmark.NumActiveClients)
@@ -589,6 +590,17 @@ func addMockClients(ctx context.Context,
 				_, err = pMpt.Insert(util.Path(clientID), is)
 				if err != nil {
 					return err
+				}
+
+				if balances.GetEventDB() != nil {
+					usr := &event.User{
+						UserID:  clientID,
+						TxnHash: is.TxnHash,
+						Balance: is.Balance,
+						Round:   is.Round,
+						Nonce:   is.Nonce,
+					}
+					balances.EmitEvent(event.TypeStats, event.TagAddOrOverwriteUser, "", usr)
 				}
 				return nil
 			}
