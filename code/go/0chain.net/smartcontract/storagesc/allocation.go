@@ -70,16 +70,19 @@ func (sc *StorageSmartContract) addAllocation(alloc *StorageAllocation,
 }
 
 type newAllocationRequest struct {
-	Name            string           `json:"name"`
-	DataShards      int              `json:"data_shards"`
-	ParityShards    int              `json:"parity_shards"`
-	Size            int64            `json:"size"`
-	Expiration      common.Timestamp `json:"expiration_date"`
-	Owner           string           `json:"owner_id"`
-	OwnerPublicKey  string           `json:"owner_public_key"`
-	Blobbers        []string         `json:"blobbers"`
-	ReadPriceRange  PriceRange       `json:"read_price_range"`
-	WritePriceRange PriceRange       `json:"write_price_range"`
+	Name                 string           `json:"name"`
+	DataShards           int              `json:"data_shards"`
+	ParityShards         int              `json:"parity_shards"`
+	Size                 int64            `json:"size"`
+	Expiration           common.Timestamp `json:"expiration_date"`
+	Owner                string           `json:"owner_id"`
+	OwnerPublicKey       string           `json:"owner_public_key"`
+	Blobbers             []string         `json:"blobbers"`
+	ReadPriceRange       PriceRange       `json:"read_price_range"`
+	WritePriceRange      PriceRange       `json:"write_price_range"`
+	IsImmutable          bool             `json:"is_immutable"`
+	ThirdPartyExtendable bool             `json:"third_party_extendable"`
+	FileOptions          uint8            `json:"file_options"`
 }
 
 // storageAllocation from the request
@@ -96,6 +99,10 @@ func (nar *newAllocationRequest) storageAllocation() (sa *StorageAllocation) {
 	sa.PreferredBlobbers = nar.Blobbers
 	sa.ReadPriceRange = nar.ReadPriceRange
 	sa.WritePriceRange = nar.WritePriceRange
+	sa.IsImmutable = nar.IsImmutable
+	sa.ThirdPartyExtendable = nar.ThirdPartyExtendable
+	sa.FileOptions = nar.FileOptions
+
 	return
 }
 
@@ -454,15 +461,17 @@ func (sc *StorageSmartContract) validateBlobbers(
 }
 
 type updateAllocationRequest struct {
-	ID              string           `json:"id"`              // allocation id
-	Name            string           `json:"name"`            // allocation name
-	OwnerID         string           `json:"owner_id"`        // Owner of the allocation
-	Size            int64            `json:"size"`            // difference
-	Expiration      common.Timestamp `json:"expiration_date"` // difference
-	SetImmutable    bool             `json:"set_immutable"`
-	UpdateTerms     bool             `json:"update_terms"`
-	AddBlobberId    string           `json:"add_blobber_id"`
-	RemoveBlobberId string           `json:"remove_blobber_id"`
+	ID                   string           `json:"id"`              // allocation id
+	Name                 string           `json:"name"`            // allocation name
+	OwnerID              string           `json:"owner_id"`        // Owner of the allocation
+	Size                 int64            `json:"size"`            // difference
+	Expiration           common.Timestamp `json:"expiration_date"` // difference
+	SetImmutable         bool             `json:"set_immutable"`
+	UpdateTerms          bool             `json:"update_terms"`
+	AddBlobberId         string           `json:"add_blobber_id"`
+	RemoveBlobberId      string           `json:"remove_blobber_id"`
+	ThirdPartyExtendable bool             `json:"third_party_extendable"`
+	FileOptions          uint8            `json:"file_options"`
 }
 
 func (uar *updateAllocationRequest) decode(b []byte) error {
@@ -488,6 +497,10 @@ func (uar *updateAllocationRequest) validate(
 		}
 	}
 
+	if uar.Expiration < 0 {
+		return errors.New("duration of an allocation cannot be reduced")
+	}
+
 	if len(alloc.BlobberAllocs) == 0 {
 		return errors.New("invalid allocation for updating: no blobbers")
 	}
@@ -506,6 +519,10 @@ func (uar *updateAllocationRequest) validate(
 		if _, found := alloc.BlobberAllocsMap[uar.RemoveBlobberId]; !found {
 			return fmt.Errorf("cannot remove blobber %s, not in allocation", uar.RemoveBlobberId)
 		}
+	}
+
+	if uar.FileOptions > 63 || uar.FileOptions < 0 {
+		return fmt.Errorf("FileOptions %d incorrect", uar.FileOptions)
 	}
 
 	return nil
