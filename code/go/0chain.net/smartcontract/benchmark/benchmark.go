@@ -177,6 +177,10 @@ const (
 	StorageMaxChallengesPerGeneration    = SmartContract + StorageSc + "max_challenges_per_generation"
 	StorageValidatorsPerChallenge        = SmartContract + StorageSc + "validators_per_challenge"
 	StorageMaxBlobbersPerAllocation      = SmartContract + StorageSc + "max_blobbers_per_allocation"
+	StorageInitialAnnualFreeStorage      = SmartContract + StorageSc + "initial_annual_free_storage"
+	StorageFreeStorageDeclineRate        = SmartContract + StorageSc + "free_storage_decline_rate"
+	StorageFreeStorageDeclinePeriod      = SmartContract + StorageSc + "free_storage_decline_period"
+	StorageMaxFreeStorageChain           = SmartContract + StorageSc + "max_free_storage_chain"
 
 	StorageBlockReward                = SmartContract + StorageSc + BlockReward + "block_reward"
 	StorageBlockRewardTriggerPeriod   = SmartContract + StorageSc + BlockReward + "trigger_period"

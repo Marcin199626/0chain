@@ -176,6 +176,12 @@ type Config struct {
 	ExposeMpt bool           `json:"expose_mpt"`
 	OwnerId   string         `json:"owner_id"`
 	Cost      map[string]int `json:"cost"`
+
+	// Free storage restrictions
+	InitialAnnualFreeStorage int64         `json:"initial_annual_free_storage"`
+	FreeStorageDeclineRate   int64         `json:"free_storage_decline_rate"`
+	FreeStorageDeclinePeriod time.Duration `json:"free_storage_decline_period"`
+	MaxFreeStorageChain      int64         `json:"max_free_storage_chain"`
 }
 
 func (sc *Config) validate() (err error) {
@@ -267,6 +273,22 @@ func (sc *Config) validate() (err error) {
 	if sc.MaxChallengesPerGeneration <= 0 {
 		return fmt.Errorf("invalid max_challenges_per_generation <= 0: %v",
 			sc.MaxChallengesPerGeneration)
+	}
+	if sc.InitialAnnualFreeStorage < 0 {
+		return fmt.Errorf("invalid initial_annual_free_storage < 0: %v",
+			sc.InitialAnnualFreeStorage)
+	}
+	if sc.FreeStorageDeclineRate < 0 {
+		return fmt.Errorf("invalid free_storage_decline_rate < 0: %v",
+			sc.FreeStorageDeclineRate)
+	}
+	if sc.FreeStorageDeclinePeriod <= 1*time.Second {
+		return fmt.Errorf("free_storage_decline_period less than 1s: %v",
+			sc.FreeStorageDeclinePeriod)
+	}
+	if MaxFreeStorageChain < 0 {
+		return fmt.Errorf("invalid max_free_storage_chain < 0: %v",
+			sc.MaxFreeStorageChain)
 	}
 	if sc.ValidatorsPerChallenge <= 0 {
 		return fmt.Errorf("invalid validators_per_challenge <= 0: %v",
@@ -456,6 +478,12 @@ func getConfiguredConfig() (conf *Config, err error) {
 		pfx + "validators_per_challenge")
 	conf.ChallengeGenerationRate = scc.GetFloat64(
 		pfx + "challenge_rate_per_mb_min")
+
+	// free storage restrictions
+	conf.InitialAnnualFreeStorage = scc.GetInt64(pfx + "initial_annual_free_storage")
+	conf.FreeStorageDeclineRate = scc.GetInt64(pfx + "free_storage_decline_rate")
+	conf.FreeStorageDeclinePeriod = scc.GetDuration(pfx + "free_storage_decline_period")
+	conf.MaxFreeStorageChain = scc.GetInt64(pfx + "max_free_storage_chain")
 
 	conf.MaxDelegates = scc.GetInt(pfx + "max_delegates")
 	conf.MaxCharge = scc.GetFloat64(pfx + "max_charge")

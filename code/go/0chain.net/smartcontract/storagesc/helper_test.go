@@ -354,6 +354,11 @@ func setConfig(t testing.TB, balances chainState.StateContextI) (
 	conf.MaxChallengeCompletionTime = 5 * time.Minute
 	config.SmartContractConfig.Set(confMaxChallengeCompletionTime, "5m")
 
+	conf.InitialAnnualFreeStorage = 1024000
+	conf.FreeStorageDeclineRate = 1024
+	conf.FreeStorageDeclinePeriod = 1 * time.Hour
+	conf.MaxFreeStorageChain = 999999999
+
 	conf.MaxCharge = 0.50   // 50%
 	conf.MinStake = 0.0     // 0 toks
 	conf.MaxStake = 1000e10 // 100 toks

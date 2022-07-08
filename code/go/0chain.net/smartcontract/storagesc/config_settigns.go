@@ -74,6 +74,11 @@ const (
 	ValidatorsPerChallenge
 	MaxDelegates
 
+	InitialAnnualFreeStorage
+	FreeStorageDeclineRate
+	FreeStorageDeclinePeriod
+	MaxFreeStorageChain
+
 	BlockRewardBlockReward
 	BlockRewardQualifyingStake
 	BlockRewardSharderWeight
@@ -170,6 +175,11 @@ var (
 		"max_challenges_per_generation",
 		"validators_per_challenge",
 		"max_delegates",
+
+		"initial_annual_free_storage",
+		"free_storage_decline_rate",
+		"free_storage_decline_period",
+		"max_free_storage_chain",
 
 		"block_reward.block_reward",
 		"block_reward.qualifying_stake",
@@ -270,6 +280,11 @@ var (
 		"max_challenges_per_generation":        {MaxChallengesPerGeneration, smartcontract.Int},
 		"validators_per_challenge":             {ValidatorsPerChallenge, smartcontract.Int},
 		"max_delegates":                        {MaxDelegates, smartcontract.Int},
+
+		"initial_annual_free_storage": {InitialAnnualFreeStorage, smartcontract.Int64},
+		"free_storage_decline_rate":   {FreeStorageDeclineRate, smartcontract.Int64},
+		"free_storage_decline_period": {FreeStorageDeclinePeriod, smartcontract.Duration},
+		"max_free_storage_chain":      {MaxFreeStorageChain, smartcontract.Int64},
 
 		"block_reward.block_reward":     {BlockRewardBlockReward, smartcontract.CurrencyCoin},
 		"block_reward.qualifying_stake": {BlockRewardQualifyingStake, smartcontract.CurrencyCoin},
@@ -431,6 +446,12 @@ func (conf *Config) setInt64(key string, change int64) error {
 		conf.MinBlobberCapacity = change
 	case FreeAllocationSize:
 		conf.FreeAllocationSettings.Size = change
+	case InitialAnnualFreeStorage:
+		conf.InitialAnnualFreeStorage = change
+	case FreeStorageDeclineRate:
+		conf.FreeStorageDeclineRate = change
+	case MaxFreeStorageChain:
+		conf.MaxFreeStorageChain = change
 	default:
 		return fmt.Errorf("key: %v not implemented as int64", key)
 	}
@@ -523,6 +544,8 @@ func (conf *Config) setDuration(key string, change time.Duration) error {
 		conf.FreeAllocationSettings.Duration = change
 	case FreeAllocationMaxChallengeCompletionTime:
 		conf.FreeAllocationSettings.MaxChallengeCompletionTime = change
+	case FreeStorageDeclinePeriod:
+		conf.FreeStorageDeclinePeriod = change
 	default:
 		return fmt.Errorf("key: %v not implemented as duration", key)
 	}
@@ -709,6 +732,14 @@ func (conf *Config) get(key Setting) interface{} {
 		return conf.ChallengeGenerationRate
 	case MaxChallengesPerGeneration:
 		return conf.MaxChallengesPerGeneration
+	case InitialAnnualFreeStorage:
+		return conf.InitialAnnualFreeStorage
+	case FreeStorageDeclineRate:
+		return conf.FreeStorageDeclineRate
+	case FreeStorageDeclinePeriod:
+		return conf.FreeStorageDeclinePeriod
+	case MaxFreeStorageChain:
+		return conf.MaxFreeStorageChain
 	case ValidatorsPerChallenge:
 		return conf.ValidatorsPerChallenge
 	case MaxDelegates:

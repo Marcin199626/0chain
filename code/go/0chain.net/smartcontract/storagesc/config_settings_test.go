@@ -373,6 +373,11 @@ func TestCommitSettingChanges(t *testing.T) {
 					"validators_per_challenge":             "2",
 					"max_delegates":                        "100",
 
+					"initial_annual_free_storage": "1024000",
+					"free_storage_decline_rate":   "1024",
+					"free_storage_decline_period": "1h",
+					"max_free_storage_chain":      "99999999",
+
 					"block_reward.block_reward":     "1000",
 					"block_reward.qualifying_stake": "1",
 					"block_reward.sharder_ratio":    "80.0",
@@ -483,6 +488,14 @@ func getConfField(conf Config, field string) interface{} {
 		return conf.ChallengeGenerationRate
 	case MaxChallengesPerGeneration:
 		return conf.MaxChallengesPerGeneration
+	case InitialAnnualFreeStorage:
+		return conf.InitialAnnualFreeStorage
+	case FreeStorageDeclineRate:
+		return conf.FreeStorageDeclineRate
+	case FreeStorageDeclinePeriod:
+		return conf.FreeStorageDeclinePeriod
+	case MaxFreeStorageChain:
+		return conf.MaxFreeStorageChain
 	case ValidatorsPerChallenge:
 		return conf.ValidatorsPerChallenge
 	case MaxDelegates:

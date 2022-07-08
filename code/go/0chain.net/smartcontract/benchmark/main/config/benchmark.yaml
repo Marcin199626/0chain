@@ -95,6 +95,10 @@ smart_contracts:
     diverse_blobbers: false
     failed_challenges_to_cancel: 0
     max_total_free_allocation: 10000
+    initial_annual_free_storage: 1024000
+    free_storage_decline_rate: 1024
+    free_storage_decline_period: 1h
+    max_free_storage_chain: 99999999
     max_individual_free_allocation: 170
     max_challenges_per_generation: 1
     max_blobbers_per_allocation: 40

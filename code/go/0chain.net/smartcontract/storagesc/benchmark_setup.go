@@ -856,6 +856,10 @@ func SetMockConfig(
 	conf.ChallengeEnabled = true
 	conf.ChallengeGenerationRate = 1
 	conf.MaxChallengesPerGeneration = viper.GetInt(sc.StorageMaxChallengesPerGeneration)
+	conf.InitialAnnualFreeStorage = viper.GetInt64(sc.StorageInitialAnnualFreeStorage)
+	conf.FreeStorageDeclineRate = viper.GetInt64(sc.StorageFreeStorageDeclineRate)
+	conf.FreeStorageDeclinePeriod = viper.GetDuration(sc.StorageFreeStorageDeclinePeriod)
+	conf.MaxFreeStorageChain = viper.GetInt64(sc.StorageMaxFreeStorageChain)
 	conf.FailedChallengesToCancel = viper.GetInt(sc.StorageFailedChallengesToCancel)
 	conf.FailedChallengesToRevokeMinLock = 50
 	conf.MinAllocSize = viper.GetInt64(sc.StorageMinAllocSize)
