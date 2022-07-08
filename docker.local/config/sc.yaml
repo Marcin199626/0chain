@@ -98,6 +98,11 @@ smart_contracts:
     time_unit: "720h"
     min_stake: 0.01 # min stake can be set by a node (boundary for all nodes)
     max_stake: 100.0 # max stake can be set by a node (boundary for all nodes)
+    # free storage restrictions
+    initial_annual_free_storage: 1000000000 
+    free_storage_decline_rate: 1000
+    free_storage_decline_period: "8760h"
+    max_free_storage_chain: 9999999999
     # max_mint
     max_mint: 1500000.0 # tokens, max amount of tokens can be minted by SC
     # min possible allocations size in bytes allowed by the SC
