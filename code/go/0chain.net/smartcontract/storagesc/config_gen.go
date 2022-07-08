@@ -9,9 +9,9 @@ import (
 // MarshalMsg implements msgp.Marshaler
 func (z *Config) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.Require(b, z.Msgsize())
-	// map header, size 34
+	// map header, size 38
 	// string "TimeUnit"
-	o = append(o, 0xde, 0x0, 0x22, 0xa8, 0x54, 0x69, 0x6d, 0x65, 0x55, 0x6e, 0x69, 0x74)
+	o = append(o, 0xde, 0x0, 0x26, 0xa8, 0x54, 0x69, 0x6d, 0x65, 0x55, 0x6e, 0x69, 0x74)
 	o = msgp.AppendDuration(o, z.TimeUnit)
 	// string "MaxMint"
 	o = append(o, 0xa7, 0x4d, 0x61, 0x78, 0x4d, 0x69, 0x6e, 0x74)
@@ -209,6 +209,18 @@ func (z *Config) MarshalMsg(b []byte) (o []byte, err error) {
 		o = msgp.AppendString(o, k)
 		o = msgp.AppendInt(o, za0002)
 	}
+	// string "InitialAnnualFreeStorage"
+	o = append(o, 0xb8, 0x49, 0x6e, 0x69, 0x74, 0x69, 0x61, 0x6c, 0x41, 0x6e, 0x6e, 0x75, 0x61, 0x6c, 0x46, 0x72, 0x65, 0x65, 0x53, 0x74, 0x6f, 0x72, 0x61, 0x67, 0x65)
+	o = msgp.AppendInt64(o, z.InitialAnnualFreeStorage)
+	// string "FreeStorageDeclineRate"
+	o = append(o, 0xb6, 0x46, 0x72, 0x65, 0x65, 0x53, 0x74, 0x6f, 0x72, 0x61, 0x67, 0x65, 0x44, 0x65, 0x63, 0x6c, 0x69, 0x6e, 0x65, 0x52, 0x61, 0x74, 0x65)
+	o = msgp.AppendInt64(o, z.FreeStorageDeclineRate)
+	// string "FreeStorageDeclinePeriod"
+	o = append(o, 0xb8, 0x46, 0x72, 0x65, 0x65, 0x53, 0x74, 0x6f, 0x72, 0x61, 0x67, 0x65, 0x44, 0x65, 0x63, 0x6c, 0x69, 0x6e, 0x65, 0x50, 0x65, 0x72, 0x69, 0x6f, 0x64)
+	o = msgp.AppendDuration(o, z.FreeStorageDeclinePeriod)
+	// string "MaxFreeStorageChain"
+	o = append(o, 0xb3, 0x4d, 0x61, 0x78, 0x46, 0x72, 0x65, 0x65, 0x53, 0x74, 0x6f, 0x72, 0x61, 0x67, 0x65, 0x43, 0x68, 0x61, 0x69, 0x6e)
+	o = msgp.AppendInt64(o, z.MaxFreeStorageChain)
 	return
 }
 
@@ -583,6 +595,30 @@ func (z *Config) UnmarshalMsg(bts []byte) (o []byte, err error) {
 				}
 				z.Cost[za0001] = za0002
 			}
+		case "InitialAnnualFreeStorage":
+			z.InitialAnnualFreeStorage, bts, err = msgp.ReadInt64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "InitialAnnualFreeStorage")
+				return
+			}
+		case "FreeStorageDeclineRate":
+			z.FreeStorageDeclineRate, bts, err = msgp.ReadInt64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "FreeStorageDeclineRate")
+				return
+			}
+		case "FreeStorageDeclinePeriod":
+			z.FreeStorageDeclinePeriod, bts, err = msgp.ReadDurationBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "FreeStorageDeclinePeriod")
+				return
+			}
+		case "MaxFreeStorageChain":
+			z.MaxFreeStorageChain, bts, err = msgp.ReadInt64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "MaxFreeStorageChain")
+				return
+			}
 		default:
 			bts, err = msgp.Skip(bts)
 			if err != nil {
@@ -628,6 +664,7 @@ func (z *Config) Msgsize() (s int) {
 			s += msgp.StringPrefixSize + len(za0001) + msgp.IntSize
 		}
 	}
+	s += 25 + msgp.Int64Size + 23 + msgp.Int64Size + 25 + msgp.DurationSize + 20 + msgp.Int64Size
 	return
 }
 
