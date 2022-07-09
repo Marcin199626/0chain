@@ -98,7 +98,7 @@ func (pndb *PNodeDB) PutNode(key Key, node Node) error {
 	return err
 }
 
-func (pndb *PNodeDB) getDeadNodes() (*deadNodes, error) {
+func (pndb *PNodeDB) getDeadNodes(v int64) (*deadNodes, error) {
 	data, err := pndb.db.Get(pndb.ro, deadNodesKey)
 	if err != nil {
 		return nil, err
@@ -109,16 +109,16 @@ func (pndb *PNodeDB) getDeadNodes() (*deadNodes, error) {
 
 	dn := deadNodes{Nodes: make(map[string]int64)}
 	if len(buf) > 0 {
-		if err := dn.decode(buf); err != nil {
+		if err := dn.decode(buf, v); err != nil {
 			return nil, err
 		}
 	}
 	return &dn, nil
 }
 
-func (pndb *PNodeDB) saveDeadNodes(dn *deadNodes) error {
+func (pndb *PNodeDB) saveDeadNodes(dn *deadNodes, v int64) error {
 	// save back the dead nodes
-	d, err := dn.encode()
+	d, err := dn.encode(v)
 	if err != nil {
 		return err
 	}
@@ -127,7 +127,7 @@ func (pndb *PNodeDB) saveDeadNodes(dn *deadNodes) error {
 }
 
 func (pndb *PNodeDB) RecordDeadNodes(nodes []Node) (int, error) {
-	dn, err := pndb.getDeadNodes()
+	dn, err := pndb.getDeadNodes(0)
 	if err != nil {
 		return 0, err
 	}
@@ -136,7 +136,24 @@ func (pndb *PNodeDB) RecordDeadNodes(nodes []Node) (int, error) {
 		dn.Nodes[n.GetHash()] = int64(n.GetVersion())
 	}
 
-	if err := pndb.saveDeadNodes(dn); err != nil {
+	if err := pndb.saveDeadNodes(dn, 0); err != nil {
+		return 0, err
+	}
+
+	return len(dn.Nodes), nil
+}
+
+func (pndb *PNodeDB) RecordDeadNodesWithVersion(nodes []Node, v int64) (int, error) {
+	dn, err := pndb.getDeadNodes(v)
+	if err != nil {
+		return 0, err
+	}
+
+	for _, n := range nodes {
+		dn.Nodes[n.GetHash()] = int64(n.GetVersion())
+	}
+
+	if err := pndb.saveDeadNodes(dn, v); err != nil {
 		return 0, err
 	}
 
@@ -149,7 +166,7 @@ func (pndb *PNodeDB) PruneBelowVersion(ctx context.Context, version Sequence) er
 		count int64
 	)
 
-	dn, err := pndb.getDeadNodes()
+	dn, err := pndb.getDeadNodes(0)
 	if err != nil {
 		return err
 	}
@@ -177,7 +194,54 @@ func (pndb *PNodeDB) PruneBelowVersion(ctx context.Context, version Sequence) er
 		delete(dn.Nodes, ToHex(k))
 	}
 
-	if err := pndb.saveDeadNodes(dn); err != nil {
+	if err := pndb.saveDeadNodes(dn, 0); err != nil {
+		return err
+	}
+
+	pndb.Flush()
+
+	if ps != nil {
+		ps.Deleted = count
+	}
+
+	return nil
+}
+
+func (pndb *PNodeDB) PruneBelowVersionV(ctx context.Context, version Sequence, v int64) error {
+	var (
+		ps    = GetPruneStats(ctx)
+		count int64
+	)
+
+	dn, err := pndb.getDeadNodes(v)
+	if err != nil {
+		return err
+	}
+
+	keys := make([]Key, 0, len(dn.Nodes))
+	for k, v := range dn.Nodes {
+		if v < int64(version) {
+			key, err := fromHex(k)
+			if err != nil {
+				return fmt.Errorf("decode node hash key failed: %v", err)
+			}
+
+			keys = append(keys, key)
+			count++
+		}
+	}
+
+	// delete nodes
+	if err := pndb.MultiDeleteNode(keys); err != nil {
+		return err
+	}
+
+	// update dead nodes
+	for _, k := range keys {
+		delete(dn.Nodes, ToHex(k))
+	}
+
+	if err := pndb.saveDeadNodes(dn, v); err != nil {
 		return err
 	}
 
