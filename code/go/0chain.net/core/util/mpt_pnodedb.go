@@ -3,7 +3,6 @@ package util
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -11,7 +10,6 @@ import (
 	"github.com/0chain/gorocksdb"
 
 	"0chain.net/core/logging"
-	. "0chain.net/core/logging"
 	"go.uber.org/zap"
 )
 
@@ -100,10 +98,6 @@ func (pndb *PNodeDB) PutNode(key Key, node Node) error {
 	return err
 }
 
-type deadNodes struct {
-	Nodes map[string]Sequence `json:"nodes"`
-}
-
 func (pndb *PNodeDB) getDeadNodes() (*deadNodes, error) {
 	data, err := pndb.db.Get(pndb.ro, deadNodesKey)
 	if err != nil {
@@ -113,9 +107,9 @@ func (pndb *PNodeDB) getDeadNodes() (*deadNodes, error) {
 	defer data.Free()
 	buf := data.Data()
 
-	dn := deadNodes{Nodes: make(map[string]Sequence)}
+	dn := deadNodes{Nodes: make(map[string]int64)}
 	if len(buf) > 0 {
-		if err := json.Unmarshal(buf, &dn); err != nil {
+		if err := dn.decode(buf); err != nil {
 			return nil, err
 		}
 	}
@@ -124,7 +118,7 @@ func (pndb *PNodeDB) getDeadNodes() (*deadNodes, error) {
 
 func (pndb *PNodeDB) saveDeadNodes(dn *deadNodes) error {
 	// save back the dead nodes
-	d, err := json.Marshal(dn)
+	d, err := dn.encode()
 	if err != nil {
 		return err
 	}
@@ -139,7 +133,7 @@ func (pndb *PNodeDB) RecordDeadNodes(nodes []Node) (int, error) {
 	}
 
 	for _, n := range nodes {
-		dn.Nodes[n.GetHash()] = n.GetVersion()
+		dn.Nodes[n.GetHash()] = int64(n.GetVersion())
 	}
 
 	if err := pndb.saveDeadNodes(dn); err != nil {
@@ -162,7 +156,7 @@ func (pndb *PNodeDB) PruneBelowVersion(ctx context.Context, version Sequence) er
 
 	keys := make([]Key, 0, len(dn.Nodes))
 	for k, v := range dn.Nodes {
-		if v < version {
+		if v < int64(version) {
 			key, err := fromHex(k)
 			if err != nil {
 				return fmt.Errorf("decode node hash key failed: %v", err)
@@ -270,14 +264,14 @@ func (pndb *PNodeDB) Iterate(ctx context.Context, handler NodeDBIteratorHandler)
 		if err != nil {
 			key.Free()
 			value.Free()
-			Logger.Error("iterate - create node", zap.String("key", ToHex(kdata)), zap.Error(err))
+			logging.Logger.Error("iterate - create node", zap.String("key", ToHex(kdata)), zap.Error(err))
 			continue
 		}
 		err = handler(ctx, kdata, node)
 		if err != nil {
 			key.Free()
 			value.Free()
-			Logger.Error("iterate - create node handler error", zap.String("key", ToHex(kdata)), zap.Any("data", vdata), zap.Error(err))
+			logging.Logger.Error("iterate - create node handler error", zap.String("key", ToHex(kdata)), zap.Any("data", vdata), zap.Error(err))
 			return err
 		}
 		key.Free()
@@ -358,7 +352,7 @@ func (pndb *PNodeDB) Size(ctx context.Context) int64 {
 	}
 	err := pndb.Iterate(ctx, handler)
 	if err != nil {
-		Logger.Error("count", zap.Error(err))
+		logging.Logger.Error("count", zap.Error(err))
 		return -1
 	}
 	return count
