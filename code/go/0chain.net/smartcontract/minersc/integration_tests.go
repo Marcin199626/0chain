@@ -117,7 +117,7 @@ func (msc *MinerSmartContract) payFeesIntegrationTests(
 	// }
 
 	// call the wrapped function {
-	if resp, err = msc.payFees(t, inputData, gn, balances); err != nil {
+	if resp, err = msc.payFees(t, inputData, gn, balances, nil); err != nil {
 		return
 	}
 	// }

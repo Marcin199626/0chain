@@ -369,7 +369,7 @@ func testPayFees(t *testing.T, minerStakes []float64, sharderStakes [][]float64,
 		err = updateAllShardersList(ctx, allMinersList)
 	}
 
-	_, err = msc.payFees(txn, nil, globalNode, ctx)
+	_, err = msc.payFees(txn, nil, globalNode, ctx, nil)
 	if err != nil {
 		return err
 	}
