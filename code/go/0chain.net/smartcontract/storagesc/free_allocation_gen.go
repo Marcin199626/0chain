@@ -8,6 +8,94 @@ import (
 )
 
 // MarshalMsg implements msgp.Marshaler
+func (z *FreeStorageInfo) MarshalMsg(b []byte) (o []byte, err error) {
+	o = msgp.Require(b, z.Msgsize())
+	// map header, size 5
+	// string "TotalFreeStorageAssigned"
+	o = append(o, 0x85, 0xb8, 0x54, 0x6f, 0x74, 0x61, 0x6c, 0x46, 0x72, 0x65, 0x65, 0x53, 0x74, 0x6f, 0x72, 0x61, 0x67, 0x65, 0x41, 0x73, 0x73, 0x69, 0x67, 0x6e, 0x65, 0x64)
+	o = msgp.AppendUint64(o, z.TotalFreeStorageAssigned)
+	// string "ChainInitTime"
+	o = append(o, 0xad, 0x43, 0x68, 0x61, 0x69, 0x6e, 0x49, 0x6e, 0x69, 0x74, 0x54, 0x69, 0x6d, 0x65)
+	o = msgp.AppendInt64(o, z.ChainInitTime)
+	// string "FreeStorageAllowedCurrentPeriod"
+	o = append(o, 0xbf, 0x46, 0x72, 0x65, 0x65, 0x53, 0x74, 0x6f, 0x72, 0x61, 0x67, 0x65, 0x41, 0x6c, 0x6c, 0x6f, 0x77, 0x65, 0x64, 0x43, 0x75, 0x72, 0x72, 0x65, 0x6e, 0x74, 0x50, 0x65, 0x72, 0x69, 0x6f, 0x64)
+	o = msgp.AppendUint64(o, z.FreeStorageAllowedCurrentPeriod)
+	// string "FreeStorageAssignedCurrentPeriod"
+	o = append(o, 0xd9, 0x20, 0x46, 0x72, 0x65, 0x65, 0x53, 0x74, 0x6f, 0x72, 0x61, 0x67, 0x65, 0x41, 0x73, 0x73, 0x69, 0x67, 0x6e, 0x65, 0x64, 0x43, 0x75, 0x72, 0x72, 0x65, 0x6e, 0x74, 0x50, 0x65, 0x72, 0x69, 0x6f, 0x64)
+	o = msgp.AppendUint64(o, z.FreeStorageAssignedCurrentPeriod)
+	// string "CurrentPeriod"
+	o = append(o, 0xad, 0x43, 0x75, 0x72, 0x72, 0x65, 0x6e, 0x74, 0x50, 0x65, 0x72, 0x69, 0x6f, 0x64)
+	o = msgp.AppendUint64(o, z.CurrentPeriod)
+	return
+}
+
+// UnmarshalMsg implements msgp.Unmarshaler
+func (z *FreeStorageInfo) UnmarshalMsg(bts []byte) (o []byte, err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, bts, err = msgp.ReadMapHeaderBytes(bts)
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, bts, err = msgp.ReadMapKeyZC(bts)
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "TotalFreeStorageAssigned":
+			z.TotalFreeStorageAssigned, bts, err = msgp.ReadUint64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "TotalFreeStorageAssigned")
+				return
+			}
+		case "ChainInitTime":
+			z.ChainInitTime, bts, err = msgp.ReadInt64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "ChainInitTime")
+				return
+			}
+		case "FreeStorageAllowedCurrentPeriod":
+			z.FreeStorageAllowedCurrentPeriod, bts, err = msgp.ReadUint64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "FreeStorageAllowedCurrentPeriod")
+				return
+			}
+		case "FreeStorageAssignedCurrentPeriod":
+			z.FreeStorageAssignedCurrentPeriod, bts, err = msgp.ReadUint64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "FreeStorageAssignedCurrentPeriod")
+				return
+			}
+		case "CurrentPeriod":
+			z.CurrentPeriod, bts, err = msgp.ReadUint64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "CurrentPeriod")
+				return
+			}
+		default:
+			bts, err = msgp.Skip(bts)
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	o = bts
+	return
+}
+
+// Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
+func (z *FreeStorageInfo) Msgsize() (s int) {
+	s = 1 + 25 + msgp.Uint64Size + 14 + msgp.Int64Size + 32 + msgp.Uint64Size + 34 + msgp.Uint64Size + 14 + msgp.Uint64Size
+	return
+}
+
+// MarshalMsg implements msgp.Marshaler
 func (z *freeStorageAssigner) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.Require(b, z.Msgsize())
 	// map header, size 6
