@@ -35,6 +35,39 @@ func (frm *freeStorageMarker) decode(b []byte) error {
 	return json.Unmarshal(b, frm)
 }
 
+type FreeStorageInfo struct {
+	// Related sc.yaml vars:
+	// initial_annual_free_storage
+	// free_storage_decline_rate
+	// free_storage_decline_period
+	// max_free_storage_chain
+
+	//TODO: Init FreeStorageInfo
+	//TODO: StateInit Time required?
+	//TODO: Update CurrentPeriod or calculate period everytime with the help of StateInitTime?
+	//TODO: Optimal way to update info?
+
+	// Global
+	// Total free storage assigned on the chain to date
+	TotalFreeStorageAssigned uint64 `json:"total_free_storage_assigned"`
+	StateInitTime            int64  `json:"chain_init_time"`
+
+	// Current Period
+	// Free storage allowed to be assigned in the current 'free_storage_decline_period'
+	FreeStorageAllowedCurrentPeriod  uint64 `json:"free_storage_allowed_current_period"`
+	FreeStorageAssignedCurrentPeriod uint64 `json:"free_storage_assigned_current_period"`
+	CurrentPeriod                    uint64 `json:"current_period"`
+}
+
+func freeStorageInfoKey() datastore.Key {
+	return "freeStorageRestrictionInfoGlobalKey"
+}
+
+func (fsi *FreeStorageInfo) save(sscKey string, balances cstate.StateContextI) error {
+	_, err := balances.InsertTrieNode(freeStorageInfoKey(), fsi)
+	return err
+}
+
 type freeStorageAllocationInput struct {
 	RecipientPublicKey string   `json:"recipient_public_key"`
 	Marker             string   `json:"marker"`
@@ -163,6 +196,18 @@ func (ssc *StorageSmartContract) addFreeStorageAssigner(
 			"individual allocation token limit %d exceeds maximum permitted: %d", newIndividualLimit, conf.MaxIndividualFreeAllocation)
 	}
 
+	fsi, err := ssc.getFreeStorageInfo(balances)
+	if err != nil {
+		return "", common.NewErrorf("add_free_storage_assigner",
+			"error getting free_storage_info from MPT: %v", err)
+	}
+
+	newTotalAssigned := fsi.FreeStorageAssignedCurrentPeriod + uint64(conf.FreeAllocationSettings.Size)
+	if newTotalAssigned > fsi.FreeStorageAllowedCurrentPeriod {
+		return "", common.NewErrorf("add_free_storage_assigner",
+			"Exceeds available free storage assignment %d", fsi.FreeStorageAllowedCurrentPeriod)
+	}
+
 	assigner, err := ssc.getFreeStorageAssigner(assignerInfo.Name, balances)
 	if err != nil && err != util.ErrValueNotPresent {
 		return "", common.NewError("add_free_storage_assigner", err.Error())
@@ -176,6 +221,14 @@ func (ssc *StorageSmartContract) addFreeStorageAssigner(
 	assigner.TotalLimit = newTotalLimit
 	assigner.IndividualLimit = newIndividualLimit
 	err = assigner.save(ssc.ID, balances)
+	if err != nil {
+		return "", common.NewErrorf("add_free_storage_assigner", "error saving new assigner: %v", err)
+	}
+
+	// Successfull assignment
+	fsi.FreeStorageAssignedCurrentPeriod += uint64(conf.FreeAllocationSettings.Size)
+	fsi.TotalFreeStorageAssigned += uint64(conf.FreeAllocationSettings.Size)
+	err = fsi.save(freeStorageInfoKey(), balances)
 	if err != nil {
 		return "", common.NewErrorf("add_free_storage_assigner", "error saving new assigner: %v", err)
 	}
@@ -264,7 +317,11 @@ func (ssc *StorageSmartContract) freeAllocationRequest(
 			"marshal request: %v", err)
 	}
 
-	assigner.CurrentRedeemed += txn.Value
+	assigner.CurrentRedeemed, err = currency.AddCoin(assigner.CurrentRedeemed, txn.Value)
+	if err != nil {
+		return "", common.NewErrorf("free_allocation_failed", "adding txn value to assigner's current redeemed failed: %v", err)
+	}
+
 	fTxnVal, err := txn.Value.Float64()
 	if err != nil {
 		return "", common.NewErrorf("free_allocation_failed", "converting transaction value to float: %v", err)
@@ -385,4 +442,16 @@ func (ssc *StorageSmartContract) getFreeStorageAssigner(
 	}
 
 	return fsa, nil
+}
+
+func (ssc *StorageSmartContract) getFreeStorageInfo(
+	balances cstate.StateContextI,
+) (*FreeStorageInfo, error) {
+	fsi := new(FreeStorageInfo)
+	err := balances.GetTrieNode(freeStorageInfoKey(), fsi)
+	if err != nil {
+		return nil, err
+	}
+
+	return fsi, nil
 }
