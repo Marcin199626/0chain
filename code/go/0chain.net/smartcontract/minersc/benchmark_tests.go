@@ -3,6 +3,7 @@ package minersc
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"0chain.net/core/common"
 
@@ -37,8 +38,13 @@ type BenchTest struct {
 		*GlobalNode,
 		cstate.StateContextI,
 	) (string, error)
-	txn   *transaction.Transaction
-	input []byte
+	txn     *transaction.Transaction
+	input   []byte
+	timings map[string]time.Duration
+}
+
+func (bt BenchTest) Timings() map[string]time.Duration {
+	return bt.timings
 }
 
 func (bt BenchTest) Name() string {
@@ -96,6 +102,13 @@ func BenchmarkTests(
 	}
 	msc.setSC(msc.SmartContract, &smartcontract.BCContext{})
 	miner00 := getMinerDelegatePoolId(0, 0, spenum.Miner)
+	timings := make(map[string]time.Duration)
+	newPayFeesF := func(
+		t *transaction.Transaction,
+		_ []byte, gn *GlobalNode, balances cstate.StateContextI,
+	) (string, error) {
+		return msc.payFees(t, nil, gn, balances, timings)
+	}
 	var tests = []BenchTest{
 		{
 			name:     "miner.add_miner",
@@ -172,13 +185,14 @@ func BenchmarkTests(
 		},
 		{
 			name:     "miner.payFees",
-			endpoint: msc.payFees,
+			endpoint: newPayFeesF,
 			txn: &transaction.Transaction{
 				ClientID:     GetMockNodeId(0, spenum.Miner),
 				ToClientID:   ADDRESS,
 				CreationDate: creationTime,
 			},
-			input: nil,
+			input:   nil,
+			timings: timings,
 		},
 		{
 			name:     "miner.contributeMpk",

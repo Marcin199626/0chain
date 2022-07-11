@@ -3,6 +3,7 @@ package minersc
 import (
 	"fmt"
 	"sort"
+	"time"
 
 	"0chain.net/chaincore/currency"
 
@@ -284,9 +285,26 @@ func (msc *MinerSmartContract) adjustViewChange(gn *GlobalNode,
 	return
 }
 
+type Timings struct {
+	timings map[string]time.Duration
+	start   time.Time
+}
+
+func (t *Timings) tick(name string) {
+	if t.timings == nil {
+		return
+	}
+	t.timings[name] = time.Since(t.start)
+}
+
 func (msc *MinerSmartContract) payFees(t *transaction.Transaction,
-	_ []byte, gn *GlobalNode, balances cstate.StateContextI) (
+	_ []byte, gn *GlobalNode, balances cstate.StateContextI, timings map[string]time.Duration) (
 	resp string, err error) {
+
+	m := Timings{
+		timings: timings,
+		start:   time.Now(),
+	}
 
 	configuration := config.Configuration()
 	isViewChange := configuration.ChainConfig.IsViewChangeEnabled()
@@ -297,14 +315,17 @@ func (msc *MinerSmartContract) payFees(t *transaction.Transaction,
 		if pn, err = GetPhaseNode(balances); err != nil {
 			return
 		}
+		m.tick("get_phase_node")
 		if err = msc.setPhaseNode(balances, pn, gn, t); err != nil {
 			return "", common.NewErrorf("pay_fees",
 				"error inserting phase node: %v", err)
 		}
+		m.tick("set phase node")
 
 		if err = msc.adjustViewChange(gn, balances); err != nil {
 			return // adjusting view change error
 		}
+		m.tick("adjust view change")
 	}
 
 	var mb = balances.GetBlock()
@@ -313,6 +334,7 @@ func (msc *MinerSmartContract) payFees(t *transaction.Transaction,
 			"can't set magic mb round=%d viewChange=%d",
 			mb.Round, gn.ViewChange)
 	}
+	m.tick("set magic block")
 
 	if t.ClientID != mb.MinerID {
 		return "", common.NewError("pay_fee", "not mb generator")
@@ -328,6 +350,7 @@ func (msc *MinerSmartContract) payFees(t *transaction.Transaction,
 		return "", common.NewErrorf("pay_fee", "can't get generator '%s': %v",
 			mb.MinerID, err)
 	}
+	m.tick("get miner node")
 
 	Logger.Debug("Pay fees, get miner id successfully",
 		zap.String("miner id", mb.MinerID),
@@ -338,34 +361,39 @@ func (msc *MinerSmartContract) payFees(t *transaction.Transaction,
 	if err != nil {
 		return "", err
 	}
-	blockReward := currency.Coin(
-		float64(gn.BlockReward) * gn.RewardRate,
-	)
+	m.tick("sum fee")
+	blockReward, err := currency.Float64ToCoin(float64(gn.BlockReward) * gn.RewardRate)
+	if err != nil {
+		return "", err
+	}
 	minerRewards, sharderRewards, err := gn.splitByShareRatio(blockReward)
 	if err != nil {
 		return "", fmt.Errorf("error splitting rewards by ratio: %v", err)
 	}
+	m.tick("split by share ratio 1")
 	minerFees, sharderFees, err := gn.splitByShareRatio(fees)
 	if err != nil {
 		return "", fmt.Errorf("error splitting fees by ratio: %v", err)
 	}
+	m.tick("split by share ratio 2")
 
-	if err := mn.StakePool.DistributeRewards(
-		minerRewards+minerFees, mn.ID, spenum.Miner, balances,
-	); err != nil {
+	if err := mn.StakePool.DistributeRewards(minerRewards+minerFees, mn.ID, spenum.Miner, balances); err != nil {
 		return "", err
 	}
+	m.tick("distribute rewards")
 
 	// pay and mint rest for mb sharders
 	if err := msc.payShardersAndDelegates(sharderFees, sharderRewards, mb, gn, balances); err != nil {
 		return "", err
 	}
+	m.tick("pay sharders and delegates")
 
 	// save node first, for the VC pools work
 	if err = mn.save(balances); err != nil {
 		return "", common.NewErrorf("pay_fees",
 			"saving generator node: %v", err)
 	}
+	m.tick("miner save")
 
 	if err = emitUpdateMiner(mn, balances, false); err != nil {
 		return "", common.NewErrorf("pay_fees", "saving generator node to db: %v", err)
@@ -373,11 +401,13 @@ func (msc *MinerSmartContract) payFees(t *transaction.Transaction,
 
 	if gn.RewardRoundFrequency != 0 && mb.Round%gn.RewardRoundFrequency == 0 {
 		var lfmb = balances.GetLastestFinalizedMagicBlock().MagicBlock
+		m.tick("get lastest finalized magic block")
 		if lfmb != nil {
 			err = msc.viewChangePoolsWork(gn, lfmb, mb.Round, balances)
 			if err != nil {
 				return "", err
 			}
+			m.tick("view_change_pool_works")
 		} else {
 			return "", common.NewError("pay fees", "cannot find latest magic bock")
 		}
@@ -388,6 +418,7 @@ func (msc *MinerSmartContract) payFees(t *transaction.Transaction,
 		return "", common.NewErrorf("pay_fees",
 			"saving global node: %v", err)
 	}
+	m.tick("global_node save")
 
 	return resp, nil
 }
