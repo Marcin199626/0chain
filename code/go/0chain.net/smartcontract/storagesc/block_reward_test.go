@@ -135,7 +135,7 @@ func TestStorageSmartContract_blobberBlockRewards(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ssc := newTestStorageSC()
 			setupRewards(t, tt.params, ssc)
-			err := ssc.blobberBlockRewards(balances)
+			err := ssc.blobberBlockRewards(balances, nil)
 			require.EqualValues(t, tt.wantErr, err != nil)
 			compareResult(t, tt.params, tt.result, ssc)
 

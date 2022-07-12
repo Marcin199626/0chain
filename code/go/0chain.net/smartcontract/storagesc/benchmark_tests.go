@@ -118,7 +118,7 @@ func BenchmarkTests(
 		r []byte,
 		b cstate.StateContextI,
 	) (string, error) {
-		return ssc.newAllocationRequest(t, r, b, timings)
+		return ssc.newAllocationRequest(t, r, b, nil)
 	}
 
 	var tests = []BenchTest{
@@ -669,14 +669,15 @@ func BenchmarkTests(
 				_ []byte,
 				balances cstate.StateContextI,
 			) (string, error) {
-				err := ssc.blobberBlockRewards(balances)
+				err := ssc.blobberBlockRewards(balances, timings)
 				if err != nil {
 					return "", err
 				} else {
 					return "blobber block rewarded", nil
 				}
 			},
-			txn: &transaction.Transaction{CreationDate: creationTime},
+			txn:     &transaction.Transaction{CreationDate: creationTime},
+			timings: timings,
 		},
 		{
 			name:     "storage.challenge_response",

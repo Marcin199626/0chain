@@ -229,7 +229,7 @@ func (sc *StorageSmartContract) Execute(t *transaction.Transaction,
 	case "update_validator_settings":
 		resp, err = sc.updateValidatorSettings(t, input, balances)
 	case "blobber_block_rewards":
-		err = sc.blobberBlockRewards(balances)
+		err = sc.blobberBlockRewards(balances, nil)
 
 	// read_pool
 
