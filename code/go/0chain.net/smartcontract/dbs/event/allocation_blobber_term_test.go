@@ -38,52 +38,44 @@ func TestAllocationBlobberTerms(t *testing.T) {
 	err = eventDb.AutoMigrate()
 	require.NoError(t, err)
 
-	term1 := AllocationBlobberTerm{
-		AllocationID:            encryption.Hash("mockAllocation_" + strconv.Itoa(0)),
-		BlobberID:               encryption.Hash("mockBlobber_" + strconv.Itoa(0)),
-		ReadPrice:               int64(currency.Coin(29)),
-		WritePrice:              int64(currency.Coin(31)),
-		MinLockDemand:           37.0,
-		MaxOfferDuration:        39 * time.Minute,
-		ChallengeCompletionTime: 41 * time.Minute,
+	terms := []AllocationBlobberTerm{
+		{
+			AllocationID:            encryption.Hash("mockAllocation_" + strconv.Itoa(0)),
+			BlobberID:               encryption.Hash("mockBlobber_" + strconv.Itoa(0)),
+			ReadPrice:               int64(currency.Coin(29)),
+			WritePrice:              int64(currency.Coin(31)),
+			MinLockDemand:           37.0,
+			MaxOfferDuration:        39 * time.Minute,
+			ChallengeCompletionTime: 41 * time.Minute,
+		},
+		{
+			AllocationID:             encryption.Hash("mockAllocation_" + strconv.Itoa(0)),
+			BlobberID:               encryption.Hash("mockBlobber_" + strconv.Itoa(1)),
+			ReadPrice:               int64(currency.Coin(41)),
+			WritePrice:              int64(currency.Coin(43)),
+			MinLockDemand:           47.0,
+			MaxOfferDuration:        49 * time.Minute,
+			ChallengeCompletionTime: 51 * time.Minute,
+		},
 	}
 
-	term2 := AllocationBlobberTerm{
-		AllocationID:            term1.AllocationID,
-		BlobberID:               encryption.Hash("mockBlobber_" + strconv.Itoa(1)),
-		ReadPrice:               int64(currency.Coin(41)),
-		WritePrice:              int64(currency.Coin(43)),
-		MinLockDemand:           47.0,
-		MaxOfferDuration:        49 * time.Minute,
-		ChallengeCompletionTime: 51 * time.Minute,
-	}
-
-	err = eventDb.addOrOverwriteAllocationBlobberTerm(term1)
+	err = eventDb.addOrOverwriteAllocationBlobberTerms(terms)
 	require.NoError(t, err, "Error while inserting Allocation's Blobber's AllocationBlobberTerm to event database")
 
 	var term *AllocationBlobberTerm
-	var terms []AllocationBlobberTerm
-	terms, err = eventDb.GetAllocationBlobberTerms(term1.AllocationID, "")
-	require.Equal(t, int64(1), len(terms), "AllocationBlobberTerm not getting inserted")
+	var res []AllocationBlobberTerm
+	res, err = eventDb.GetAllocationBlobberTerms(terms[0].AllocationID, terms[0].BlobberID)
+	require.Equal(t, int64(1), len(res), "AllocationBlobberTerm not getting inserted")
 
-	err = eventDb.addOrOverwriteAllocationBlobberTerm(term2)
+	res, err = eventDb.GetAllocationBlobberTerms(terms[0].AllocationID, "")
+	require.Equal(t, int64(2), len(res), "AllocationBlobberTerm not getting inserted")
+
+	terms[1].MinLockDemand = 70.0
+	err = eventDb.addOrOverwriteAllocationBlobberTerms(terms)
 	require.NoError(t, err, "Error while inserting Allocation's Blobber's AllocationBlobberTerm to event database")
 
-	terms, err = eventDb.GetAllocationBlobberTerms(term1.AllocationID, "")
-	require.Equal(t, int64(2), len(terms), "Authorizer not getting inserted")
-
-	_, err = eventDb.GetAllocationBlobberTerm(term1.AllocationID, term1.BlobberID)
-	require.NoError(t, err, "Error while getting AllocationBlobberTerm from event Database")
-
-	_, err = term2.exists(eventDb)
-	require.NoError(t, err, "Error while checking if AllocationBlobberTerm exists in event Database")
-
-	term2.MinLockDemand = 70.0
-	err = eventDb.addOrOverwriteAllocationBlobberTerm(term2)
-	require.NoError(t, err, "Error while inserting Allocation's Blobber's AllocationBlobberTerm to event database")
-
-	term, err = eventDb.GetAllocationBlobberTerm(term2.AllocationID, term2.BlobberID)
-	require.Equal(t, term2.MinLockDemand, term.MinLockDemand, "Error while overriding AllocationBlobberTerm in event Database")
+	term, err = eventDb.GetAllocationBlobberTerm(terms[1].AllocationID, terms[1].BlobberID)
+	require.Equal(t, terms[1].MinLockDemand, term.MinLockDemand, "Error while overriding AllocationBlobberTerm in event Database")
 
 	err = eventDb.Drop()
 	require.NoError(t, err)

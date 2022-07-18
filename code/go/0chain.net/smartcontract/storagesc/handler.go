@@ -2279,17 +2279,23 @@ func (srh *StorageRestHandler) getAllocBlobberTerms(w http.ResponseWriter, r *ht
 	edb := srh.GetQueryStateContext().GetEventDB()
 	if edb == nil {
 		common.Respond(w, r, nil, common.NewErrInternal("no db connection"))
+		return
 	}
 	var resp interface{}
 	var err error
-	if allocationID != "" && blobberID != "" {
-		resp, err = edb.GetAllocationBlobberTerm(allocationID, blobberID)
-	} else {
+	if allocationID == "" || blobberID == "" {
 		resp, err = edb.GetAllocationBlobberTerms(allocationID, blobberID)
-	}
-	if err != nil {
-		common.Respond(w, r, nil, common.NewErrBadRequest("error finding term(s):"+err.Error()))
-		return
+		if err != nil {
+			common.Respond(w, r, nil, common.NewErrBadRequest("error finding terms: "+err.Error()))
+			return
+		}
+	} else {
+		resp, err = edb.GetAllocationBlobberTerm(allocationID, blobberID)
+		if err != nil {
+			common.Respond(w, r, nil, common.NewErrBadRequest("error finding term: "+err.Error()))
+			return
+		}
+
 	}
 
 	common.Respond(w, r, resp, nil)
