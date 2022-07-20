@@ -9,6 +9,9 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"0chain.net/core/logging"
+	"go.uber.org/zap"
 )
 
 /*ReqRespHandlerf - a type for the default hanlder signature */
@@ -134,6 +137,8 @@ func CheckCrossOrigin(w http.ResponseWriter, r *http.Request) bool {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		return true
 	}
+
+	logging.Logger.Debug("cross origin request", zap.String("url", r.RequestURI))
 	return false
 }
 
