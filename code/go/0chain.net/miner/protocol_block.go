@@ -162,6 +162,8 @@ func (mc *Chain) validateTransaction(b *block.Block, bState util.MerklePatriciaT
 	}
 
 	if txn.Nonce-state.Nonce < 1 {
+		logging.Logger.Debug("past txn", zap.String("txn", txn.Hash),
+			zap.Int64("nonce", txn.Nonce))
 		return PastTransaction
 	}
 
