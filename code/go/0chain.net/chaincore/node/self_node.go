@@ -29,8 +29,10 @@ type SelfNode struct {
 
 func (sn *SelfNode) SetNonce(nonce int64) {
 	sn.mx.Lock()
-	sn.nonce = nonce
-	sn.refreshTime = time.Now()
+	if nonce > sn.nonce {
+		sn.nonce = nonce
+		sn.refreshTime = time.Now()
+	}
 	sn.mx.Unlock()
 }
 
