@@ -11,6 +11,8 @@ import (
 	"0chain.net/core/build"
 	"0chain.net/core/common"
 	"0chain.net/core/encryption"
+	"0chain.net/core/logging"
+	"go.uber.org/zap"
 )
 
 const NONCE_REFRESH_PERIOD = time.Minute
@@ -30,6 +32,7 @@ type SelfNode struct {
 func (sn *SelfNode) SetNonce(nonce int64) {
 	sn.mx.Lock()
 	//if nonce > sn.nonce {
+	logging.Logger.Warn("set nonce", zap.Int64("nonce", nonce))
 	sn.nonce = nonce
 	//}
 	sn.refreshTime = time.Now()
