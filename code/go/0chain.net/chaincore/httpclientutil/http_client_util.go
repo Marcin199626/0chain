@@ -230,7 +230,8 @@ func sendTransactionToURL(url string, txn *Transaction, ID string, pkey string, 
 		return nil, err
 	}
 
-	logging.Logger.Debug("send transaction:", zap.String("txn:", txn.TransactionData))
+	logging.Logger.Debug("send transaction:",
+		zap.String("txn:", txn.TransactionData), zap.Int64("nonce", txn.Nonce))
 	return SendPostRequest(url, jsObj, ID, pkey, nil)
 }
 
