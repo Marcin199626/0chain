@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io/ioutil"
@@ -1299,20 +1300,31 @@ func PutTransaction(ctx context.Context, entity datastore.Entity) (interface{}, 
 	if !ok {
 		return nil, fmt.Errorf("invalid request %T", entity)
 	}
+	logging.Logger.Debug("put transaction", zap.String("txn", txn.TransactionData))
 
 	sc := GetServerChain()
 	if sc.TxnMaxPayload() > 0 {
 		if len(txn.TransactionData) > sc.TxnMaxPayload() {
 			s := fmt.Sprintf("transaction payload exceeds the max payload (%d)", GetServerChain().TxnMaxPayload())
+
+			logging.Logger.Error("put transaction failed",
+				zap.Error(errors.New(s)),
+				zap.String("txn", txn.TransactionData))
 			return nil, common.NewError("txn_exceed_max_payload", s)
 		}
 	}
 
 	// Calculate and update fee
 	if err := txn.ValidateFee(sc.ChainConfig.TxnExempt(), sc.ChainConfig.MinTxnFee()); err != nil {
+		logging.Logger.Error("put transaction failed validate fee",
+			zap.Error(err),
+			zap.String("txn", txn.TransactionData))
 		return nil, err
 	}
 	if err := txn.ValidateNonce(); err != nil {
+		logging.Logger.Error("put transaction failed validate nonce",
+			zap.Error(err),
+			zap.String("txn", txn.TransactionData))
 		return nil, err
 	}
 
