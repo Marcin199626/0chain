@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
+	"0chain.net/chaincore/config"
 	"0chain.net/chaincore/currency"
 
 	"0chain.net/core/logging"
@@ -177,10 +179,7 @@ func (sp *stakePool) removeOffer(amount currency.Coin) error {
 // slash represents blobber penalty; it returns number of tokens moved in
 // reality, in regard to division errors
 func (sp *stakePool) slash(
-	alloc *StorageAllocation,
 	blobID string,
-	until common.Timestamp,
-	wp *writePool,
 	offer, slash currency.Coin,
 	balances chainstate.StateContextI,
 ) (move currency.Coin, err error) {
@@ -190,18 +189,6 @@ func (sp *stakePool) slash(
 
 	if slash > offer {
 		slash = offer // can't move the offer left
-	}
-
-	// the move is total movements, but it should be divided by all
-	// related stake holders, that can loose some tokens due to
-	// division error;
-	var ap = wp.allocPool(alloc.ID, until)
-	if ap == nil {
-		ap = new(allocationPool)
-		ap.AllocationID = alloc.ID
-		ap.ExpireAt = 0
-		alloc.addWritePoolOwner(alloc.Owner)
-		wp.Pools.add(ap)
 	}
 
 	// offer ratio of entire stake; we are slashing only part of the offer
@@ -214,27 +201,18 @@ func (sp *stakePool) slash(
 		if dpSlash == 0 {
 			continue
 		}
-		dp.Balance -= dpSlash
-		ap.Balance += dpSlash
 
+		if balance, err := currency.MinusCoin(dp.Balance, dpSlash); err != nil {
+			return 0, err
+		} else {
+			dp.Balance = balance
+		}
 		move += dpSlash
 		edbSlash.DelegateRewards[id] = -1 * int64(dpSlash)
 	}
+	// todo we should slash from stake pools not rewards. 0chain issue 1495
 	if err := edbSlash.Emit(event.TagStakePoolReward, balances); err != nil {
 		return 0, err
-	}
-
-	// move
-	if blobID != "" {
-		var bp, ok = ap.Blobbers.get(blobID)
-		if !ok {
-			ap.Blobbers.add(&blobberPool{
-				BlobberID: blobID,
-				Balance:   move,
-			})
-		} else {
-			bp.Balance += move
-		}
 	}
 
 	return
@@ -459,6 +437,20 @@ func (ssc *StorageSmartContract) stakePoolUnlock(
 	if sp, err = ssc.getStakePool(spr.BlobberID, balances); err != nil {
 		return "", common.NewErrorf("stake_pool_unlock_failed",
 			"can't get related stake pool: %v", err)
+	}
+
+	dp, ok := sp.Pools[spr.PoolID]
+	if !ok {
+		return "", common.NewErrorf("stake_pool_unlock_failed", "no such delegate pool: %v ", spr.PoolID)
+	}
+
+	// if StakeAt has valid value and lock period is less than MinLockPeriod
+	if dp.StakedAt > 0 {
+		stakedAt := common.ToTime(dp.StakedAt)
+		minLockPeriod := config.SmartContractConfig.GetDuration("stakepool.min_lock_period")
+		if !stakedAt.Add(minLockPeriod).Before(time.Now()) {
+			return "", common.NewErrorf("stake_pool_unlock_failed", "token can only be unstaked till: %s", stakedAt.Add(minLockPeriod))
+		}
 	}
 
 	unstake, err := sp.empty(ssc.ID, spr.PoolID, t.ClientID, balances)
