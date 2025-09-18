@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"math"
 
-	"0chain.net/chaincore/currency"
+	"github.com/0chain/common/core/currency"
 )
 
 // GetGamma gets gamma for blobber block reward
@@ -18,6 +18,7 @@ func GetGamma(A, B, alpha, X, R float64) float64 {
 	}
 
 	factor := math.Abs((alpha*X - R) / (alpha*X + R))
+
 	return A - B*factor
 }
 
@@ -44,17 +45,13 @@ func SafeAddInt64(left, right int64) (int64, error) {
 	return left + right, nil
 }
 
-// SafeAddInt adds two integers and returns an error if there is overflows
-func SafeAddInt(left, right int) (int, error) {
-	if right > 0 {
-		if left > math.MaxInt-right {
-			return 0, currency.ErrIntAddOverflow
-		}
-	} else {
-		if left < math.MinInt-right {
-			return 0, currency.ErrIntAddOverflow
-		}
+// SafeAddUInt64 adds two uint64 and returns an error if there is an overflow
+func SafeAddUInt64(left, right uint64) (uint64, error) {
+
+	if left > math.MaxUint64-right {
+		return 0, currency.ErrIntAddOverflow
 	}
+
 	return left + right, nil
 }
 
@@ -82,4 +79,29 @@ func SafeMultInt64(a, b int64) (int64, error) {
 		return result, fmt.Errorf("overflow multiplying %v and %v", a, b)
 	}
 	return result, nil
+}
+
+// ConvertToUint64 converts an int64 to uint64 and throws if the int64 number is negative
+func ConvertToUint64(a int64) (uint64, error) {
+	if a < 0 {
+		return 0, fmt.Errorf("int64 %v is negative", a)
+	}
+
+	return uint64(a), nil
+}
+
+// ConvertUInt64sToInts converts the given int64 numbers to corresponding unints and return them in the same order.
+// throws if any value is less than 0.
+func ConvertUInt64sToInts(numbers ...int64) ([]uint64, error) {
+	convertedNumbers := make([]uint64, len(numbers))
+
+	for i, num := range numbers {
+		converted, err := ConvertToUint64(num)
+		if err != nil {
+			return nil, err
+		}
+		convertedNumbers[i] = converted
+	}
+
+	return convertedNumbers, nil
 }

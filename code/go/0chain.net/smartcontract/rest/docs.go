@@ -1,8 +1,7 @@
-//  0chain Api:
-//   version: 0.0.1
-//   title: 0chain Api
+//  Sharder Smart Contract API:
+//   version: 0.1.0
+//   title: Sharder Smart Contract API
 //  Schemes: http, https
-//  Host: localhost:7171
 //  BasePath: /
 //  Produces:
 //    - application/json

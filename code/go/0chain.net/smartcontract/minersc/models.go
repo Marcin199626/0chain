@@ -2,7 +2,6 @@ package minersc
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"math/rand"
@@ -11,20 +10,20 @@ import (
 	"strings"
 	"sync"
 
-	"0chain.net/chaincore/currency"
+	"0chain.net/smartcontract/provider"
 
-	"0chain.net/smartcontract"
+	"github.com/0chain/common/core/currency"
+
+	"0chain.net/smartcontract/stakepool/spenum"
 
 	"0chain.net/chaincore/block"
 	cstate "0chain.net/chaincore/chain/state"
-	"0chain.net/chaincore/config"
-	"0chain.net/chaincore/node"
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
 	"0chain.net/core/encryption"
-	"0chain.net/core/logging"
-	"0chain.net/core/util"
+	"github.com/0chain/common/core/logging"
+	"github.com/0chain/common/core/util"
 
 	"github.com/go-playground/validator/v10"
 	"go.uber.org/zap"
@@ -70,6 +69,23 @@ func (p Phase) String() string {
 	return fmt.Sprintf("Phase<%d>", int(p))
 }
 
+func StringToPhase(s string) Phase {
+	switch s {
+	case "start":
+		return Start
+	case "contribute":
+		return Contribute
+	case "share":
+		return Share
+	case "publish":
+		return Publish
+	case "wait":
+		return Wait
+	default:
+		return Unknown
+	}
+}
+
 // Pool status
 const (
 	ACTIVE    = "ACTIVE"
@@ -88,6 +104,10 @@ var (
 	GroupShareOrSignsKey = globalKeyHash("group_share_or_signs")
 	ShardersKeepKey      = globalKeyHash("sharders_keep")
 	PhaseKey             = globalKeyHash("phase")
+	DeleteMinersKey      = globalKeyHash("delete_miners")
+	DeleteShardersKey    = globalKeyHash("delete_sharders")
+	RegisterMinersKey    = globalKeyHash("register_miners")
+	RegisterShardersKey  = globalKeyHash("register_sharders")
 
 	lockAllMiners sync.Mutex
 )
@@ -102,7 +122,7 @@ type (
 )
 
 func globalKeyHash(name string) datastore.Key {
-	return datastore.Key(ADDRESS + encryption.Hash(name))
+	return ADDRESS + encryption.Hash(name)
 }
 
 func NewSimpleNodes() SimpleNodes {
@@ -202,419 +222,6 @@ func (sns SimpleNodes) reduce(limit int, xPercent float64, pmbrss int64, pmbnp P
 	return maxNodes
 }
 
-//
-// global
-//
-
-type GlobalNode struct {
-	ViewChange   int64   `json:"view_change"`
-	MaxN         int     `json:"max_n"`         // } miners limits
-	MinN         int     `json:"min_n"`         // }
-	MaxS         int     `json:"max_s"`         // } sharders limits
-	MinS         int     `json:"min_s"`         // }
-	MaxDelegates int     `json:"max_delegates"` // } limited by the SC
-	TPercent     float64 `json:"t_percent"`
-	KPercent     float64 `json:"k_percent"`
-	XPercent     float64 `json:"x_percent"`
-	LastRound    int64   `json:"last_round"`
-	// MaxStake boundary of SC.
-	MaxStake currency.Coin `json:"max_stake"`
-	// MinStake boundary of SC.
-	MinStake currency.Coin `json:"min_stake"`
-
-	// Reward rate.
-	RewardRate float64 `json:"reward_rate"`
-	// ShareRatio is miner/block sharders rewards ratio.
-	ShareRatio float64 `json:"share_ratio"`
-	// BlockReward
-	BlockReward currency.Coin `json:"block_reward"`
-	// MaxCharge can be set by a generator.
-	MaxCharge float64 `json:"max_charge"` // %
-	// Epoch is number of rounds to decline interests and rewards.
-	Epoch int64 `json:"epoch"`
-	// RewardDeclineRate is ratio of epoch rewards declining.
-	RewardDeclineRate float64 `json:"reward_decline_rate"`
-	// MaxMint is minting boundary for SC.
-	MaxMint currency.Coin `json:"max_mint"`
-
-	// PrevMagicBlock keeps previous magic block to make Miner SC more stable.
-	// In case latestFinalizedMagicBlock of a miner works incorrect. We are
-	// using this previous MB or latestFinalizedMagicBlock for genesis block.
-	PrevMagicBlock *block.MagicBlock `json:"prev_magic_block"`
-
-	// Minted tokens by SC.
-	Minted currency.Coin `json:"minted"`
-
-	// If viewchange is false then this will be used to pay interests and rewards to miner/sharders.
-	RewardRoundFrequency int64          `json:"reward_round_frequency"`
-	OwnerId              string         `json:"owner_id"`
-	CooldownPeriod       int64          `json:"cooldown_period"`
-	Cost                 map[string]int `json:"cost"`
-}
-
-func (gn *GlobalNode) readConfig() (err error) {
-	const pfx = "smart_contracts.minersc."
-	gn.MinStake, err = currency.ParseZCN(config.SmartContractConfig.GetFloat64(pfx + SettingName[MinStake]))
-	if err != nil {
-		return
-	}
-	gn.MaxStake, err = currency.ParseZCN(config.SmartContractConfig.GetFloat64(pfx + SettingName[MaxStake]))
-	if err != nil {
-		return
-	}
-	gn.MaxN = config.SmartContractConfig.GetInt(pfx + SettingName[MaxN])
-	gn.MinN = config.SmartContractConfig.GetInt(pfx + SettingName[MinN])
-	gn.TPercent = config.SmartContractConfig.GetFloat64(pfx + SettingName[TPercent])
-	gn.KPercent = config.SmartContractConfig.GetFloat64(pfx + SettingName[KPercent])
-	gn.XPercent = config.SmartContractConfig.GetFloat64(pfx + SettingName[XPercent])
-	gn.MaxS = config.SmartContractConfig.GetInt(pfx + SettingName[MaxS])
-	gn.MinS = config.SmartContractConfig.GetInt(pfx + SettingName[MinS])
-	gn.MaxDelegates = config.SmartContractConfig.GetInt(pfx + SettingName[MaxDelegates])
-	gn.RewardRoundFrequency = config.SmartContractConfig.GetInt64(pfx + SettingName[RewardRoundFrequency])
-	gn.RewardRate = config.SmartContractConfig.GetFloat64(pfx + SettingName[RewardRate])
-	gn.ShareRatio = config.SmartContractConfig.GetFloat64(pfx + SettingName[ShareRatio])
-	gn.BlockReward, err = currency.ParseZCN(config.SmartContractConfig.GetFloat64(pfx + SettingName[BlockReward]))
-	if err != nil {
-		return
-	}
-	gn.MaxCharge = config.SmartContractConfig.GetFloat64(pfx + SettingName[MaxCharge])
-	gn.Epoch = config.SmartContractConfig.GetInt64(pfx + SettingName[Epoch])
-	gn.RewardDeclineRate = config.SmartContractConfig.GetFloat64(pfx + SettingName[RewardDeclineRate])
-	gn.MaxMint, err = currency.ParseZCN(config.SmartContractConfig.GetFloat64(pfx + SettingName[MaxMint]))
-	if err != nil {
-		return
-	}
-	gn.OwnerId = config.SmartContractConfig.GetString(pfx + SettingName[OwnerId])
-	gn.CooldownPeriod = config.SmartContractConfig.GetInt64(pfx + SettingName[CooldownPeriod])
-	gn.Cost = config.SmartContractConfig.GetStringMapInt(pfx + SettingName[Cost])
-	return nil
-}
-
-func (gn *GlobalNode) validate() error {
-	if gn.MinN < 1 {
-		return fmt.Errorf("min_n is too small: %d", gn.MinN)
-	}
-	if gn.MaxN < gn.MinN {
-		return fmt.Errorf("max_n is less than min_n: %d < %d",
-			gn.MaxN, gn.MinN)
-	}
-
-	if gn.MinS < 1 {
-		return fmt.Errorf("min_s is too small: %d", gn.MinS)
-	}
-	if gn.MaxS < gn.MinS {
-		return fmt.Errorf("max_s is less than min_s: %d < %d",
-			gn.MaxS, gn.MinS)
-	}
-
-	if gn.MaxDelegates <= 0 {
-		return fmt.Errorf("max_delegates is too small: %d", gn.MaxDelegates)
-	}
-	return nil
-}
-
-func (gn *GlobalNode) getConfigMap() (smartcontract.StringMap, error) {
-	var out smartcontract.StringMap
-	out.Fields = make(map[string]string)
-	for _, key := range SettingName {
-		info, ok := Settings[strings.ToLower(key)]
-		if !ok {
-			return out, fmt.Errorf("SettingName %s not found in Settings", key)
-		}
-		iSetting, err := gn.Get(info.Setting)
-		if err != nil {
-			return out, err
-		}
-		if info.ConfigType == smartcontract.CurrencyCoin {
-			sbSetting, ok := iSetting.(currency.Coin)
-			if !ok {
-				return out, fmt.Errorf("%s key not implemented as state.balance", key)
-			}
-			iSetting = float64(sbSetting) / x10
-		}
-		out.Fields[key] = fmt.Sprintf("%v", iSetting)
-	}
-	return out, nil
-}
-
-func (gn *GlobalNode) Get(key Setting) (interface{}, error) {
-	switch key {
-	case MinStake:
-		return gn.MinStake, nil
-	case MaxStake:
-		return gn.MaxStake, nil
-	case MaxN:
-		return gn.MaxN, nil
-	case MinN:
-		return gn.MinN, nil
-	case TPercent:
-		return gn.TPercent, nil
-	case KPercent:
-		return gn.KPercent, nil
-	case XPercent:
-		return gn.XPercent, nil
-	case MaxS:
-		return gn.MaxS, nil
-	case MinS:
-		return gn.MinS, nil
-	case MaxDelegates:
-		return gn.MaxDelegates, nil
-	case RewardRoundFrequency:
-		return gn.RewardRoundFrequency, nil
-	case RewardRate:
-		return gn.RewardRate, nil
-	case ShareRatio:
-		return gn.ShareRatio, nil
-	case BlockReward:
-		return gn.BlockReward, nil
-	case MaxCharge:
-		return gn.MaxCharge, nil
-	case Epoch:
-		return gn.Epoch, nil
-	case RewardDeclineRate:
-		return gn.RewardDeclineRate, nil
-	case MaxMint:
-		return gn.MaxMint, nil
-	case OwnerId:
-		return gn.OwnerId, nil
-	case CooldownPeriod:
-		return gn.CooldownPeriod, nil
-	case Cost:
-		return "", nil
-	case CostAddMiner:
-		return gn.Cost[strings.ToLower(strings.TrimPrefix(SettingName[CostAddMiner], fmt.Sprintf("%s.", SettingName[Cost])))], nil
-	case CostAddSharder:
-		return gn.Cost[strings.ToLower(strings.TrimPrefix(SettingName[CostAddSharder], fmt.Sprintf("%s.", SettingName[Cost])))], nil
-	case CostDeleteMiner:
-		return gn.Cost[strings.ToLower(strings.TrimPrefix(SettingName[CostDeleteMiner], fmt.Sprintf("%s.", SettingName[Cost])))], nil
-	case CostMinerHealthCheck:
-		return gn.Cost[strings.ToLower(strings.TrimPrefix(SettingName[CostMinerHealthCheck], fmt.Sprintf("%s.", SettingName[Cost])))], nil
-	case CostSharderHealthCheck:
-		return gn.Cost[strings.ToLower(strings.TrimPrefix(SettingName[CostSharderHealthCheck], fmt.Sprintf("%s.", SettingName[Cost])))], nil
-	case CostContributeMpk:
-		return gn.Cost[strings.ToLower(strings.TrimPrefix(SettingName[CostContributeMpk], fmt.Sprintf("%s.", SettingName[Cost])))], nil
-	case CostShareSignsOrShares:
-		return gn.Cost[strings.ToLower(strings.TrimPrefix(SettingName[CostShareSignsOrShares], fmt.Sprintf("%s.", SettingName[Cost])))], nil
-	case CostWait:
-		return gn.Cost[strings.ToLower(strings.TrimPrefix(SettingName[CostWait], fmt.Sprintf("%s.", SettingName[Cost])))], nil
-	case CostUpdateGlobals:
-		return gn.Cost[strings.ToLower(strings.TrimPrefix(SettingName[CostUpdateGlobals], fmt.Sprintf("%s.", SettingName[Cost])))], nil
-	case CostUpdateSettings:
-		return gn.Cost[strings.ToLower(strings.TrimPrefix(SettingName[CostUpdateSettings], fmt.Sprintf("%s.", SettingName[Cost])))], nil
-	case CostUpdateMinerSettings:
-		return gn.Cost[strings.ToLower(strings.TrimPrefix(SettingName[CostUpdateMinerSettings], fmt.Sprintf("%s.", SettingName[Cost])))], nil
-	case CostUpdateSharderSettings:
-		return gn.Cost[strings.ToLower(strings.TrimPrefix(SettingName[CostUpdateSharderSettings], fmt.Sprintf("%s.", SettingName[Cost])))], nil
-	case CostPayFees:
-		return gn.Cost[strings.ToLower(strings.TrimPrefix(SettingName[CostPayFees], fmt.Sprintf("%s.", SettingName[Cost])))], nil
-	case CostFeesPaid:
-		return gn.Cost[strings.ToLower(strings.TrimPrefix(SettingName[CostFeesPaid], fmt.Sprintf("%s.", SettingName[Cost])))], nil
-	case CostMintedTokens:
-		return gn.Cost[strings.ToLower(strings.TrimPrefix(SettingName[CostMintedTokens], fmt.Sprintf("%s.", SettingName[Cost])))], nil
-	case CostAddToDelegatePool:
-		return gn.Cost[strings.ToLower(strings.TrimPrefix(SettingName[CostAddToDelegatePool], fmt.Sprintf("%s.", SettingName[Cost])))], nil
-	case CostDeleteFromDelegatePool:
-		return gn.Cost[strings.ToLower(strings.TrimPrefix(SettingName[CostDeleteFromDelegatePool], fmt.Sprintf("%s.", SettingName[Cost])))], nil
-	case CostSharderKeep:
-		return gn.Cost[strings.ToLower(strings.TrimPrefix(SettingName[CostSharderKeep], fmt.Sprintf("%s.", SettingName[Cost])))], nil
-
-	default:
-		return nil, errors.New("Setting not implemented")
-	}
-}
-
-// The prevMagicBlock from the global node (saved on previous VC) or LFMB of
-// the balances if missing (genesis case);
-func (gn *GlobalNode) prevMagicBlock(balances cstate.StateContextI) (
-	pmb *block.MagicBlock) {
-
-	if gn.PrevMagicBlock != nil {
-		return gn.PrevMagicBlock
-	}
-	return balances.GetLastestFinalizedMagicBlock().MagicBlock
-}
-
-// has previous miner in all miners list
-func (gn *GlobalNode) hasPrevMiner(miners *MinerNodes,
-	balances cstate.StateContextI) (has bool) {
-
-	var pmb = gn.prevMagicBlock(balances)
-
-	for _, mn := range miners.Nodes {
-		if pmb.Miners.HasNode(mn.ID) {
-			return true
-		}
-	}
-
-	return // false, hasn't
-}
-
-// has previous miner in given MPKs
-func (gn *GlobalNode) hasPrevMinerInMPKs(mpks *block.Mpks,
-	balances cstate.StateContextI) (has bool) {
-
-	if len(mpks.Mpks) == 0 {
-		logging.Logger.Error("empty miners mpks keys")
-		return
-	}
-
-	var pmb = gn.prevMagicBlock(balances)
-
-	for id := range mpks.Mpks {
-		if pmb.Miners.HasNode(id) {
-			return true
-		}
-	}
-
-	logging.Logger.Debug("has no prev miner in MPKs", zap.Int64("prev_mb_round", pmb.StartingRound))
-	return // false, hasn't
-}
-
-// has previous miner in given GSoS
-func (gn *GlobalNode) hasPrevMinerInGSoS(gsos *block.GroupSharesOrSigns,
-	balances cstate.StateContextI) (has bool) {
-
-	if len(gsos.Shares) == 0 {
-		logging.Logger.Error("empty sharder or sign keys")
-		return
-	}
-
-	var pmb = gn.prevMagicBlock(balances)
-
-	for id := range gsos.Shares {
-		if pmb.Miners.HasNode(id) {
-			return true
-		}
-	}
-
-	logging.Logger.Debug("has no prev miner in GSoS",
-		zap.Int64("prev_mb_round", pmb.StartingRound),
-		zap.Int("mb miner len", len(pmb.Miners.Nodes)),
-	)
-	return // false, hasn't
-}
-
-// of DKG miners
-func (gn *GlobalNode) hasPrevDKGMiner(dkgmns SimpleNodes,
-	balances cstate.StateContextI) (has bool) {
-
-	var pmb = gn.prevMagicBlock(balances)
-
-	for id := range dkgmns {
-		if pmb.Miners.HasNode(id) {
-			return true
-		}
-	}
-
-	return // false, hasn't
-}
-
-// hasPrevSharderInList checks if there are nodes in previous magic block sharder list
-func hasPrevSharderInList(prevMB *block.MagicBlock, nodes []*MinerNode) bool {
-	for _, n := range nodes {
-		if prevMB.Sharders.HasNode(n.ID) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// rankedPrevSharders receives a list of ranked sharders and extract sharder of
-// previous MB preserving order. The given list not modified.
-func rankedPrevSharders(prevMB *block.MagicBlock, list []*MinerNode) []*MinerNode {
-	prev := make([]*MinerNode, 0, len(list))
-
-	for _, node := range list {
-		if prevMB.Sharders.HasNode(node.ID) {
-			prev = append(prev, node)
-		}
-	}
-
-	return prev
-}
-
-// has previous sharder in sharders keep list
-func (gn *GlobalNode) hasPrevShader(sharders *MinerNodes,
-	balances cstate.StateContextI) (has bool) {
-
-	var pmb = gn.prevMagicBlock(balances)
-
-	for _, sn := range sharders.Nodes {
-		if pmb.Sharders.HasNode(sn.ID) {
-			return true
-		}
-	}
-
-	return // false, hasn't
-}
-
-func (gn *GlobalNode) canMint() bool {
-	return gn.Minted < gn.MaxMint
-}
-
-func (gn *GlobalNode) epochDecline() {
-	// keep existing value for logs
-	var rr = gn.RewardRate
-	// decline the value
-	gn.RewardRate = gn.RewardRate * (1.0 - gn.RewardDeclineRate)
-
-	// log about the epoch declining
-	logging.Logger.Info("miner sc: epoch decline",
-		zap.Int64("round", gn.LastRound),
-		zap.Float64("reward_decline_rate", gn.RewardDeclineRate),
-		zap.Float64("prev_reward_rate", rr),
-		zap.Float64("new_reward_rate", gn.RewardRate),
-	)
-}
-
-// calculate miner/block sharders fees
-func (gn *GlobalNode) splitByShareRatio(fees currency.Coin) (
-	miner, sharders currency.Coin, err error) {
-
-	fFees, err := fees.Float64()
-	if err != nil {
-		return 0, 0, err
-	}
-	miner, err = currency.Float64ToCoin(fFees * gn.ShareRatio)
-	if err != nil {
-		return 0, 0, err
-	}
-	sharders, err = currency.MinusCoin(fees, miner)
-	return
-}
-
-func (gn *GlobalNode) setLastRound(round int64) {
-	gn.LastRound = round
-	if round%gn.Epoch == 0 {
-		gn.epochDecline()
-	}
-}
-
-func (gn *GlobalNode) save(balances cstate.StateContextI) (err error) {
-	if _, err = balances.InsertTrieNode(GlobalNodeKey, gn); err != nil {
-		return fmt.Errorf("saving global node: %v", err)
-	}
-	return
-}
-
-func (gn *GlobalNode) Encode() []byte {
-	buff, _ := json.Marshal(gn)
-	return buff
-}
-
-func (gn *GlobalNode) Decode(input []byte) error {
-	return json.Unmarshal(input, gn)
-}
-
-func (gn *GlobalNode) GetHash() string {
-	return util.ToHex(gn.GetHashBytes())
-}
-
-func (gn *GlobalNode) GetHashBytes() []byte {
-	return encryption.RawHash(gn.Encode())
-}
-
 // NodeType used in pools statistic.
 type NodeType int
 
@@ -664,25 +271,18 @@ func (nt *NodeType) UnmarshalJSON(p []byte) (err error) {
 	return
 }
 
-// swagger:model SimpleNodeGeolocation
-type SimpleNodeGeolocation struct {
-	Latitude  float64 `json:"latitude"`
-	Longitude float64 `json:"longitude"`
-}
-
 // swagger:model SimpleNode
 type SimpleNode struct {
-	ID          string                `json:"id" validate:"hexadecimal,len=64"`
-	N2NHost     string                `json:"n2n_host"`
-	Host        string                `json:"host"`
-	Port        int                   `json:"port"`
-	Geolocation SimpleNodeGeolocation `json:"geolocation"`
-	Path        string                `json:"path"`
-	PublicKey   string                `json:"public_key"`
-	ShortName   string                `json:"short_name"`
-	BuildTag    string                `json:"build_tag"`
-	TotalStaked currency.Coin         `json:"total_stake"`
-	Delete      bool                  `json:"delete"`
+	provider.Provider
+	N2NHost     string        `json:"n2n_host"`
+	Host        string        `json:"host"`
+	Port        int           `json:"port"`
+	Path        string        `json:"path"`
+	PublicKey   string        `json:"public_key"`
+	ShortName   string        `json:"short_name"`
+	BuildTag    string        `json:"build_tag"`
+	TotalStaked currency.Coin `json:"total_stake"`
+	Delete      bool          `json:"delete"`
 
 	// settings and statistic
 
@@ -699,6 +299,25 @@ type SimpleNode struct {
 	LastSettingUpdateRound int64 `json:"last_setting_update_round"`
 }
 
+func (smn *SimpleNode) Clone() *SimpleNode {
+	return &SimpleNode{
+		Provider:               smn.Provider,
+		N2NHost:                smn.N2NHost,
+		Host:                   smn.Host,
+		Port:                   smn.Port,
+		Path:                   smn.Path,
+		PublicKey:              smn.PublicKey,
+		ShortName:              smn.ShortName,
+		BuildTag:               smn.BuildTag,
+		TotalStaked:            smn.TotalStaked,
+		Delete:                 smn.Delete,
+		NodeType:               smn.NodeType,
+		LastHealthCheck:        smn.LastHealthCheck,
+		Status:                 smn.Status,
+		LastSettingUpdateRound: smn.LastSettingUpdateRound,
+	}
+}
+
 func (smn *SimpleNode) Encode() []byte {
 	buff, _ := json.Marshal(smn)
 	return buff
@@ -710,6 +329,10 @@ func (smn *SimpleNode) Decode(input []byte) error {
 
 func (smn *SimpleNode) Validate() error {
 	return validate.Struct(smn)
+}
+
+func (smn *SimpleNode) GetN2NHostKey(scAddress string) string {
+	return scAddress + encryption.Hash(fmt.Sprintf("node_n2n_host_port:%s:%d", smn.N2NHost, smn.Port))
 }
 
 type ViewChangeLock struct {
@@ -756,18 +379,9 @@ func (ps *poolStat) encode() []byte {
 	return buff
 }
 
-// swagger:model
-type delegatePoolStat struct {
-	ID         datastore.Key `json:"id"`
-	Balance    currency.Coin `json:"balance"`
-	Reward     currency.Coin `json:"reward"`      // uncollected reread
-	RewardPaid currency.Coin `json:"reward_paid"` // total reward all time
-	Status     string        `json:"status"`
-}
-
 type deletePool struct {
-	MinerID string `json:"id"`
-	PoolID  string `json:"pool_id"`
+	ProviderType spenum.Provider `json:"provider_type,omitempty"`
+	ProviderID   string          `json:"provider_id,omitempty"`
 }
 
 func (dp *deletePool) Encode() []byte {
@@ -801,31 +415,32 @@ func (pn *PhaseNode) Decode(input []byte) error {
 }
 
 // swagger:model DKGMinerNodes
-type DKGMinerNodes struct {
-	MinN     int     `json:"min_n"`
-	MaxN     int     `json:"max_n"`
-	TPercent float64 `json:"t_percent"`
-	KPercent float64 `json:"k_percent"`
+// type DKGMinerNodes struct {
+// 	MinN     int     `json:"min_n"`
+// 	MaxN     int     `json:"max_n"`
+// 	TPercent float64 `json:"t_percent"`
+// 	KPercent float64 `json:"k_percent"`
 
-	SimpleNodes    `json:"simple_nodes"`
-	T              int             `json:"t"`
-	K              int             `json:"k"`
-	N              int             `json:"n"`
-	XPercent       float64         `json:"x_percent"`
-	RevealedShares map[string]int  `json:"revealed_shares"`
-	Waited         map[string]bool `json:"waited"`
+// 	SimpleNodes    `json:"simple_nodes"`
+// 	T              int             `json:"t"`
+// 	K              int             `json:"k"`
+// 	N              int             `json:"n"`
+// 	XPercent       float64         `json:"x_percent"`
+// 	RevealedShares map[string]int  `json:"revealed_shares"`
+// 	Waited         map[string]bool `json:"waited"`
 
-	// StartRound used to filter responses from old MB where sharders comes up.
-	StartRound int64 `json:"start_round"`
-}
+// 	// StartRound used to filter responses from old MB where sharders comes up.
+// 	StartRound int64 `json:"start_round"`
+// }
 
-func (dkgmn *DKGMinerNodes) setConfigs(gn *GlobalNode) {
-	dkgmn.MinN = gn.MinN
-	dkgmn.MaxN = gn.MaxN
-	dkgmn.TPercent = gn.TPercent
-	dkgmn.KPercent = gn.KPercent
-	dkgmn.XPercent = gn.XPercent
-}
+// func (dkgmn *DKGMinerNodes) setConfigs(gn *GlobalNode) {
+// 	gnb := gn.MustBase()
+// 	dkgmn.MinN = gnb.MinN
+// 	dkgmn.MaxN = gnb.MaxN
+// 	dkgmn.TPercent = gnb.TPercent
+// 	dkgmn.KPercent = gnb.KPercent
+// 	dkgmn.XPercent = gnb.XPercent
+// }
 
 func min(a, b int) int {
 	if a > b {
@@ -836,13 +451,13 @@ func min(a, b int) int {
 
 // The min_n is checked before the calculateTKN call, so, the n >= min_n.
 // The calculateTKN used to set initial T, K, and N.
-func (dkgmn *DKGMinerNodes) calculateTKN(gn *GlobalNode, n int) {
-	dkgmn.setConfigs(gn)
-	var m = min(dkgmn.MaxN, n)
-	dkgmn.N = m
-	dkgmn.K = int(math.Ceil(dkgmn.KPercent * float64(m)))
-	dkgmn.T = int(math.Ceil(dkgmn.TPercent * float64(m)))
-}
+// func (dkgmn *DKGMinerNodes) calculateTKN(gn *GlobalNode, n int) {
+// 	dkgmn.setConfigs(gn)
+// 	var m = min(dkgmn.MaxN, n)
+// 	dkgmn.N = m
+// 	dkgmn.K = int(math.Ceil(dkgmn.KPercent * float64(m)))
+// 	dkgmn.T = int(math.Ceil(dkgmn.TPercent * float64(m)))
+// }
 
 func simpleNodesKeys(sns SimpleNodes) (ks []string) {
 	ks = make([]string, 0, len(sns))
@@ -854,75 +469,76 @@ func simpleNodesKeys(sns SimpleNodes) (ks []string) {
 
 // reduce method checks boundaries and if final, reduces the
 // list to adhere to the limits (min_n, max_n) and conditions
-func (dkgmn *DKGMinerNodes) reduceNodes(
-	final bool,
-	gn *GlobalNode,
-	balances cstate.StateContextI) (err error) {
+// func (dkgmn *DKGMinerNodes) reduceNodes(
+// 	final bool,
+// 	gn *GlobalNode,
+// 	balances cstate.StateContextI) (err error) {
 
-	var n = len(dkgmn.SimpleNodes)
+// 	var n = len(dkgmn.SimpleNodes)
 
-	if n < dkgmn.MinN {
-		return fmt.Errorf("too few miners: %d, want at least: %d", n, dkgmn.MinN)
-	}
+// 	if n < dkgmn.MinN {
+// 		return fmt.Errorf("too few miners: %d, want at least: %d", n, dkgmn.MinN)
+// 	}
 
-	if !gn.hasPrevDKGMiner(dkgmn.SimpleNodes, balances) {
-		return fmt.Errorf("missing miner from previous set, n: %d, list: %s",
-			n, simpleNodesKeys(dkgmn.SimpleNodes))
-	}
+// 	if !gn.hasPrevDKGMiner(dkgmn.SimpleNodes, balances) {
+// 		return fmt.Errorf("missing miner from previous set, n: %d, list: %s",
+// 			n, simpleNodesKeys(dkgmn.SimpleNodes))
+// 	}
 
-	if final {
-		simpleNodes := make(SimpleNodes)
-		for k, v := range dkgmn.SimpleNodes {
-			simpleNodes[k] = v
-		}
-		var pmbrss int64
-		var pmbnp *node.Pool
-		pmb := balances.GetLastestFinalizedMagicBlock()
-		if pmb != nil {
-			pmbrss = pmb.RoundRandomSeed
-			if pmb.MagicBlock != nil {
-				pmbnp = pmb.MagicBlock.Miners
-			}
-		}
-		simpleNodes.reduce(gn.MaxN, gn.XPercent, pmbrss, pmbnp)
-		dkgmn.SimpleNodes = simpleNodes
-	}
+// 	if final {
+// 		simpleNodes := make(SimpleNodes)
+// 		for k, v := range dkgmn.SimpleNodes {
+// 			simpleNodes[k] = v
+// 		}
+// 		var pmbrss int64
+// 		var pmbnp *node.Pool
+// 		pmb := balances.GetLastestFinalizedMagicBlock()
+// 		if pmb != nil {
+// 			pmbrss = pmb.RoundRandomSeed
+// 			if pmb.MagicBlock != nil {
+// 				pmbnp = pmb.MagicBlock.Miners
+// 			}
+// 		}
+// 		gnb := gn.MustBase()
+// 		simpleNodes.reduce(gnb.MaxN, gnb.XPercent, pmbrss, pmbnp)
+// 		dkgmn.SimpleNodes = simpleNodes
+// 	}
 
-	return
-}
+// 	return
+// }
 
-func NewDKGMinerNodes() *DKGMinerNodes {
-	return &DKGMinerNodes{
-		SimpleNodes:    NewSimpleNodes(),
-		RevealedShares: make(map[string]int),
-		Waited:         make(map[string]bool),
-	}
-}
+// func NewDKGMinerNodes() *DKGMinerNodes {
+// 	return &DKGMinerNodes{
+// 		SimpleNodes:    NewSimpleNodes(),
+// 		RevealedShares: make(map[string]int),
+// 		Waited:         make(map[string]bool),
+// 	}
+// }
 
-func (dmn *DKGMinerNodes) Encode() []byte {
-	buff, _ := json.Marshal(dmn)
-	return buff
-}
+// func (dmn *DKGMinerNodes) Encode() []byte {
+// 	buff, _ := json.Marshal(dmn)
+// 	return buff
+// }
 
-func (dmn *DKGMinerNodes) Decode(input []byte) error {
-	err := json.Unmarshal(input, dmn)
-	if err != nil {
-		return err
-	}
-	return nil
-}
+// func (dmn *DKGMinerNodes) Decode(input []byte) error {
+// 	err := json.Unmarshal(input, dmn)
+// 	if err != nil {
+// 		return err
+// 	}
+// 	return nil
+// }
 
-func (dmn *DKGMinerNodes) GetHash() string {
-	return util.ToHex(dmn.GetHashBytes())
-}
+// func (dmn *DKGMinerNodes) GetHash() string {
+// 	return util.ToHex(dmn.GetHashBytes())
+// }
 
-func (dmn *DKGMinerNodes) GetHashBytes() []byte {
-	return encryption.RawHash(dmn.Encode())
-}
+// func (dmn *DKGMinerNodes) GetHashBytes() []byte {
+// 	return encryption.RawHash(dmn.Encode())
+// }
 
 // getMinersList returns miners list
-func getMinersList(state cstate.QueryStateContextI) (*MinerNodes, error) {
-	minerNodes, err := getNodesList(state, AllMinersKey)
+func getMinersList(state cstate.StateContextI) (*MinerNodes, error) {
+	minerNodes, err := getNodesList(getMinerNode, state, AllMinersKey)
 	if err != nil {
 		if err != util.ErrValueNotPresent {
 			return nil, err
@@ -934,49 +550,56 @@ func getMinersList(state cstate.QueryStateContextI) (*MinerNodes, error) {
 	return minerNodes, nil
 }
 
+//nolint:unused
 func updateMinersList(state cstate.StateContextI, miners *MinerNodes) error {
-	if _, err := state.InsertTrieNode(AllMinersKey, miners); err != nil {
+	nodeIDs := make(NodeIDs, len(miners.Nodes))
+	for i, m := range miners.Nodes {
+		nodeIDs[i] = m.ID
+	}
+	if _, err := state.InsertTrieNode(AllMinersKey, &nodeIDs); err != nil {
 		return common.NewError("update_all_miners_list_failed", err.Error())
 	}
 	return nil
 }
 
 // getDKGMinersList gets dkg miners list
-func getDKGMinersList(state cstate.CommonStateContextI) (*DKGMinerNodes, error) {
-	dkgMiners := NewDKGMinerNodes()
+func getDKGMinersList(state cstate.CommonStateContextI) (*DKGMinerNodesV2, error) {
+	dkgMiners := NewDKGMinerNodesV2()
 	err := state.GetTrieNode(DKGMinersKey, dkgMiners)
 	if err != nil {
 		if err != util.ErrValueNotPresent {
 			return nil, err
 		}
 
-		return NewDKGMinerNodes(), nil
+		logging.Logger.Debug("[mvc] no dkg miners list found, create one")
+
+		return NewDKGMinerNodesV2(), nil
 	}
 
 	return dkgMiners, nil
 }
 
 // updateDKGMinersList update the dkg miners list
-func updateDKGMinersList(state cstate.StateContextI, dkgMiners *DKGMinerNodes) error {
-	logging.Logger.Info("update dkg miners list", zap.Int("len", len(dkgMiners.SimpleNodes)))
+func updateDKGMinersList(state cstate.StateContextI, dkgMiners *DKGMinerNodesV2) error {
+	logging.Logger.Info("update dkg miners list", zap.Int("len", len(dkgMiners.Nodes)))
 	_, err := state.InsertTrieNode(DKGMinersKey, dkgMiners)
 	return err
 }
 
-func getMinersMPKs(state cstate.CommonStateContextI) (*block.Mpks, error) {
-	mpks := block.NewMpks()
-	err := state.GetTrieNode(MinersMPKKey, mpks)
-	if err != nil {
-		return nil, err
-	}
+// func getMinersMPKs(state cstate.CommonStateContextI) (*block.Mpks, error) {
+// 	mpks := block.NewMpks()
+// 	err := state.GetTrieNode(MinersMPKKey, mpks)
+// 	if err != nil {
+// 		return nil, err
+// 	}
 
-	return mpks, nil
-}
+// 	return mpks, nil
+// }
 
-func updateMinersMPKs(state cstate.StateContextI, mpks *block.Mpks) error {
-	_, err := state.InsertTrieNode(MinersMPKKey, mpks)
-	return err
-}
+// func updateMinersMPKs(state cstate.StateContextI, mpks *block.Mpks) error {
+// 	_, err := state.InsertTrieNode(MinersMPKKey, mpks)
+// 	return err
+// }
 
 func getMagicBlock(state cstate.CommonStateContextI) (*block.MagicBlock, error) {
 	magicBlock := block.NewMagicBlock()
@@ -984,33 +607,37 @@ func getMagicBlock(state cstate.CommonStateContextI) (*block.MagicBlock, error) 
 	if err != nil {
 		return nil, err
 	}
+	logging.Logger.Debug("get magic block",
+		zap.Int64("magic block", magicBlock.MagicBlockNumber),
+		zap.Int64("starting round", magicBlock.StartingRound),
+		zap.String("hash", magicBlock.Hash))
 
 	return magicBlock, nil
 }
 
 func updateMagicBlock(state cstate.StateContextI, magicBlock *block.MagicBlock) error {
+	logging.Logger.Debug("save magic block", zap.Int64("magic block", magicBlock.MagicBlockNumber))
 	_, err := state.InsertTrieNode(MagicBlockKey, magicBlock)
 	return err
 }
 
-func getGroupShareOrSigns(state cstate.CommonStateContextI) (*block.GroupSharesOrSigns, error) {
-	var gsos = block.NewGroupSharesOrSigns()
-	err := state.GetTrieNode(GroupShareOrSignsKey, gsos)
+func getGroupShareOrSigns(state cstate.StateContextI) (*block.GroupSharesOrSigns, error) {
+	gsos := NewGroupSharesOrSignsV2()
+	if err := gsos.Load(state); err != nil {
+		return nil, err
+	}
+
+	gsosn, err := gsos.GetAllShareOrSigns(state)
 	if err != nil {
 		return nil, err
 	}
 
-	return gsos, nil
-}
-
-func updateGroupShareOrSigns(state cstate.StateContextI, gsos *block.GroupSharesOrSigns) error {
-	_, err := state.InsertTrieNode(GroupShareOrSignsKey, gsos)
-	return err
+	return gsosn, nil
 }
 
 // getShardersKeepList returns the sharder list
-func getShardersKeepList(balances cstate.CommonStateContextI) (*MinerNodes, error) {
-	sharders, err := getNodesList(balances, ShardersKeepKey)
+func getShardersKeepList(balances cstate.StateContextI) (*MinerNodes, error) {
+	sharders, err := getNodesList(getSharderNode, balances, ShardersKeepKey)
 	if err != nil {
 		if err != util.ErrValueNotPresent {
 			return nil, err
@@ -1021,14 +648,14 @@ func getShardersKeepList(balances cstate.CommonStateContextI) (*MinerNodes, erro
 	return sharders, nil
 }
 
-func updateShardersKeepList(state cstate.StateContextI, sharders *MinerNodes) error {
-	_, err := state.InsertTrieNode(ShardersKeepKey, sharders)
+func updateShardersKeepList(state cstate.StateContextI, nodeIDs NodeIDs) error {
+	_, err := state.InsertTrieNode(ShardersKeepKey, &nodeIDs)
 	return err
 }
 
 // getAllShardersKeepList returns the sharder list
 func getAllShardersList(balances cstate.StateContextI) (*MinerNodes, error) {
-	sharders, err := getNodesList(balances, AllShardersKey)
+	sharders, err := getNodesList(getSharderNode, balances, AllShardersKey)
 	if err != nil {
 		if err != util.ErrValueNotPresent {
 			return nil, err
@@ -1038,23 +665,76 @@ func getAllShardersList(balances cstate.StateContextI) (*MinerNodes, error) {
 	return sharders, nil
 }
 
+//nolint:unused
 func updateAllShardersList(state cstate.StateContextI, sharders *MinerNodes) error {
-	_, err := state.InsertTrieNode(AllShardersKey, sharders)
+	nodeIDs := make(NodeIDs, len(sharders.Nodes))
+	for i, n := range sharders.Nodes {
+		nodeIDs[i] = n.ID
+	}
+
+	_, err := state.InsertTrieNode(AllShardersKey, &nodeIDs)
 	return err
 }
 
-func getNodesList(balances cstate.CommonStateContextI, key datastore.Key) (*MinerNodes, error) {
-	nodesList := &MinerNodes{}
-	err := balances.GetTrieNode(key, nodesList)
+// NodeIDs stores all the node IDs for miners or sharders
+// We will refactor to store it to partitions later, but for now, it should be fine
+// to store in a single MPT node as the data size is small.
+type NodeIDs []string
+
+func getNodeIDs(state cstate.CommonStateContextI, key string) (NodeIDs, error) {
+	var nIDs NodeIDs
+	err := state.GetTrieNode(key, &nIDs)
+	switch err {
+	case nil:
+		return nIDs, nil
+	case util.ErrValueNotPresent:
+		return NodeIDs{}, nil
+	default:
+		return nil, err
+	}
+}
+
+func (n *NodeIDs) save(state cstate.StateContextI, key string) error {
+	_, err := state.InsertTrieNode(key, n)
+	return err
+}
+
+func (n *NodeIDs) find(id string) bool {
+	for _, nID := range *n {
+		if nID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func getNodesList(
+	getNode func(id string, state cstate.StateContextI) (*MinerNode, error),
+	balances cstate.StateContextI,
+	key datastore.Key,
+) (*MinerNodes, error) {
+	nIDs, err := getNodeIDs(balances, key)
 	if err != nil {
 		return nil, err
 	}
 
-	return nodesList, nil
+	ids := make([]string, 0, len(nIDs))
+	for _, id := range nIDs {
+		ids = append(ids, id)
+	}
+
+	ss, err := cstate.GetItemsByIDs(ids, getNode, balances)
+	if err != nil {
+		return nil, err
+	}
+
+	return &MinerNodes{ss}, nil
 }
 
 // quick fix: localhost check + duplicate check
 // TODO: remove this after more robust challenge based node addtion/health_check is added
+//
+//nolint:unused
 func quickFixDuplicateHosts(nn *MinerNode, allNodes []*MinerNode) error {
 	localhost := regexp.MustCompile(`^(?:(?:https|http)\:\/\/)?(?:localhost|127\.0\.0\.1)(?:\:\d+)?(?:\/.*)?$`)
 	host := strings.TrimSpace(nn.Host)
@@ -1076,4 +756,33 @@ func quickFixDuplicateHosts(nn *MinerNode, allNodes []*MinerNode) error {
 	}
 	nn.Host, nn.N2NHost, nn.Port = host, n2nhost, port
 	return nil
+}
+
+func insertNodeN2NHost(balances cstate.StateContextI, scAddress string, nn *MinerNode) error {
+	localhost := regexp.MustCompile(`^(?:(?:https|http)\:\/\/)?(?:localhost|127\.0\.0\.1)(?:\:\d+)?(?:\/.*)?$`)
+	host := strings.TrimSpace(nn.Host)
+	n2nhost := strings.TrimSpace(nn.N2NHost)
+	port := nn.Port
+	if n2nhost == "" || localhost.MatchString(n2nhost) {
+		return fmt.Errorf("invalid n2nhost: '%v'", n2nhost)
+	}
+	if host == "" || localhost.MatchString(host) {
+		host = n2nhost
+	}
+
+	nn.Host, nn.N2NHost, nn.Port = host, n2nhost, port
+	key := nn.GetN2NHostKey(scAddress)
+	err := balances.GetTrieNode(key, &datastore.NOIDField{})
+	switch err {
+	case nil:
+		return fmt.Errorf("n2nhost:port already exists: '%v:%v'", n2nhost, port)
+	case util.ErrValueNotPresent:
+		_, err = balances.InsertTrieNode(key, &datastore.NOIDField{})
+		if err != nil {
+			return fmt.Errorf("insert node n2nhost:port failed: %v", err)
+		}
+		return nil
+	default:
+		return err
+	}
 }

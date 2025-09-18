@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"testing"
 
-	"0chain.net/chaincore/currency"
+	"github.com/0chain/common/core/currency"
 
 	"0chain.net/smartcontract/stakepool"
 	"0chain.net/smartcontract/stakepool/spenum"
@@ -15,16 +15,15 @@ import (
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/datastore"
 	"0chain.net/core/encryption"
-	"0chain.net/core/util"
 	"0chain.net/smartcontract/dbs/event"
+	"github.com/0chain/common/core/util"
 	"github.com/stretchr/testify/require"
 )
 
 type mockStateContext struct {
-	ctx                        cstate.StateContext
+	cstate.StateContext
 	block                      *block.Block
 	store                      map[datastore.Key]util.MPTSerializable
-	sharders                   []string
 	events                     []event.Event
 	LastestFinalizedMagicBlock *block.Block
 }
@@ -44,8 +43,8 @@ func (sc *mockStateContext) GetChainCurrentMagicBlock() *block.MagicBlock { retu
 func (sc *mockStateContext) EmitEvent(eventType event.EventType, tag event.EventTag, index string, data interface{}, appender ...cstate.Appender) {
 	sc.events = append(sc.events, event.Event{
 		BlockNumber: sc.block.Round,
-		Type:        int(eventType),
-		Tag:         int(tag),
+		Type:        eventType,
+		Tag:         tag,
 		Index:       index,
 		Data:        data,
 	})
@@ -54,20 +53,8 @@ func (sc *mockStateContext) EmitError(error)                       {}
 func (sc *mockStateContext) GetEvents() []event.Event              { return nil }
 func (sc *mockStateContext) GetEventDB() *event.EventDb            { return nil }
 func (sc *mockStateContext) GetLatestFinalizedBlock() *block.Block { return nil }
-func (sc *mockStateContext) GetTransfers() []*state.Transfer {
-	return sc.ctx.GetTransfers()
-}
-
-func (sc *mockStateContext) GetMints() []*state.Mint {
-	return sc.ctx.GetMints()
-}
-
 func (sc *mockStateContext) GetLastestFinalizedMagicBlock() *block.Block {
 	return sc.LastestFinalizedMagicBlock
-}
-
-func (sc *mockStateContext) GetBlockSharders(_ *block.Block) []string {
-	return sc.sharders
 }
 
 func (sc *mockStateContext) GetBlock() *block.Block {
@@ -77,7 +64,10 @@ func (sc *mockStateContext) GetBlock() *block.Block {
 func (sc *mockStateContext) SetStateContext(_ *state.State) error { return nil }
 
 func (sc *mockStateContext) GetTrieNode(key datastore.Key, v util.MPTSerializable) error {
-	vv := sc.store[key]
+	vv, ok := sc.store[key]
+	if !ok {
+		return util.ErrValueNotPresent
+	}
 	d, err := vv.MarshalMsg(nil)
 	if err != nil {
 		return err
@@ -90,15 +80,6 @@ func (sc *mockStateContext) GetTrieNode(key datastore.Key, v util.MPTSerializabl
 func (sc *mockStateContext) InsertTrieNode(key datastore.Key, node util.MPTSerializable) (datastore.Key, error) {
 	sc.store[key] = node
 	return key, nil
-}
-
-func (sc *mockStateContext) AddTransfer(t *state.Transfer) error {
-	return sc.ctx.AddTransfer(t)
-}
-
-func (sc *mockStateContext) AddMint(m *state.Mint) error {
-
-	return sc.ctx.AddMint(m)
 }
 
 func zcnToBalance(token float64) currency.Coin {
@@ -131,13 +112,13 @@ func populateDelegates(t *testing.T, cNodes []*MinerNode, minerDelegates []float
 	}
 }
 
-func confirmResults(t *testing.T, global GlobalNode, runtime runtimeValues, f formulae, mn *MinerNode, ctx cstate.StateContextI) {
+func confirmResults(t *testing.T, global GlobalNode, runtime runtimeValues, f formulae, mn *MinerNode, _ cstate.StateContextI) {
 	var epochChangeRound = runtime.blockRound%scYaml.epoch == 0
 
 	if epochChangeRound {
-		require.InEpsilon(t, global.RewardRate, scYaml.rewardRate*(1.0-scYaml.rewardDeclineRate), errEpsilon)
+		require.InEpsilon(t, global.MustBase().RewardRate, scYaml.rewardRate*(1.0-scYaml.rewardDeclineRate), errEpsilon)
 	} else {
-		require.EqualValues(t, global.RewardRate, scYaml.rewardRate)
+		require.EqualValues(t, global.MustBase().RewardRate, scYaml.rewardRate)
 	}
 
 	require.InEpsilon(t, float64(f.minerReward(EtBoth)), float64(mn.Reward), errEpsilon)
@@ -156,7 +137,6 @@ const (
 // logs and cli input parameters.
 // sc = sc.yaml
 // lockFlags input to ./zwallet lock
-//
 type formulae struct {
 	zChain           mock0ChainYaml
 	sc               mockScYaml

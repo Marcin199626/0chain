@@ -2,12 +2,13 @@ package sharder
 
 import (
 	"context"
-	"github.com/stretchr/testify/require"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"0chain.net/chaincore/transaction"
+	"github.com/stretchr/testify/require"
 
 	"0chain.net/chaincore/block"
 	"0chain.net/chaincore/chain"
@@ -26,29 +27,36 @@ import (
 func init() {
 	store := dmocks.NewStoreMock()
 	SetupBlockSummaries()
+	ememoryStore := ememorystore.GetStorageProvider()
 	block.SetupBlockSummaryEntity(store)
 	block.SetupEntity(store)
-	block.SetupMagicBlockMapEntity(store)
+	block.SetupMagicBlockMapEntity(ememoryStore)
 	blockstore.SetupStore(bsmocks.NewBlockStoreMock())
 	round.SetupEntity(store)
 	common.SetupRootContext(context.TODO())
 }
 
 const (
-	roundDataDir    = "round"
-	blockDataDir    = "block"
-	roundSummaryDir = "roundSummary"
-	blockSummaryDir = "blockSummary"
+	roundDataDir     = "round"
+	blockDataDir     = "block"
+	stateDataDir     = "data/rocksdb/state"
+	roundSummaryDir  = "roundSummary"
+	blockSummaryDir  = "blockSummary"
+	magicBlockMapDir = "magicblockmap"
 )
 
 func initDBs(t *testing.T) (closeAndClear func()) {
-	dbDir, err := ioutil.TempDir("", "dbs")
+	dbDir, err := os.MkdirTemp("", "dbs")
 	require.NoError(t, err)
 
 	blockDir := filepath.Join(dbDir, blockDataDir)
-	require.NoError(t, err)
 	err = os.MkdirAll(blockDir, 0700)
 	require.NoError(t, err)
+
+	stateDir := filepath.Join(dbDir, stateDataDir)
+	err = os.MkdirAll(stateDir, 0700)
+	require.NoError(t, err)
+	chain.SetupStateDB(dbDir)
 
 	roundDir := filepath.Join(dbDir, roundDataDir)
 	err = os.MkdirAll(roundDir, 0700)
@@ -60,6 +68,10 @@ func initDBs(t *testing.T) (closeAndClear func()) {
 
 	bsDir := filepath.Join(dbDir, blockSummaryDir)
 	err = os.MkdirAll(bsDir, 0700)
+	require.NoError(t, err)
+
+	mbmDir := filepath.Join(dbDir, magicBlockMapDir)
+	err = os.MkdirAll(mbmDir, 0700)
 	require.NoError(t, err)
 
 	rDB, err := ememorystore.CreateDB(roundDir)
@@ -82,11 +94,17 @@ func initDBs(t *testing.T) (closeAndClear func()) {
 
 	ememorystore.AddPool(block.BlockSummaryProvider().GetEntityMetadata().GetDB(), bsDB)
 
+	mbmDB, err := ememorystore.CreateDB(mbmDir)
+	require.NoError(t, err)
+
+	ememorystore.AddPool(block.MagicBlockMapProvider().GetEntityMetadata().GetDB(), mbmDB)
+
 	closeAndClear = func() {
 		rDB.Close()
 		bDB.Close()
 		rsDB.Close()
 		bsDB.Close()
+		mbmDB.Close()
 
 		err = os.RemoveAll(dbDir)
 		require.NoError(t, err)
@@ -154,11 +172,10 @@ func TestChain_GetBlockBySummary(t *testing.T) {
 		Chain          *chain.Chain
 		BlockChannel   chan *block.Block
 		RoundChannel   chan *round.Round
-		BlockCache     cache.Cache
-		BlockTxnCache  cache.Cache
+		BlockCache     *cache.LRU[string, *block.Block]
+		BlockTxnCache  *cache.LRU[string, *transaction.TransactionSummary]
 		SharderStats   Stats
 		BlockSyncStats *SyncStats
-		TieringStats   *MinioStats
 	}
 	type args struct {
 		ctx context.Context
@@ -189,7 +206,6 @@ func TestChain_GetBlockBySummary(t *testing.T) {
 				BlockTxnCache:  tt.fields.BlockTxnCache,
 				SharderStats:   tt.fields.SharderStats,
 				BlockSyncStats: tt.fields.BlockSyncStats,
-				TieringStats:   tt.fields.TieringStats,
 			}
 			got, err := sc.GetBlockBySummary(tt.args.ctx, tt.args.bs)
 			if (err != nil) != tt.wantErr {
@@ -216,11 +232,10 @@ func TestChain_GetBlockFromHash(t *testing.T) {
 		Chain          *chain.Chain
 		BlockChannel   chan *block.Block
 		RoundChannel   chan *round.Round
-		BlockCache     cache.Cache
-		BlockTxnCache  cache.Cache
+		BlockCache     *cache.LRU[string, *block.Block]
+		BlockTxnCache  *cache.LRU[string, *transaction.TransactionSummary]
 		SharderStats   Stats
 		BlockSyncStats *SyncStats
-		TieringStats   *MinioStats
 	}
 	type args struct {
 		ctx      context.Context
@@ -253,7 +268,6 @@ func TestChain_GetBlockFromHash(t *testing.T) {
 				BlockTxnCache:  tt.fields.BlockTxnCache,
 				SharderStats:   tt.fields.SharderStats,
 				BlockSyncStats: tt.fields.BlockSyncStats,
-				TieringStats:   tt.fields.TieringStats,
 			}
 			got, err := sc.GetBlockFromHash(tt.args.ctx, tt.args.hash, tt.args.roundNum)
 			if (err != nil) != tt.wantErr {
@@ -280,11 +294,10 @@ func TestChain_StoreBlockSummaryFromBlock(t *testing.T) {
 		Chain          *chain.Chain
 		BlockChannel   chan *block.Block
 		RoundChannel   chan *round.Round
-		BlockCache     cache.Cache
-		BlockTxnCache  cache.Cache
+		BlockCache     *cache.LRU[string, *block.Block]
+		BlockTxnCache  *cache.LRU[string, *transaction.TransactionSummary]
 		SharderStats   Stats
 		BlockSyncStats *SyncStats
-		TieringStats   *MinioStats
 	}
 	type args struct {
 		ctx context.Context
@@ -313,7 +326,6 @@ func TestChain_StoreBlockSummaryFromBlock(t *testing.T) {
 				BlockTxnCache:  tt.fields.BlockTxnCache,
 				SharderStats:   tt.fields.SharderStats,
 				BlockSyncStats: tt.fields.BlockSyncStats,
-				TieringStats:   tt.fields.TieringStats,
 			}
 			if err := sc.StoreBlockSummaryFromBlock(tt.args.b); (err != nil) != tt.wantErr {
 				t.Errorf("StoreBlockSummaryFromBlock() error = %v, wantErr %v", err, tt.wantErr)
@@ -333,11 +345,10 @@ func TestChain_StoreBlockSummary(t *testing.T) {
 		Chain          *chain.Chain
 		BlockChannel   chan *block.Block
 		RoundChannel   chan *round.Round
-		BlockCache     cache.Cache
-		BlockTxnCache  cache.Cache
+		BlockCache     *cache.LRU[string, *block.Block]
+		BlockTxnCache  *cache.LRU[string, *transaction.TransactionSummary]
 		SharderStats   Stats
 		BlockSyncStats *SyncStats
-		TieringStats   *MinioStats
 	}
 	type args struct {
 		ctx context.Context
@@ -366,11 +377,56 @@ func TestChain_StoreBlockSummary(t *testing.T) {
 				BlockTxnCache:  tt.fields.BlockTxnCache,
 				SharderStats:   tt.fields.SharderStats,
 				BlockSyncStats: tt.fields.BlockSyncStats,
-				TieringStats:   tt.fields.TieringStats,
 			}
 			if err := sc.StoreBlockSummary(tt.args.ctx, tt.args.bs); (err != nil) != tt.wantErr {
 				t.Errorf("StoreBlockSummary() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}
+}
+
+func Test_GetHighestMagicBlockMap(t *testing.T) {
+	cl := initDBs(t)
+	defer cl()
+
+	ctx := context.WithValue(context.TODO(), node.SelfNodeKey, node.Self)
+
+	sc := &Chain{
+		Chain:          GetSharderChain().Chain,
+		blockChannel:   make(chan *block.Block),
+		RoundChannel:   make(chan *round.Round),
+		BlockCache:     cache.NewLRUCache[string, *block.Block](10),
+		BlockTxnCache:  cache.NewLRUCache[string, *transaction.TransactionSummary](10),
+		SharderStats:   Stats{},
+		BlockSyncStats: &SyncStats{},
+	}
+
+	// Add 2 blocks
+	err := sc.StoreMagicBlockMapFromBlock(&block.MagicBlockMap{
+		IDField: datastore.IDField{
+			ID: "10", // Round number but as string
+		},
+		Hash:       "AAA0000000",
+		BlockRound: 10,
+	})
+	require.NoError(t, err)
+
+	err = sc.StoreMagicBlockMapFromBlock(&block.MagicBlockMap{
+		IDField: datastore.IDField{
+			ID: "11", // Round number but as string
+		},
+		Hash:       "AAA0000001",
+		BlockRound: 11,
+	})
+	require.NoError(t, err)
+
+	mbm, err := sc.GetMagicBlockMap(ctx, "10")
+	require.NoError(t, err)
+	require.Equal(t, "AAA0000000", mbm.Hash)
+
+	// Get highest block
+	highest, err := sc.GetHighestMagicBlockMap(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "AAA0000001", highest.Hash)
+	require.Equal(t, int64(11), highest.BlockRound)
 }

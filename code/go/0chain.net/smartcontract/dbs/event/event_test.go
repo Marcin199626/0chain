@@ -4,11 +4,11 @@ import (
 	"testing"
 	"time"
 
+	"0chain.net/core/config"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
-	"0chain.net/chaincore/config"
-	"0chain.net/core/logging"
+	"github.com/0chain/common/core/logging"
 )
 
 func init() {
@@ -28,7 +28,7 @@ func TestSetupDatabase(t *testing.T) {
 		MaxOpenConns:    200,
 		ConnMaxLifetime: 20 * time.Second,
 	}
-	eventDb, err := NewEventDb(access)
+	eventDb, err := NewEventDbWithoutWorker(access, config.DbSettings{})
 	require.NoError(t, err)
 	defer eventDb.Close()
 

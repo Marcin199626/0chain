@@ -29,35 +29,35 @@ func (e *Entity) State() (state *State) {
 	return e.state
 }
 
+// MagicBlock returns the location path of the magic block configuration.
+func (e *Entity) MagicBlock() string {
+	magicBlock, err := e.client.magicBlock()
+	if err != nil {
+		log.Fatalf("failed getting magic block: %v", err)
+	}
+
+	return *magicBlock
+}
+
 // SetState sets current state.
 func (e *Entity) SetState(state *State) {
 	e.stateMu.Lock()
-	defer e.stateMu.Unlock()
-
 	e.state = state
+	e.stateMu.Unlock()
 }
 
-// NewEntity creates RPC client for integration tests.
-func NewEntity(id string) (e *Entity) {
-
+// Register registers node in conductor server
+func (e *Entity) Register(id string) {
 	var (
-		client, err = newClient(viper.GetString("integration_tests.address"))
-		interval    = viper.GetDuration("integration_tests.lock_interval")
-		state       *State
+		interval = viper.GetDuration("integration_tests.lock_interval")
 	)
-	if err != nil {
-		log.Fatalf("creating RPC client: %v", err)
-	}
 
-	e = new(Entity)
 	e.id = NodeID(id)
-	e.client = client
-	e.quit = make(chan struct{})
 
 	// initial state polling and wait node unlock
 	for {
 		// state polling can't return nil-State if err is nil
-		state, err = client.state(NodeID(id))
+		state, err := e.client.state(NodeID(id))
 		if err != nil {
 			panic("requesting RPC (State): " + err.Error())
 		}
@@ -74,6 +74,21 @@ func NewEntity(id string) (e *Entity) {
 
 	// start state polling
 	go e.pollState()
+}
+
+// NewEntity creates RPC client for integration tests.
+func NewEntity() (e *Entity) {
+	var (
+		client, err = newClient(viper.GetString("integration_tests.address"))
+	)
+	if err != nil {
+		log.Fatalf("creating RPC client: %v", err)
+	}
+
+	e = new(Entity)
+	e.client = client
+	e.quit = make(chan struct{})
+
 	return
 }
 
@@ -143,6 +158,13 @@ func (e *Entity) AddBlobber(add *AddBlobberEvent) (err error) {
 	return e.client.addBlobber(add)
 }
 
+func (e *Entity) AddAuthorizer(add *AddAuthorizerEvent) (err error) {
+	if !e.isMonitor() {
+		return // not a monitor
+	}
+	return e.client.addAuthorizer(add)
+}
+
 func (e *Entity) SharderKeep(sk *SharderKeepEvent) (err error) {
 	if !e.isMonitor() {
 		return // not a monitor
@@ -173,6 +195,38 @@ func (e *Entity) ShareOrSignsShares(sosse *ShareOrSignsSharesEvent) (
 	return e.client.shareOrSignsShares(sosse)
 }
 
+func (e *Entity) ChallengeGenerated(blobberID string) {
+	err := e.client.challengeGenerated(blobberID)
+	if err != nil {
+		log.Printf("error: %s", err.Error())
+	}
+}
+
+func (e *Entity) BlobberCommitted(blobberID string) {
+	err := e.client.blobberCommitted(blobberID)
+	if err != nil {
+		log.Printf("error: %s", err.Error())
+	}
+}
+
+func (e *Entity) SendChallengeStatus(m map[string]interface{}) {
+	err := e.client.sendChallengeStatus(m)
+	if err != nil {
+		log.Printf("error: %s", err.Error())
+	}
+}
+
+func (e *Entity) SendAggregate(aggMessage *AggregateMessage) {
+	err := e.client.sendAggregate(aggMessage)
+	if err != nil {
+		log.Printf("error: %s", err.Error())
+	}
+}
+
+func (e *Entity) GetNodeConfig(pid string) (config NodeConfig, err error) {
+	return e.client.getNodeCustomConfig(pid)
+}
+
 //
 // global
 //
@@ -180,10 +234,16 @@ func (e *Entity) ShareOrSignsShares(sosse *ShareOrSignsSharesEvent) (
 // checks
 
 func (e *Entity) ConfigureTestCase(blob []byte) error {
+	// if !e.isMonitor() {
+	// 	return nil // not a monitor
+	// }
 	return e.client.configureTestCase(blob)
 }
 
 func (e *Entity) AddTestCaseResult(blob []byte) error {
+	// if !e.isMonitor() {
+	// 	return nil // not a monitor
+	// }
 	return e.client.addTestCaseResult(blob)
 }
 
@@ -207,11 +267,15 @@ func (e *Entity) AddBlockClientStats(rs *stats.BlockRequest, reqType stats.Block
 	return e.client.addBlockClientStats(blob)
 }
 
+func (e *Entity) NotifyOnSharderBlock(block *stats.BlockFromSharder) error {
+	return e.client.notifyOnSharderBlock(block)
+}
+
 var global *Entity
 
 // Init creates global Entity and locks until unlocked.
-func Init(id string) {
-	global = NewEntity(id)
+func Init() {
+	global = NewEntity()
 }
 
 // Shutdown the global Entity.
@@ -223,17 +287,16 @@ func Shutdown() {
 
 // Client returns global Entity to interact with. Use it, for example,
 //
-//     var state = conductrpc.Client().State()
-//     for _, minerID := range miners {
-//         if state.VRFS.IsBad(state, minerID) {
-//             // send bad VRFS to this miner
-//         } else if state.VRFS.IsGood(state, minerID) {
-//             // send good VRFS to this miner
-//         } else {
-//             // don't send a VRFS to this miner
-//         }
-//     }
-//
+//	var state = conductrpc.Client().State()
+//	for _, minerID := range miners {
+//	    if state.VRFS.IsBad(state, minerID) {
+//	        // send bad VRFS to this miner
+//	    } else if state.VRFS.IsGood(state, minerID) {
+//	        // send good VRFS to this miner
+//	    } else {
+//	        // don't send a VRFS to this miner
+//	    }
+//	}
 func Client() *Entity {
 	return global
 }

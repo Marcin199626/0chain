@@ -6,28 +6,37 @@ import (
 	"encoding/hex"
 	"errors"
 
-	"0chain.net/chaincore/currency"
+	"github.com/0chain/common/core/currency"
 
 	"0chain.net/core/encryption"
-	"0chain.net/core/util"
+	"github.com/0chain/common/core/util"
 )
 
 //msgp:ignore State
 
 //go:generate msgp -io=false -tests=false -v
 
-//State - state that needs consensus within the blockchain.
+// State - state that needs consensus within the blockchain.
+// swagger:model
 type State struct {
 	/* Note: origin is way to parallelize state pruning with state saving. That is, when a leaf node is deleted and added later, but the pruning logic of
 	marking the nodes by origin is complete and before the sweeping the nodes to delete, the same leaf node comes back, it gets deleted. However, by
 	having the origin (round in the blockchain) part of the state ensures that the same logical leaf has a new hash and avoid this issue. We are getting
 	parallelism without explicit locks with this approach.
 	*/
-	TxnHash      string        `json:"txn" msgpack:"-"`
-	TxnHashBytes []byte        `json:"-" msgpack:"t"`
-	Round        int64         `json:"round" msgpack:"r"`
-	Balance      currency.Coin `json:"balance" msgpack:"b"`
-	Nonce        int64         `json:"nonce" msgpack:"n"`
+
+	// Latest transaction run by the client wallet.
+	TxnHash      string `json:"txn" msgpack:"-"`
+	TxnHashBytes []byte `json:"-" msgpack:"t"`
+
+	// Latest round when the latest txn happened.
+	Round int64 `json:"round" msgpack:"r"`
+
+	// Amount of coins in the client wallet, in SAS (1 ZCN = 10^10 SAS).
+	Balance currency.Coin `json:"balance" msgpack:"b"`
+
+	// Latest nonce used by the client wallet.
+	Nonce int64 `json:"nonce" msgpack:"n"`
 }
 
 /*GetHash - implement SecureSerializableValueI interface */
@@ -38,6 +47,19 @@ func (s *State) GetHash() string {
 /*GetHashBytes - implement SecureSerializableValueI interface */
 func (s *State) GetHashBytes() []byte {
 	return encryption.RawHash(s.Encode())
+}
+
+func (s *State) Clone() *State {
+	ns := &State{
+		TxnHash:      s.TxnHash,
+		TxnHashBytes: make([]byte, len(s.TxnHashBytes)),
+		Round:        s.Round,
+		Balance:      s.Balance,
+		Nonce:        s.Nonce,
+	}
+
+	copy(ns.TxnHashBytes, s.TxnHashBytes)
+	return ns
 }
 
 /*Encode - implement SecureSerializableValueI interface */
@@ -94,7 +116,7 @@ func (s *State) UnmarshalMsg(data []byte) ([]byte, error) {
 	return nil, err
 }
 
-//ComputeProperties - logic to compute derived properties
+// ComputeProperties - logic to compute derived properties
 func (s *State) ComputeProperties() error {
 	s.TxnHash = hex.EncodeToString(s.TxnHashBytes)
 	return nil
@@ -105,7 +127,7 @@ func (s *State) SetRound(round int64) {
 	s.Round = round
 }
 
-//SetTxnHash - set the hash of the txn that's modifying this state
+// SetTxnHash - set the hash of the txn that's modifying this state
 func (s *State) SetTxnHash(txnHash string) error {
 	hashBytes, err := hex.DecodeString(txnHash)
 	if err != nil {
@@ -114,4 +136,9 @@ func (s *State) SetTxnHash(txnHash string) error {
 	s.TxnHash = txnHash
 	s.TxnHashBytes = hashBytes
 	return nil
+}
+
+type NamespaceNonce struct {
+	Namespace int8  `json:"namespace" msgpack:"ns"`
+	Nonce     int64 `json:"nonce" msgpack:"n"`
 }

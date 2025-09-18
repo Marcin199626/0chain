@@ -3,11 +3,11 @@ package tokenpool
 import (
 	"encoding/json"
 
-	"0chain.net/chaincore/currency"
+	"github.com/0chain/common/core/currency"
 
 	"0chain.net/chaincore/state"
 	"0chain.net/chaincore/transaction"
-	"0chain.net/core/util"
+	"github.com/0chain/common/core/util"
 )
 
 //go:generate msgp -io=false -tests=false -v

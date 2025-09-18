@@ -1,6 +1,7 @@
 package miner
 
 import (
+	"0chain.net/smartcontract/dbs/event"
 	"context"
 	"fmt"
 	"net/http"
@@ -8,30 +9,42 @@ import (
 
 	"0chain.net/chaincore/block"
 	"0chain.net/chaincore/chain"
-	"0chain.net/chaincore/config"
 	"0chain.net/chaincore/diagnostics"
 	"0chain.net/chaincore/node"
 	"0chain.net/core/common"
-
-	"0chain.net/chaincore/client"
-	"0chain.net/core/memorystore"
+	"0chain.net/core/config"
 )
 
 /*SetupHandlers - setup miner handlers */
 func SetupHandlers() {
-	http.HandleFunc("/v1/chain/get/stats", common.UserRateLimit(common.ToJSONResponse(ChainStatsHandler)))
-	http.HandleFunc("/_chain_stats", common.UserRateLimit(ChainStatsWriter))
-	http.HandleFunc("/_diagnostics/wallet_stats", common.UserRateLimit(GetWalletStats))
-	http.HandleFunc("/v1/miner/get/stats", common.UserRateLimit(common.ToJSONResponse(MinerStatsHandler)))
+	http.HandleFunc("/v1/chain/get/stats", common.WithCORS(
+		common.UserRateLimit(common.ToJSONResponse(ChainStatsHandler)),
+	))
+	http.HandleFunc("/_chain_stats", common.WithCORS(
+		common.UserRateLimit(ChainStatsWriter),
+	))
+	http.HandleFunc("/v1/miner/get/stats", common.WithCORS(
+		common.UserRateLimit(common.ToJSONResponse(MinerStatsHandler)),
+	))
+	http.HandleFunc("/_txn_stats", common.WithCORS(
+		common.UserRateLimit(TxnStatsWriter),
+	))
 }
 
-/*ChainStatsHandler - a handler to provide block statistics */
+// swagger:route GET /v1/chain/get/stats miner GetChainStats
+// Get chain stats.
+// Retrieves the statistics related to the chain progress. No parameters needed.
+//
+// responses:
+//  200: ChainStats
+//  500:
+
 func ChainStatsHandler(ctx context.Context, r *http.Request) (interface{}, error) {
 	c := GetMinerChain().Chain
 	return diagnostics.GetStatistics(c, chain.SteadyStateFinalizationTimer, 1000000.0), nil
 }
 
-//ChainStatsWriter - display the current chain stats
+// ChainStatsWriter - display the current chain stats
 func ChainStatsWriter(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html")
 	c := GetMinerChain().Chain
@@ -74,6 +87,11 @@ func ChainStatsWriter(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "</td><td valign='top'>")
 	fmt.Fprintf(w, "<h3>Finalization Lag Statistics</h3>")
 	diagnostics.WriteHistogramStatistics(w, c, chain.FinalizationLagMetric)
+	fmt.Fprintf(w, "</td></tr>")
+
+	fmt.Fprintf(w, "</td><td valign='top'>")
+	fmt.Fprintf(w, "<h3>Kafka Event Push Latency Statistics (in milliseconds)</h3>")
+	diagnostics.WriteHistogramStatistics(w, c, event.KafkaEventPushLatencyMetric)
 	fmt.Fprintf(w, "</td></tr>")
 
 	fmt.Fprintf(w, "<tr><td>")
@@ -129,45 +147,12 @@ func ChainStatsWriter(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "</table>")
 }
 
-// GetWalletStats -
-func GetWalletStats(w http.ResponseWriter, r *http.Request) {
-	// clients
-	chain.PrintCSS(w)
-	walletsWithTokens, walletsWithoutTokens, totalWallets, round := GetWalletTable(false)
-	fmt.Fprintf(w, "Wallet stats as of round %v\n", round)
-	fmt.Fprintf(w, "<table style='border-collapse: collapse;'>")
-	fmt.Fprintf(w, "<tr><td>Wallets With Tokens</td><td>%v</td></tr>", walletsWithTokens)
-	fmt.Fprintf(w, "<tr><td>Wallets Without Tokens</td><td>%v</td></tr>", walletsWithoutTokens)
-	fmt.Fprintf(w, "<tr><td>Total Wallets</td><td>%v</td></tr>", totalWallets)
-	fmt.Fprintf(w, "</table>")
-	fmt.Fprintf(w, "<br>")
-}
-
-// GetWalletTable -
-func GetWalletTable(latest bool) (int64, int64, int64, int64) {
-	c := GetMinerChain().Chain
-	entity := client.NewClient()
-	emd := entity.GetEntityMetadata()
-	ctx := memorystore.WithEntityConnection(common.GetRootContext(), emd)
-	defer memorystore.Close(ctx)
-	collectionName := entity.GetCollectionName()
-	mstore, ok := emd.GetStore().(*memorystore.Store)
-	var b *block.Block
-	if !ok {
-		return 0, 0, 0, 0
-	}
-	if latest {
-		b = c.GetRoundBlocks(c.GetCurrentRound() - 1)[0]
-	} else {
-		b = c.GetLatestFinalizedBlock()
-	}
-	var walletsWithTokens, walletsWithoutTokens, totalWallets int64
-	walletsWithTokens = b.ClientState.GetNodeDB().Size(ctx)
-	totalWallets = mstore.GetCollectionSize(ctx, emd, collectionName)
-	walletsWithoutTokens = totalWallets - walletsWithTokens
-	return walletsWithTokens, walletsWithoutTokens, totalWallets, b.Round
-}
-
+// swagger:route GET /v1/miner/get/stats miner GetMinerStats
+// Get Miner Stats.
+// Retrieves the statistics related to the miner progress. No parameters needed.
+//
+// responses:
+//   200: ExploreStats
 func MinerStatsHandler(ctx context.Context, r *http.Request) (interface{}, error) {
 	c := GetMinerChain().Chain
 	var total int64
@@ -192,11 +177,51 @@ func MinerStatsHandler(ctx context.Context, r *http.Request) (interface{}, error
 	return ExplorerStats{BlockFinality: chain.SteadyStateFinalizationTimer.Mean() / 1000000.0,
 		LastFinalizedRound: c.GetLatestFinalizedBlock().Round,
 		BlocksFinalized:    total,
-		StateHealth:        node.Self.Underlying().Info.StateMissingNodes,
+		StateHealth:        node.Self.Underlying().Info.GetStateMissingNodes(),
 		CurrentRound:       c.GetCurrentRound(),
 		RoundTimeout:       rtoc,
 		Timeouts:           c.RoundTimeoutsCount,
 		AverageBlockSize:   node.Self.Underlying().Info.AvgBlockTxns,
 		NetworkTime:        networkTimes,
 	}, nil
+}
+
+// TxnStatsWriter - display the current txn stats
+func TxnStatsWriter(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	c := GetMinerChain().Chain
+	chain.PrintCSS(w)
+	diagnostics.WriteStatisticsCSS(w)
+
+	self := node.Self.Underlying()
+	fmt.Fprintf(w, "<h2>%v - %v</h2>", self.GetPseudoName(), self.Description)
+	fmt.Fprintf(w, "<br>")
+
+	// find, missed := util.CacheStats()
+	hits, miss := c.GetStateCache().Stats()
+	fmt.Fprintf(w, "<h3>MPT cache hits/missed: %v/%v</h3>", hits, miss)
+	fmt.Fprintf(w, "<br>")
+
+	fmt.Fprintf(w, "<table>")
+
+	count := 0
+
+	for txnFunc, txnTimer := range chain.StartToFinalizeTxnTypeTimer {
+		if count%3 == 0 {
+			fmt.Fprintf(w, "<tr><td>")
+		} else {
+			fmt.Fprintf(w, "</td><td valign='top'>")
+		}
+
+		fmt.Fprintf(w, "<h3>%v</h3>", txnFunc)
+		diagnostics.WriteTimerStatistics(w, c, txnTimer, 1000000.0)
+
+		if count%3 == 2 {
+			fmt.Fprintf(w, "</tr>")
+		}
+
+		count++
+	}
+
+	fmt.Fprintf(w, "</table>")
 }

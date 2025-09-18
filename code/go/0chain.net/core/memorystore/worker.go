@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"0chain.net/core/datastore"
-	. "0chain.net/core/logging"
+	. "github.com/0chain/common/core/logging"
 	"go.uber.org/zap"
 )
 
@@ -87,7 +87,7 @@ func (mcp *MemoryDBChunkProcessor) Process(ctx context.Context, chunk datastore.
 	store := mcp.EntityMetadata.GetStore()
 	err := store.MultiWrite(lctx, mcp.EntityMetadata, mchunk.Buffer)
 	if err != nil {
-		Logger.Info("memorystore - memory chunk process", zap.Any("error", err))
+		Logger.Info("memorystore - memory chunk process", zap.Error(err))
 	}
 }
 

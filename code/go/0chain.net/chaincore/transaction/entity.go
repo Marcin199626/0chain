@@ -10,18 +10,20 @@ import (
 	"sync/atomic"
 	"time"
 
-	"0chain.net/chaincore/currency"
+	"0chain.net/core/config"
+	"0chain.net/core/viper"
 
 	"encoding/json"
 
+	"github.com/0chain/common/core/currency"
+
 	"0chain.net/chaincore/client"
-	"0chain.net/chaincore/config"
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
 	"0chain.net/core/encryption"
-	"0chain.net/core/logging"
 	"0chain.net/core/memorystore"
-	"0chain.net/core/util"
+	"github.com/0chain/common/core/logging"
+	"github.com/0chain/common/core/util"
 	"go.uber.org/zap"
 )
 
@@ -30,49 +32,113 @@ import (
 var TXN_TIME_TOLERANCE int64
 
 var transactionCount uint64 = 0
-var redis_txns string
 
 // ErrTxnMissingPublicKey is returned if the transaction does not have ClientID and public key
 var (
 	ErrTxnMissingPublicKey = errors.New("transaction missing public key")
 	ErrTxnInvalidPublicKey = errors.New("transaction public key is invalid")
+	ErrTxnInsufficientFee  = errors.New("insufficient transaction fee")
 )
-
-func init() {
-	redis_txns = os.Getenv("REDIS_TXNS")
-}
 
 func SetupTransactionDB(redisTxnsHost string, redisTxnsPort int) {
 	if len(redisTxnsHost) > 0 && redisTxnsPort > 0 {
 		memorystore.AddPool("txndb", memorystore.NewPool(redisTxnsHost, redisTxnsPort))
 	} else {
 		//inside docker
-		memorystore.AddPool("txndb", memorystore.NewPool(redis_txns, 6479))
+		memorystore.AddPool("txndb", memorystore.NewPool(os.Getenv("REDIS_TXNS"), 6379))
 	}
 }
 
-/*Transaction type for capturing the transaction data */
+// swagger:model Transaction - transaction data
 type Transaction struct {
+
+	// Hash of the transaction
 	datastore.HashIDField
+
 	datastore.CollectionMemberField `json:"-" msgpack:"-"`
+
+	// Version of the transaction
+	//
+	// required: true
 	datastore.VersionField
 
-	ClientID  string `json:"client_id" msgpack:"cid,omitempty"`
+	// a compination of smart contract address and function name
+	*SmartContractData `json:"-" msgpack:"-"`
+
+	// ClientID of the client issuing the transaction
+	//
+	// required: true
+	ClientID string `json:"client_id" msgpack:"cid,omitempty"`
+
+	// Public key of the client issuing the transaction
+	//
+	// required: true
 	PublicKey string `json:"public_key,omitempty" msgpack:"puk,omitempty"`
 
-	ToClientID      string           `json:"to_client_id,omitempty" msgpack:"tcid,omitempty"`
-	ChainID         string           `json:"chain_id,omitempty" msgpack:"chid"`
-	TransactionData string           `json:"transaction_data" msgpack:"d"`
-	Value           currency.Coin    `json:"transaction_value" msgpack:"v"` // The value associated with this transaction
-	Signature       string           `json:"signature" msgpack:"s"`
-	CreationDate    common.Timestamp `json:"creation_date" msgpack:"ts"`
-	Fee             currency.Coin    `json:"transaction_fee" msgpack:"f"`
-	Nonce           int64            `json:"transaction_nonce" msgpack:"n"`
+	// ToClientID - the client id of the recipient, the other party in the transaction. It can be a client id or the address of a smart contract
+	//
+	// required: true
+	ToClientID string `json:"to_client_id,omitempty" msgpack:"tcid,omitempty"`
 
-	TransactionType   int    `json:"transaction_type" msgpack:"tt"`
+	// ChainID - the chain id of the transaction
+	//
+	// required: true
+	ChainID string `json:"chain_id,omitempty" msgpack:"chid"`
+
+	// TransactionData - the data associated with the transaction
+	//
+	// required: true
+	TransactionData string `json:"transaction_data" msgpack:"d"`
+
+	// Value - a numeric value associated with this transaction. Its role is determined by the smart contract function
+	//
+	// required: true
+	Value currency.Coin `json:"transaction_value" msgpack:"v"`
+
+	// Signature - Issuer signature of the transaction
+	//
+	// required: true
+	Signature string `json:"signature" msgpack:"s"`
+
+	// CreationDate - the time when the transaction was created
+	//
+	// required: true
+	CreationDate common.Timestamp `json:"creation_date" msgpack:"ts"`
+
+	// Fee - the fee associated with the transaction
+	//
+	// required: true
+	Fee currency.Coin `json:"transaction_fee" msgpack:"f"`
+
+	// Nonce - the nonce associated with the transaction
+	//
+	// required: true
+	Nonce int64 `json:"transaction_nonce" msgpack:"n"`
+
+	// TransactionType - the type of the transaction.
+	//	Possible values are:
+	//		- 0: TxnTypeSend - A transaction to send tokens to another account, state is maintained by account.
+	//		- 10: TxnTypeData - A transaction to just store a piece of data on the block chain.
+	//		- 1000: TxnTypeSmartContract - A smart contract transaction type.
+	// required: true
+	TransactionType int `json:"transaction_type" msgpack:"tt"`
+
+	// TransactionOutput - the output of the transaction
+	//
+	// required: true
 	TransactionOutput string `json:"transaction_output,omitempty" msgpack:"o,omitempty"`
-	OutputHash        string `json:"txn_output_hash" msgpack:"oh"`
-	Status            int    `json:"transaction_status" msgpack:"sot"`
+
+	// OutputHash - the hash of the transaction output
+	//
+	// required: true
+	OutputHash string `json:"txn_output_hash" msgpack:"oh"`
+
+	// Status - the status of the transaction
+	//
+	// required: true
+	Status int `json:"transaction_status" msgpack:"sot"`
+
+	IsExempt bool `json:"-" msgpack:"-"`
 }
 
 type FeeStats struct {
@@ -94,10 +160,18 @@ func (t *Transaction) ComputeProperties() error {
 	if t.ChainID == "" {
 		t.ChainID = datastore.ToKey(config.GetServerChainID())
 	}
+	t.SmartContractData = &SmartContractData{}
+	if t.TransactionType == TxnTypeSmartContract {
+		if err := json.Unmarshal([]byte(t.TransactionData), t.SmartContractData); err != nil {
+			logging.Logger.Debug("transaction data", zap.Any("data", t.TransactionData))
+			return fmt.Errorf("invalid smart contract data: %v", err)
+		}
+	}
 	return t.ComputeClientID()
 }
 
-type smartContractTransactionData struct {
+// swagger:model SmartContractData represents the smart contract data
+type SmartContractData struct {
 	FunctionName string          `json:"name"`
 	InputData    json.RawMessage `json:"input"`
 }
@@ -113,35 +187,27 @@ func (t *Transaction) ValidateNonce() error {
 // ValidateFee - Validate fee
 func (t *Transaction) ValidateFee(txnExempted map[string]bool, minTxnFee currency.Coin) error {
 	if t.TransactionData != "" {
-		var smartContractData smartContractTransactionData
-		dataBytes := []byte(t.TransactionData)
-		err := json.Unmarshal(dataBytes, &smartContractData)
-		if err != nil {
-			logging.Logger.Error("unmarshal txn data failed", zap.Error(err))
-			return errors.New("invalid transaction data")
-		}
-
-		if _, ok := txnExempted[smartContractData.FunctionName]; ok {
+		if _, ok := txnExempted[t.FunctionName]; ok {
 			return nil
 		}
 	}
 	if t.Fee < minTxnFee {
-		return common.InvalidRequest("The given fee is less than the minimum required fee to process the txn")
+		return ErrTxnInsufficientFee
 	}
 	return nil
 }
 
 /*ComputeClientID - compute the client id if there is a public key in the transaction */
 func (t *Transaction) ComputeClientID() error {
-	if t.ClientID != "" {
-		return nil
-	}
-
 	if t.PublicKey == "" {
 		logging.Logger.Error("invalid transaction",
 			zap.Error(ErrTxnMissingPublicKey),
 			zap.String("txn", datastore.ToJSON(t).String()))
 		return ErrTxnMissingPublicKey
+	}
+
+	if t.ClientID != "" {
+		return encryption.VerifyPublicKeyClientID(t.PublicKey, t.ClientID)
 	}
 
 	// Doing this is OK because the transaction signature has ClientID
@@ -205,6 +271,9 @@ func (t *Transaction) ValidateWrtTimeForBlock(ctx context.Context, ts common.Tim
 
 /*Validate - Entity implementation */
 func (t *Transaction) Validate(ctx context.Context) error {
+	if !encryption.IsHash(t.ToClientID) {
+		return errors.New("invalid to client id")
+	}
 	return t.ValidateWrtTime(ctx, common.Now())
 }
 
@@ -212,6 +281,11 @@ func (t *Transaction) Validate(ctx context.Context) error {
 
 func (t *Transaction) GetScore() (int64, error) {
 	if config.Configuration().ChainConfig.IsFeeEnabled() {
+		if t.IsExempt {
+			// high score for exempt transactions
+			return 100 * 1e10, nil
+		}
+
 		return t.Fee.Int64()
 	}
 	return 0, nil
@@ -313,7 +387,7 @@ func (t *Transaction) VerifySignature(ctx context.Context) error {
 
 /*GetSignatureScheme - get the signature scheme associated with this transaction */
 func (t *Transaction) GetSignatureScheme(ctx context.Context) (encryption.SignatureScheme, error) {
-	var err error
+
 	co, err := client.GetClientFromCache(t.ClientID)
 	if err != nil {
 		co = client.NewClient()
@@ -330,6 +404,7 @@ func (t *Transaction) GetSignatureScheme(ctx context.Context) (encryption.Signat
 		if t.PublicKey == "" {
 			return nil, errors.New("get signature scheme failed, empty public key in transaction")
 		}
+
 		co.ID = t.ClientID
 		if err := co.SetPublicKey(t.PublicKey); err != nil {
 			return nil, err
@@ -362,6 +437,7 @@ func Provider() datastore.Entity {
 	t.CreationDate = common.Now()
 	t.ChainID = datastore.ToKey(config.GetServerChainID())
 	t.EntityCollection = txnEntityCollection
+	t.SmartContractData = &SmartContractData{}
 	return t
 }
 
@@ -390,7 +466,7 @@ func SetupEntity(store datastore.Store) {
 	TransactionEntityChannel = memorystore.SetupWorkers(common.GetRootContext(), &chunkingOptions)
 }
 
-/*Sign - given a client and client's private key, sign this tranasction */
+/*Sign - given a client and client's private key, sign this transaction */
 func (t *Transaction) Sign(signatureScheme encryption.SignatureScheme) (string, error) {
 	t.Hash = t.ComputeHash()
 	signature, err := signatureScheme.Sign(t.Hash)
@@ -408,14 +484,12 @@ func (t *Transaction) GetSummary() *TransactionSummary {
 	return summary
 }
 
-/*DebugTxn - is this a transaction that needs being debugged
+/*
+DebugTxn - is this a transaction that needs being debugged
 - applicable only when running in test mode and the transaction_data string contains debug keyword somewhere in it
 */
 func (t *Transaction) DebugTxn() bool {
-	if !config.Development() {
-		return false
-	}
-	return strings.Contains(t.TransactionData, "debug")
+	return config.Development() && viper.GetBool("logging.verbose")
 }
 
 /*ComputeOutputHash - compute the hash from the transaction output */
@@ -429,7 +503,7 @@ func (t *Transaction) ComputeOutputHash() string {
 /*VerifyOutputHash - Verify the hash of the transaction */
 func (t *Transaction) VerifyOutputHash(ctx context.Context) error {
 	if t.OutputHash != t.ComputeOutputHash() {
-		logging.Logger.Info("verify output hash (hash mismatch)", zap.String("hash", t.OutputHash), zap.String("computed_hash", t.ComputeOutputHash()), zap.String("hash_data", t.TransactionOutput), zap.String("txn", datastore.ToJSON(t).String()))
+		logging.Logger.Error("verify output hash (hash mismatch)", zap.String("hash", t.OutputHash), zap.String("computed_hash", t.ComputeOutputHash()), zap.String("hash_data", t.TransactionOutput), zap.String("txn", datastore.ToJSON(t).String()))
 		return common.NewError("hash_mismatch", fmt.Sprintf("The hash of the output doesn't match with the provided hash: %v %v %v %v", t.Hash, t.OutputHash, t.ComputeOutputHash(), t.TransactionOutput))
 	}
 	return nil
@@ -454,6 +528,13 @@ func (t *Transaction) Clone() *Transaction {
 		TransactionOutput: t.TransactionOutput,
 		OutputHash:        t.OutputHash,
 		Status:            t.Status,
+		IsExempt:          t.IsExempt,
+	}
+
+	if t.SmartContractData != nil {
+		scData := &SmartContractData{}
+		*scData = *t.SmartContractData
+		clone.SmartContractData = scData
 	}
 
 	if ent := t.CollectionMemberField.EntityCollection; ent != nil {

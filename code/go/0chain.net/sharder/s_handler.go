@@ -17,7 +17,7 @@ import (
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
 	"0chain.net/core/ememorystore"
-	. "0chain.net/core/logging"
+	. "github.com/0chain/common/core/logging"
 )
 
 var (
@@ -186,7 +186,7 @@ func BlockSummariesHandler(ctx context.Context, r *http.Request) (interface{}, e
 		// Get block summary connection.
 		bSummaryEntityMetadata := datastore.GetEntityMetadata("block_summary")
 		bctx := ememorystore.WithEntityConnection(ctx, bSummaryEntityMetadata)
-		defer ememorystore.Close(bctx)
+		defer ememorystore.Close(bctx, bSummaryEntityMetadata)
 
 		for i, roundS := range rs {
 			if roundS != nil {
@@ -255,7 +255,7 @@ func BlockSummaryRequestHandler(ctx context.Context, r *http.Request) (interface
 	if bHash != "" {
 		bSummaryEntityMetadata := datastore.GetEntityMetadata("block_summary")
 		bctx := ememorystore.WithEntityConnection(ctx, bSummaryEntityMetadata)
-		defer ememorystore.Close(bctx)
+		defer ememorystore.Close(bctx, bSummaryEntityMetadata)
 		blockS, err := sc.GetBlockSummary(bctx, bHash)
 		if err == nil {
 			return blockS, nil

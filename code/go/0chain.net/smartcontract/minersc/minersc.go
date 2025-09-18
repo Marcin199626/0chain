@@ -4,7 +4,7 @@
 package minersc
 
 import (
-	"0chain.net/chaincore/config"
+	"0chain.net/core/config"
 )
 
 func (msc *MinerSmartContract) initSC() {
@@ -36,9 +36,13 @@ func (msc *MinerSmartContract) InitSmartContractFunctions() {
 	}
 	msc.smartContractFunctions["add_miner"] = msc.AddMiner
 	msc.smartContractFunctions["add_sharder"] = msc.AddSharder
+	msc.smartContractFunctions["vc_add"] = msc.VCAdd
 	msc.smartContractFunctions["delete_miner"] = msc.DeleteMiner
 	msc.smartContractFunctions["delete_sharder"] = msc.DeleteSharder
 	msc.smartContractFunctions["collect_reward"] = msc.collectReward
+
+	msc.smartContractFunctions["kill_miner"] = msc.killMiner
+	msc.smartContractFunctions["kill_sharder"] = msc.killSharder
 
 	msc.smartContractFunctions["miner_health_check"] = msc.minerHealthCheck
 	msc.smartContractFunctions["sharder_health_check"] = msc.sharderHealthCheck
@@ -57,4 +61,7 @@ func (msc *MinerSmartContract) InitSmartContractFunctions() {
 	msc.smartContractFunctions["deleteFromDelegatePool"] = msc.deleteFromDelegatePool
 
 	msc.smartContractFunctions["sharder_keep"] = msc.sharderKeep
+	msc.smartContractFunctions["add_hardfork"] = msc.addHardFork
+
+	msc.smartContractFunctions["refresh_remove_providers"] = msc.refreshRemoveProviders
 }

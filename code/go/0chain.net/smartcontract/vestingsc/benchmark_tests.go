@@ -5,7 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"0chain.net/chaincore/currency"
+	sc "0chain.net/core/config"
+	"github.com/0chain/common/core/currency"
 
 	"github.com/spf13/viper"
 
@@ -14,7 +15,6 @@ import (
 	sci "0chain.net/chaincore/smartcontractinterface"
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/common"
-	sc "0chain.net/smartcontract"
 	bk "0chain.net/smartcontract/benchmark"
 )
 
@@ -117,6 +117,7 @@ func BenchmarkTests(
 				ClientID:     data.Clients[0],
 				Value:        vestingMinLock,
 				CreationDate: creationTime,
+				ToClientID:   data.Clients[1],
 			},
 			input: func() []byte {
 				var dests destinations
@@ -125,7 +126,7 @@ func BenchmarkTests(
 				}
 				bytes, _ := json.Marshal(&addRequest{
 					Description:  "my description",
-					StartTime:    common.Timestamp(100),
+					StartTime:    creationTime,
 					Duration:     time.Hour,
 					Destinations: dests,
 				})

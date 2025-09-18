@@ -1,0 +1,116 @@
+name: CONDUCTOR FAULT TOLERANCE TESTS
+
+on:
+  workflow_dispatch:
+    inputs:
+      chain_branch:
+        description: 'Input branch for 0chain repo'
+        default: ''
+        required: false
+  workflow_call:
+    inputs:
+      chain_branch:
+        type: string
+        description: 'Input branch for 0chain repo'
+        default: ''
+        required: false
+env:
+  ZCHAIN_BUILDBASE: zchain_build_base
+  ZCHAIN_BUILDRUN: zchain_run_base
+
+jobs:
+  CONDUCTOR_FAULT_TOLERANCE_TESTS:
+    name: CONDUCTOR-FAULT-TOLERANCE-TESTS
+    runs-on: [self-hosted, conductor-test]
+
+    outputs:
+      branch: ${{ steps.chain.outputs.BRANCH_OUT }}
+
+    steps:
+    - name: Setup Environment Variables
+      run: |
+        export HOME="/root"
+        go env -w GO111MODULE=auto
+        go env GOROOT
+        go env GOPATH
+        echo "HOME=$HOME" >> $GITHUB_ENV
+        echo "PATH=$PATH:$(go env GOROOT)/bin:$(go env GOPATH)/bin" >> $GITHUB_ENV
+        echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib" >> $GITHUB_ENV
+
+    - name: Cleanup before restarting conductor tests.
+      run: |
+        rm -rf *
+        [ "$(docker ps -a -q)" ] && docker rm -f $(docker ps -a -q) || true
+
+    - name: Login to Docker Hub
+      uses: docker/login-action@v1
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+    - name: Git clone 0chain
+      id: chain
+      run: |
+        git clone https://github.com/0chain/0chain.git
+        cd 0chain
+        git branch -r | grep -v '\->' | sed "s,\x1B\[[0-9;]*[a-zA-Z],,g" | while read remote; do git branch --track "${remote#origin/}" "$remote"; done || true
+        CHAIN_BRANCH="${{ inputs.chain_branch }}"
+        if [[ -z $CHAIN_BRANCH ]]; then
+          echo "Checking for latest sprint branch"
+          git branch --sort=-committerdate | grep "sprint-*" | head -1
+          CHAIN_BRANCH=$(git branch --sort=-committerdate | grep "sprint-*" | head -1)
+        fi
+          echo "BRANCH_OUT=$CHAIN_BRANCH" >>$GITHUB_OUTPUT
+        echo "Branch name is ${CHAIN_BRANCH}"
+        git checkout ${CHAIN_BRANCH}
+
+    - name: Docker Init Setup.
+      run: |
+        export HOME="/root"
+        cd 0chain
+        make build-mocks
+        bash ./docker.local/bin/init.setup.sh
+
+    - name: Docker Network Setup.
+      run: |
+        cd 0chain
+        bash ./docker.local/bin/setup.network.sh || true
+
+    - name: Building Base Images
+      run: |
+        cd 0chain
+        bash ./docker.local/bin/build.base.sh
+
+    - name: Build Miner Docker Image For Integration Test.
+      run: |
+        cd 0chain
+        bash ./docker.local/bin/build.miners-integration-tests.sh
+
+    - name: Build Sharder Docker Image For Integration Test.
+      run: |
+        cd 0chain
+        bash ./docker.local/bin/build.sharders-integration-tests.sh
+
+    - name: Update max faucet limit
+      run: |
+        cd 0chain
+        bash -c 'sed -i "s/max_pour_amount: [0-9]*/max_pour_amount: 1000/g" docker.local/config/sc.yaml'
+        bash -c 'grep max_pour_amount ./docker.local/config/sc.yaml'
+  
+    - name: Running No VC Fault Tolerance Tests.
+      run: |
+        cd 0chain
+        export HOME="/root"
+        bash ./docker.local/bin/start.conductor.sh no-view-change.fault-tolerance
+
+    - uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: fault-tolerance-logs
+        path: |
+          0chain/conductor-full-logs
+
+    - name: Added /tmp folder cleanup.
+      run: |
+        cd /tmp
+        rm -rf *

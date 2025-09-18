@@ -10,7 +10,7 @@ import (
 
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
-	. "0chain.net/core/logging"
+	. "github.com/0chain/common/core/logging"
 	"go.uber.org/zap"
 )
 
@@ -75,14 +75,14 @@ func (ms *Store) iterateCollection(ctx context.Context, entityMetadata datastore
 			ce := bucket[i].(datastore.CollectionEntity)
 			scoredata, ok := bkeys[2*i+1].([]byte)
 			if ok {
-				score, err := strconv.ParseInt(string(scoredata), 10, 63)
+				score, err := strconv.ParseInt(string(scoredata), 10, 64)
 				if err != nil {
-					Logger.Debug("iterator error", zap.Any("score", scoredata), zap.Any("type", fmt.Sprintf("%T", bkeys[2*i+1])))
+					Logger.Debug("iterator error", zap.ByteString("score", scoredata), zap.String("type", fmt.Sprintf("%T", bkeys[2*i+1])))
 					return err
 				}
 				ce.SetCollectionScore(score)
 			} else {
-				Logger.Info("iterator error", zap.Any("score", bkeys[2*i+1]), zap.Any("type", fmt.Sprintf("%T", bkeys[2*i+1])))
+				Logger.Info("iterator error", zap.Any("score", bkeys[2*i+1]), zap.String("type", fmt.Sprintf("%T", bkeys[2*i+1])))
 			}
 		}
 		err = ms.MultiRead(ctx, entityMetadata, keys[:count], bucket)
@@ -107,7 +107,11 @@ func (ms *Store) iterateCollection(ctx context.Context, entityMetadata datastore
 			} else {
 				ckeys[bucket[i].GetKey()] = e
 			}
-			proceed = handler(ctx, bucket[i].(datastore.CollectionEntity))
+			proceed, err = handler(ctx, bucket[i].(datastore.CollectionEntity))
+			if err != nil {
+				return err
+			}
+
 			if !proceed {
 				break
 			}

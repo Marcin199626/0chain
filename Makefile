@@ -5,7 +5,7 @@
 # Then execute `choco install make` command in shell, now you will be able to use `make` on Windows.
 
 
-ifeq ($(OS),Windows_NT) 
+ifeq ($(OS),Windows_NT)
     detected_OS := Windows
 		detected_ARCH := x86_64
 else
@@ -26,6 +26,8 @@ check-commit: go-get run-test
 
 .PHONY: install-mockery mockery install-msgp msgp build-mocks swagger
 
+.PHONY: build-benchmark benchmark
+
 go-mod:
 	@echo "Prepare Go mod files..."
 	@cd $(root_path)/code/go/0chain.net && go mod tidy -v
@@ -45,14 +47,13 @@ run-test:
 install-mockery:
 	@([ -d ./tmp/mockery ] || mkdir -p ./tmp/mockery) \
 	&& echo "[+]download mockery" \
-	&& ([ -f ./tmp/mockery/mockery.tar.gz ] || curl -L -o ./tmp/mockery/mockery.tar.gz https://github.com/vektra/mockery/releases/download/v2.12.2/mockery_2.12.2_$(detected_OS)_$(detected_ARCH).tar.gz) \
+	&& ([ -f ./tmp/mockery/mockery.tar.gz ] || curl -L -o ./tmp/mockery/mockery.tar.gz https://github.com/vektra/mockery/releases/download/v2.28.1/mockery_2.28.1_$(detected_OS)_$(detected_ARCH).tar.gz) \
 	&& echo "[+]install mockery" \
 	&& tar zxvfC ./tmp/mockery/mockery.tar.gz ./tmp/mockery \
 	&& cp ./tmp/mockery/mockery $(GOPATH)/bin/ \
 	&& rm -rf ./tmp
-
-build-mocks: 
-	./generate_mocks.sh
+build-mocks:
+	GOPATH=$(GOPATH) ./generate_mocks.sh
 
 install-msgp:
 	@echo "Install msgp..."
@@ -64,9 +65,41 @@ msgp:
 	@cd $(root_path)/code/go/0chain.net && go generate -run=msgp ./...
 	@echo "Run msgp completed."
 
-swagger:
-	@echo "Run swagger..."
-	swagger generate spec -w  code/go/0chain.net/sharder/sharder  -m  -o docs/swagger.yaml
-	swagger generate markdown  -f docs/swagger.yaml --output=docs/swagger.md
-	@echo "swagger documentation generated"
+swagger-storage-sc:
+	@echo "Run swagger for storage smart contract API ..."
+	swagger generate spec -w code/go/0chain.net/ -c 0chain.net/smartcontract/storagesc -c 0chain.net/smartcontract/dbs -c 0chain.net/chaincore/... -c 0chain.net/core/... --include-tag storage-sc -m -o docs/swagger-storage-sc.yaml
+	swagger generate markdown  -f docs/swagger-storage-sc.yaml --output=docs/storage-sc-api.md
+	@echo "swagger documentation generated for storage smart contract API"
 
+swagger-miner-sc:
+	@echo "Run swagger for miner smart contract API ..."
+	swagger generate spec -w code/go/0chain.net/ -c 0chain.net/smartcontract/minersc -c 0chain.net/smartcontract/dbs -c 0chain.net/smartcontract/rest -c 0chain.net/chaincore/... --include-tag miner-sc -c 0chain.net/core/... -m -o docs/swagger-miner-sc.yaml
+	swagger generate markdown  -f docs/swagger-miner-sc.yaml --output=docs/miner-sc-api.md
+	@echo "swagger documentation generated for miner smart contract API"
+
+swagger-zcn-sc:
+	@echo "Run swagger for 0chain smart contract API ..."
+	swagger generate spec -w code/go/0chain.net/ -c 0chain.net/smartcontract/zcnsc -c 0chain.net/smartcontract/dbs -c 0chain.net/smartcontract/rest -c 0chain.net/chaincore/... --include-tag zcn-sc -c 0chain.net/core/... -m -o docs/swagger-zcn-sc.yaml
+	swagger generate markdown  -f docs/swagger-zcn-sc.yaml --output=docs/zcn-sc-api.md
+	@echo "swagger documentation generated for ZCN smart contract API"
+
+swagger-sharder:
+	@echo "Run swagger for sharder API ..."
+	swagger generate spec -w code/go/0chain.net/ -c 0chain.net/sharder -c 0chain.net/chaincore -c 0chain.net/core/... --include-tag sharder -m -o docs/swagger-sharder.yaml
+	swagger generate markdown  -f docs/swagger-sharder.yaml --output=docs/swagger-sharder.md
+	@echo "swagger documentation generated for sharder API"
+
+swagger-miner:
+	@echo "Run swagger for miner API ..."
+	swagger generate spec -w code/go/0chain.net/ -c 0chain.net/miner -c 0chain.net/chaincore --include-tag miner -m -o docs/swagger-miner.yaml
+	swagger generate markdown  -f docs/swagger-miner.yaml --output=docs/swagger-miner.md
+	@echo "swagger documentation generated for miner API"
+
+swagger: swagger-sharder swagger-miner swagger-zcn-sc swagger-miner-sc swagger-storage-sc
+
+build-benchmark:
+	./docker.local/bin/build.benchmark.sh
+
+benchmark:
+	@cd $(root_path)/docker.local/benchmarks \
+	&& ../bin/start.benchmarks.sh

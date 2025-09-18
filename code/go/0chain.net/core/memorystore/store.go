@@ -8,7 +8,7 @@ import (
 
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
-	"0chain.net/core/logging"
+	"github.com/0chain/common/core/logging"
 	"go.uber.org/zap"
 )
 
@@ -450,6 +450,10 @@ func (ms *Store) GetCollectionSize(ctx context.Context, entityMetadata datastore
 		return -1
 	}
 	return val
+}
+
+func (ms *Store) Merge(ctx context.Context, entity datastore.Entity) error {
+	return ms.Write(ctx, entity)
 }
 
 func encode(entity datastore.Entity) *bytes.Buffer {

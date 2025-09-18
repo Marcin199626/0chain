@@ -1,14 +1,13 @@
 package storagesc
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
 
-	"0chain.net/smartcontract/dbs"
+	"0chain.net/chaincore/transaction"
 
-	"0chain.net/chaincore/currency"
 	common2 "0chain.net/smartcontract/common"
+	"github.com/0chain/common/core/currency"
 
 	cstate "0chain.net/chaincore/chain/state"
 	"0chain.net/core/common"
@@ -17,107 +16,76 @@ import (
 )
 
 type StorageAllocationBlobbers struct {
-	StorageAllocation `json:",inline"`
-	Blobbers          []*StorageNode `json:"blobbers"`
+	storageAllocationV3 `json:",inline"`
+	Blobbers            []*storageNodeResponse `json:"blobbers"`
 }
 
-func allocationTableToStorageAllocationBlobbers(alloc *event.Allocation, eventDb *event.EventDb) (*StorageAllocationBlobbers, error) {
-	storageNodes := make([]*StorageNode, 0)
+func allocationTableToStorageAllocationBlobbers(alloc *event.Allocation, eventDb *event.EventDb) (*StorageAllocation, *StorageAllocationBlobbers, error) {
+	storageNodes := make([]*storageNodeResponse, 0)
 	blobberDetails := make([]*BlobberAllocation, 0)
 	blobberIDs := make([]string, 0)
-	blobberIDTermMapping := make(map[string]struct {
-		AllocationID string
-		Terms
-	})
+	blobberTermsMap := make(map[string]Terms)
 	blobberMap := make(map[string]*BlobberAllocation)
 
-	curators, err := eventDb.GetCuratorsByAllocationID(alloc.AllocationID)
-	if err != nil {
-		return nil, fmt.Errorf("error finding curators: %v", err)
-	}
-
-	var allocTerms []event.AllocationTerm
-	err = json.Unmarshal([]byte(alloc.Terms), &allocTerms)
-	if err != nil {
-		return nil, fmt.Errorf("error unmarshalling allocation terms: %v", err)
-	}
-
-	for _, t := range allocTerms {
+	for _, t := range alloc.Terms {
 		blobberIDs = append(blobberIDs, t.BlobberID)
-		blobberIDTermMapping[t.BlobberID] = struct {
-			AllocationID string
-			Terms
-		}{
-			AllocationID: t.AllocationID,
-			Terms: Terms{
-				ReadPrice:        t.ReadPrice,
-				WritePrice:       t.WritePrice,
-				MinLockDemand:    t.MinLockDemand,
-				MaxOfferDuration: t.MaxOfferDuration,
-			}}
+		blobberTermsMap[t.BlobberID] = Terms{
+			ReadPrice:  currency.Coin(t.ReadPrice),
+			WritePrice: currency.Coin(t.WritePrice),
+		}
 	}
 
 	blobbers, err := eventDb.GetBlobbersFromIDs(blobberIDs)
 	if err != nil {
-		return nil, fmt.Errorf("error retrieving blobbers from db: %v", err)
+		return nil, nil, fmt.Errorf("error retrieving blobbers from db: %v", err)
 	}
 
-	var dpsSze = alloc.DataShards + alloc.ParityShards
-	var gbSize = sizeInGB((alloc.Size + int64(dpsSze-1)) / int64(dpsSze))
-	var rdtu = float64(time.Second*time.Duration(alloc.Expiration-alloc.StartTime)) / float64(alloc.TimeUnit)
+	blobberSize := bSize(alloc.Size, alloc.DataShards)
 
 	for _, b := range blobbers {
-		storageNodes = append(storageNodes, &StorageNode{
-			ID:      b.BlobberID,
-			BaseURL: b.BaseURL,
-			Geolocation: StorageNodeGeolocation{
-				Latitude:  b.Latitude,
-				Longitude: b.Longitude,
-			},
-			Terms:           blobberIDTermMapping[b.BlobberID].Terms,
+		storageNodes = append(storageNodes, &storageNodeResponse{
+			ID:              b.ID,
+			BaseURL:         b.BaseURL,
+			Terms:           blobberTermsMap[b.ID],
 			Capacity:        b.Capacity,
 			Allocated:       b.Allocated,
 			SavedData:       b.SavedData,
-			LastHealthCheck: common.Timestamp(b.LastHealthCheck),
+			LastHealthCheck: b.LastHealthCheck,
 			StakePoolSettings: stakepool.Settings{
 				DelegateWallet:     b.DelegateWallet,
-				MinStake:           currency.Coin(b.MinStake),
-				MaxStake:           currency.Coin(b.MaxStake),
 				MaxNumDelegates:    b.NumDelegates,
 				ServiceChargeRatio: b.ServiceCharge,
 			},
+			IsRestricted:   b.IsRestricted,
+			IsEnterprise:   b.IsEnterprise,
+			StorageVersion: b.StorageVersion,
+			ManagingWallet: &b.ManagingWallet,
 		})
 
-		terms := blobberIDTermMapping[b.BlobberID].Terms
+		terms := blobberTermsMap[b.ID]
 
-		bwF := gbSize * terms.MinLockDemand * rdtu
-		minLockDemand, err := currency.MultFloat64(terms.WritePrice, bwF)
-		if err != nil {
-			return nil, err
+		ba := &BlobberAllocation{
+			BlobberID:    b.ID,
+			AllocationID: alloc.AllocationID,
+			Size:         blobberSize,
+			Terms:        terms,
 		}
-
-		tempBlobberAllocation := &BlobberAllocation{
-			BlobberID:     b.BlobberID,
-			AllocationID:  blobberIDTermMapping[b.BlobberID].AllocationID,
-			Size:          b.Allocated,
-			Terms:         terms,
-			MinLockDemand: minLockDemand,
-		}
-		blobberDetails = append(blobberDetails, tempBlobberAllocation)
-		blobberMap[b.BlobberID] = tempBlobberAllocation
+		blobberDetails = append(blobberDetails, ba)
+		blobberMap[b.ID] = ba
 	}
 
-	sa := &StorageAllocation{
-		ID:             alloc.AllocationID,
-		Tx:             alloc.TransactionID,
-		Name:           alloc.AllocationName,
-		DataShards:     alloc.DataShards,
-		ParityShards:   alloc.ParityShards,
-		Size:           alloc.Size,
-		Expiration:     common.Timestamp(alloc.Expiration),
-		Owner:          alloc.Owner,
-		OwnerPublicKey: alloc.OwnerPublicKey,
-		WritePool:      alloc.WritePool,
+	saV3 := &storageAllocationV3{
+		ID:                   alloc.AllocationID,
+		Tx:                   alloc.TransactionID,
+		DataShards:           alloc.DataShards,
+		ParityShards:         alloc.ParityShards,
+		Size:                 alloc.Size,
+		Expiration:           common.Timestamp(alloc.Expiration),
+		Owner:                alloc.Owner,
+		OwnerPublicKey:       alloc.OwnerPublicKey,
+		WritePool:            alloc.WritePool,
+		ThirdPartyExtendable: alloc.ThirdPartyExtendable,
+		FileOptions:          alloc.FileOptions,
 		Stats: &StorageAllocationStats{
 			UsedSize:                  alloc.UsedSize,
 			NumWrites:                 alloc.NumWrites,
@@ -128,150 +96,117 @@ func allocationTableToStorageAllocationBlobbers(alloc *event.Allocation, eventDb
 			FailedChallenges:          alloc.FailedChallenges,
 			LastestClosedChallengeTxn: alloc.LatestClosedChallengeTxn,
 		},
-		BlobberAllocs:           blobberDetails,
-		BlobberAllocsMap:        blobberMap,
-		IsImmutable:             alloc.IsImmutable,
-		ReadPriceRange:          PriceRange{alloc.ReadPriceMin, alloc.ReadPriceMax},
-		WritePriceRange:         PriceRange{alloc.WritePriceMin, alloc.WritePriceMax},
-		ChallengeCompletionTime: time.Duration(alloc.ChallengeCompletionTime),
-		StartTime:               common.Timestamp(alloc.StartTime),
-		Finalized:               alloc.Finalized,
-		Canceled:                alloc.Cancelled,
-		UsedSize:                alloc.UsedSize,
-		MovedToChallenge:        alloc.MovedToChallenge,
-		MovedBack:               alloc.MovedBack,
-		MovedToValidators:       alloc.MovedToValidators,
-		TimeUnit:                time.Duration(alloc.TimeUnit),
-		Curators:                curators,
+		BlobberAllocs:          blobberDetails,
+		BlobberAllocsMap:       blobberMap,
+		ReadPriceRange:         PriceRange{alloc.ReadPriceMin, alloc.ReadPriceMax},
+		WritePriceRange:        PriceRange{alloc.WritePriceMin, alloc.WritePriceMax},
+		StartTime:              common.Timestamp(alloc.StartTime),
+		Finalized:              alloc.Finalized,
+		Canceled:               alloc.Cancelled,
+		MovedToChallenge:       alloc.MovedToChallenge,
+		MovedBack:              alloc.MovedBack,
+		MovedToValidators:      alloc.MovedToValidators,
+		TimeUnit:               time.Duration(alloc.TimeUnit),
+		IsEnterprise:           &alloc.IsEnterprise,
+		StorageVersion:         &alloc.StorageVersion,
+		OwnerSigningPublickKey: &alloc.OwnerSigningPublicKey,
+	}
+	sa := &StorageAllocation{}
+	sa.SetEntity(saV3)
+
+	res := &StorageAllocationBlobbers{
+		storageAllocationV3: *saV3,
+		Blobbers:            storageNodes,
 	}
 
-	return &StorageAllocationBlobbers{
-		StorageAllocation: *sa,
-		Blobbers:          storageNodes,
-	}, nil
+	return sa, res, nil
 }
 
-func (sa *StorageAllocation) marshalTerms() ([]byte, error) {
-	allocationTerms := make([]event.AllocationTerm, 0)
-	for _, b := range sa.BlobberAllocs {
-		allocationTerms = append(allocationTerms, event.AllocationTerm{
-			BlobberID:        b.BlobberID,
-			AllocationID:     b.AllocationID,
-			ReadPrice:        b.Terms.ReadPrice,
-			WritePrice:       b.Terms.WritePrice,
-			MinLockDemand:    b.Terms.MinLockDemand,
-			MaxOfferDuration: b.Terms.MaxOfferDuration,
-		})
-	}
-
-	termsByte, err := json.Marshal(allocationTerms)
-	if err != nil {
-		return nil, fmt.Errorf("error marshalling terms: %v", err)
-	}
-	return termsByte, nil
-}
-
-func storageAllocationToAllocationTable(sa *StorageAllocation) (*event.Allocation, error) {
-	termsByte, err := sa.marshalTerms()
-	if err != nil {
-		return nil, err
-	}
-
+func storageAllocationToAllocationTable(balances cstate.StateContextI, sa *StorageAllocation) (*event.Allocation, error) {
+	sab := sa.mustBase()
 	alloc := &event.Allocation{
-		AllocationID:            sa.ID,
-		AllocationName:          sa.Name,
-		TransactionID:           sa.Tx,
-		DataShards:              sa.DataShards,
-		ParityShards:            sa.ParityShards,
-		Size:                    sa.Size,
-		Expiration:              int64(sa.Expiration),
-		Terms:                   string(termsByte),
-		Owner:                   sa.Owner,
-		OwnerPublicKey:          sa.OwnerPublicKey,
-		IsImmutable:             sa.IsImmutable,
-		ReadPriceMin:            sa.ReadPriceRange.Min,
-		ReadPriceMax:            sa.ReadPriceRange.Max,
-		WritePriceMin:           sa.WritePriceRange.Min,
-		WritePriceMax:           sa.WritePriceRange.Max,
-		ChallengeCompletionTime: int64(sa.ChallengeCompletionTime),
-		StartTime:               int64(sa.StartTime),
-		Finalized:               sa.Finalized,
-		Cancelled:               sa.Canceled,
-		UsedSize:                sa.UsedSize,
-		MovedToChallenge:        sa.MovedToChallenge,
-		MovedBack:               sa.MovedBack,
-		MovedToValidators:       sa.MovedToValidators,
-		TimeUnit:                int64(sa.TimeUnit),
-		WritePool:               sa.WritePool,
+		AllocationID:         sab.ID,
+		TransactionID:        sab.Tx,
+		DataShards:           sab.DataShards,
+		ParityShards:         sab.ParityShards,
+		Size:                 sab.Size,
+		Expiration:           int64(sab.Expiration),
+		Terms:                sab.buildEventBlobberTerms(),
+		Owner:                sab.Owner,
+		OwnerPublicKey:       sab.OwnerPublicKey,
+		ReadPriceMin:         sab.ReadPriceRange.Min,
+		ReadPriceMax:         sab.ReadPriceRange.Max,
+		WritePriceMin:        sab.WritePriceRange.Min,
+		WritePriceMax:        sab.WritePriceRange.Max,
+		StartTime:            int64(sab.StartTime),
+		Finalized:            sab.Finalized,
+		Cancelled:            sab.Canceled,
+		UsedSize:             sab.Stats.UsedSize,
+		MovedToChallenge:     sab.MovedToChallenge,
+		MovedBack:            sab.MovedBack,
+		MovedToValidators:    sab.MovedToValidators,
+		TimeUnit:             int64(sab.TimeUnit),
+		WritePool:            sab.WritePool,
+		ThirdPartyExtendable: sab.ThirdPartyExtendable,
+		FileOptions:          sab.FileOptions,
 	}
 
-	if sa.Stats != nil {
-		alloc.NumWrites = sa.Stats.NumWrites
-		alloc.NumReads = sa.Stats.NumReads
-		alloc.TotalChallenges = sa.Stats.TotalChallenges
-		alloc.OpenChallenges = sa.Stats.OpenChallenges
-		alloc.SuccessfulChallenges = sa.Stats.SuccessChallenges
-		alloc.FailedChallenges = sa.Stats.FailedChallenges
-		alloc.LatestClosedChallengeTxn = sa.Stats.LastestClosedChallengeTxn
+	if actErr := cstate.WithActivation(balances, "electra", func() error {
+		return nil
+	}, func() error {
+		if sa.Entity().GetVersion() == "v2" {
+			if v2 := sa.Entity().(*storageAllocationV2); v2 != nil && v2.IsEnterprise != nil {
+				alloc.IsEnterprise = *v2.IsEnterprise
+			}
+		}
+		return nil
+	}); actErr != nil {
+		return nil, actErr
+	}
+
+	if actErr := cstate.WithActivation(balances, "hercules", func() error {
+		return nil
+	}, func() error {
+		if sa.Entity().GetVersion() == "v3" {
+			v3, ok := sa.Entity().(*storageAllocationV3)
+			if !ok || v3 == nil {
+				return nil
+			}
+			if v3.IsEnterprise != nil {
+				alloc.IsEnterprise = *v3.IsEnterprise
+			}
+			if v3.StorageVersion != nil {
+				alloc.StorageVersion = *v3.StorageVersion
+			}
+			if v3.OwnerSigningPublickKey != nil {
+				alloc.OwnerSigningPublicKey = *v3.OwnerSigningPublickKey
+			}
+		}
+		return nil
+	}); actErr != nil {
+		return nil, actErr
+	}
+
+	if sab.Stats != nil {
+		alloc.NumWrites = sab.Stats.NumWrites
+		alloc.NumReads = sab.Stats.NumReads
+		alloc.TotalChallenges = sab.Stats.TotalChallenges
+		alloc.OpenChallenges = sab.Stats.OpenChallenges
+		alloc.SuccessfulChallenges = sab.Stats.SuccessChallenges
+		alloc.FailedChallenges = sab.Stats.FailedChallenges
+		alloc.LatestClosedChallengeTxn = sab.Stats.LastestClosedChallengeTxn
 	}
 
 	return alloc, nil
 }
 
-func (sa *StorageAllocation) buildDbUpdates() *dbs.DbUpdates {
-
-	termsByte, _ := sa.marshalTerms() //err always is nil
-
-	dbUpdates := &dbs.DbUpdates{
-		Id: sa.ID,
-		Updates: map[string]interface{}{
-			"allocation_name":           sa.Name,
-			"transaction_id":            sa.Tx,
-			"data_shards":               sa.DataShards,
-			"parity_shards":             sa.ParityShards,
-			"size":                      sa.Size,
-			"expiration":                int64(sa.Expiration),
-			"terms":                     string(termsByte),
-			"owner":                     sa.Owner,
-			"owner_public_key":          sa.OwnerPublicKey,
-			"is_immutable":              sa.IsImmutable,
-			"read_price_min":            sa.ReadPriceRange.Min,
-			"read_price_max":            sa.ReadPriceRange.Max,
-			"write_price_min":           sa.WritePriceRange.Min,
-			"write_price_max":           sa.WritePriceRange.Max,
-			"challenge_completion_time": int64(sa.ChallengeCompletionTime),
-			"start_time":                int64(sa.StartTime),
-			"finalized":                 sa.Finalized,
-			"cancelled":                 sa.Canceled,
-			"used_size":                 sa.UsedSize,
-			"moved_to_challenge":        sa.MovedToChallenge,
-			"moved_back":                sa.MovedBack,
-			"moved_to_validators":       sa.MovedToValidators,
-			"time_unit":                 int64(sa.TimeUnit),
-			"write_pool":                sa.WritePool,
-		},
-	}
-
-	if sa.Stats != nil {
-		dbUpdates.Updates["num_writes"] = sa.Stats.NumWrites
-		dbUpdates.Updates["num_reads"] = sa.Stats.NumReads
-		dbUpdates.Updates["total_challenges"] = sa.Stats.TotalChallenges
-		dbUpdates.Updates["open_challenges"] = sa.Stats.OpenChallenges
-		dbUpdates.Updates["successful_challenges"] = sa.Stats.SuccessChallenges
-		dbUpdates.Updates["failed_challenges"] = sa.Stats.FailedChallenges
-		dbUpdates.Updates["latest_closed_challenge_txn"] = sa.Stats.LastestClosedChallengeTxn
-	}
-	return dbUpdates
-}
-
 func (sa *StorageAllocation) emitAdd(balances cstate.StateContextI) error {
-	alloc, err := storageAllocationToAllocationTable(sa)
+	alloc, err := storageAllocationToAllocationTable(balances, sa)
 	if err != nil {
 		return err
 	}
 
 	balances.EmitEvent(event.TypeStats, event.TagAddAllocation, alloc.AllocationID, alloc)
-
 	return nil
 }
 
@@ -285,7 +220,7 @@ func getClientAllocationsFromDb(clientID string, eventDb *event.EventDb, limit c
 	}
 
 	for _, alloc := range allocs {
-		sa, err := allocationTableToStorageAllocationBlobbers(&alloc, eventDb)
+		_, sa, err := allocationTableToStorageAllocationBlobbers(&alloc, eventDb)
 		if err != nil {
 			return nil, err
 		}
@@ -294,4 +229,31 @@ func getClientAllocationsFromDb(clientID string, eventDb *event.EventDb, limit c
 	}
 
 	return sas, nil
+}
+
+func getExpiredAllocationsFromDb(blobberID string, eventDb *event.EventDb) ([]string, error) {
+	allocs, err := eventDb.GetExpiredAllocation(blobberID)
+	if err != nil {
+		return nil, err
+	}
+
+	return allocs, nil
+}
+
+func prepareAllocationsResponse(eventDb *event.EventDb, eAllocs []event.Allocation) ([]*StorageAllocationBlobbers, error) {
+	sas := make([]*StorageAllocationBlobbers, 0, len(eAllocs))
+	for _, eAlloc := range eAllocs {
+		_, sa, err := allocationTableToStorageAllocationBlobbers(&eAlloc, eventDb)
+		if err != nil {
+			return nil, err
+		}
+
+		sas = append(sas, sa)
+	}
+
+	return sas, nil
+}
+
+func emitAddOrOverwriteAllocationBlobberTerms(sa *storageAllocationBase, balances cstate.StateContextI, t *transaction.Transaction) {
+	balances.EmitEvent(event.TypeStats, event.TagAddOrOverwriteAllocationBlobberTerm, sa.ID, sa.buildEventBlobberTerms())
 }

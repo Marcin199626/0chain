@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -9,7 +8,7 @@ import (
 	"sort"
 	"time"
 
-	"0chain.net/chaincore/currency"
+	"github.com/0chain/common/core/currency"
 
 	"go.uber.org/zap"
 
@@ -17,8 +16,8 @@ import (
 	mptwallet "0chain.net/chaincore/wallet"
 	"0chain.net/core/common"
 	"0chain.net/core/encryption"
-	. "0chain.net/core/logging"
 	"0chain.net/core/viper"
+	. "github.com/0chain/common/core/logging"
 )
 
 const (
@@ -81,7 +80,7 @@ func discoverPoolMembers(discoveryFile string) {
 		} else {
 			if !isSliceEq(pm.Miners, members.Miners) || !isSliceEq(pm.Sharders, members.Sharders) {
 				Logger.Fatal("The members are different from", zap.String("URL", ip),
-					zap.Any("Miners", members.Miners), zap.Any("Sharders", pm.Sharders))
+					zap.Strings("Miners", members.Miners), zap.Strings("Sharders", pm.Sharders))
 			}
 		}
 	}
@@ -90,7 +89,7 @@ func discoverPoolMembers(discoveryFile string) {
 		Logger.Fatal("Could not discover blockchain")
 	}
 
-	Logger.Info("Discovered pool members", zap.Any("Miners", pm.Miners), zap.Any("Sharders", pm.Sharders))
+	Logger.Info("Discovered pool members", zap.Strings("Miners", pm.Miners), zap.Strings("Sharders", pm.Sharders))
 }
 
 func extractDiscoverIps(discFile string) []string {
@@ -167,25 +166,6 @@ func getOwnerWallet(signatureScheme, ownerKeysFile string) mptwallet.Wallet {
 	}
 
 	return w
-}
-
-// Register a client on the blockchain's MPT.
-func registerMPTWallet(w mptwallet.Wallet) {
-	Logger.Info("Registering MPT wallet", zap.Any("ClientID", w.ClientID))
-
-	data, err := json.Marshal(w)
-	if err != nil {
-		panic(err)
-	}
-
-	for _, ip := range members.Miners {
-		body, err := httpclientutil.SendPostRequest(ip+httpclientutil.RegisterClient, data, "", "", nil)
-		if err != nil {
-			Logger.Fatal("HTTP POST error", zap.Error(err), zap.Any("body", body))
-		}
-	}
-
-	Logger.Info("Success on registering MPT wallet")
 }
 
 func executeSCTransaction(from mptwallet.Wallet, scAddress string, value int64, data interface{}) httpclientutil.Transaction {
@@ -272,9 +252,7 @@ func confirmTransaction(hash string) (httpclientutil.Transaction, error) {
 }
 
 func getBalance(clientID string) currency.Coin {
-	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
-	defer cancel()
-	balance, err := httpclientutil.MakeClientBalanceRequest(ctx, clientID, members.Sharders, confirmationQuorum)
+	balance, err := httpclientutil.MakeClientBalanceRequest(clientID, members.Sharders)
 	if err != nil {
 		Logger.Fatal("Couldn't get client balance", zap.Error(err))
 	}

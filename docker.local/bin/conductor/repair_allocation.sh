@@ -5,11 +5,8 @@ set -e
 rm -rf ~/.zcn/testing.json
 rm -rf ~/.zcn/allocation.txt
 
-for run in $(seq 1 14)
-do
-  ./zwalletcli/zwallet --wallet testing.json faucet \
-      --methodName pour --input "{Pay day}"
-done
+./zwalletcli/zwallet --wallet testing.json faucet \
+    --methodName pour --input "{Pay day}" --tokens 100
 
 ./zwalletcli/zwallet --wallet testing.json getbalance
 
@@ -31,25 +28,11 @@ BLOBBER4=2a4d5a5c6c0976873f426128d2ff23a060ee715bccf0fd3ca5e987d57f25b78e
 # create allocation
 ./zboxcli/zbox --wallet testing.json newallocation \
     --read_price 0.001-10 --write_price 0.01-10 --size 104857600 \
-    --lock 2 --data 2 --parity 2 --expire 48h
+    --lock 2 --data 2 --parity 2
 
 # for test logs
 ./zboxcli/zbox --wallet testing.json ls-blobbers
 
 # add to read pools
 ./zboxcli/zbox --wallet testing.json rp-lock \
-    --duration=1h --allocation "$(cat ~/.zcn/allocation.txt)" --tokens 2.0
-
-# create random file
-head -c 5M < /dev/urandom > random.bin
-
-# upload initial file
-./zboxcli/zbox --wallet testing.json upload \
-    --allocation "$(cat ~/.zcn/allocation.txt)" \
-    --localpath=random.bin \
-    --remotepath=/remote/random.bin
-
-# and delete it then
-./zboxcli/zbox --wallet testing.json delete \
-    --allocation "$(cat ~/.zcn/allocation.txt)" \
-    --remotepath=/remote/random.bin
+    --tokens 2.0

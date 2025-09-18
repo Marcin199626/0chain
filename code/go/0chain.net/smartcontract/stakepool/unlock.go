@@ -3,7 +3,7 @@ package stakepool
 import (
 	"fmt"
 
-	"0chain.net/chaincore/currency"
+	"0chain.net/smartcontract/dbs/event"
 
 	"0chain.net/smartcontract/stakepool/spenum"
 
@@ -11,54 +11,52 @@ import (
 	"0chain.net/core/datastore"
 )
 
-func (sp *StakePool) UnlockClientStakePool(
-	clientID string,
-	providerType spenum.Provider,
-	providerId datastore.Key,
-	poolId datastore.Key,
-	balances cstate.StateContextI,
-) (currency.Coin, error) {
-	var usp *UserStakePools
-	usp, err := getOrCreateUserStakePool(providerType, clientID, balances)
-	if err != nil {
-		return 0, fmt.Errorf("can't get user pools list: %v", err)
+func (sp *StakePool) UnlockPool(clientID string, providerType spenum.Provider, providerId datastore.Key,
+	balances cstate.StateContextI) (string, error) {
+	dp, ok := sp.Pools[clientID]
+	if !ok {
+		return "", fmt.Errorf("can't find pool of %v", clientID)
 	}
 
-	return sp.UnlockPool(
-		clientID,
-		providerType,
-		providerId,
-		poolId,
-		usp,
-		balances,
-	)
+	amount, err := sp.MintRewards(clientID, providerId, providerType, balances)
+	if err != nil {
+		return "", fmt.Errorf("error emptying account, %v", err)
+	}
+
+	b, err := dp.Balance.Int64()
+	if err != nil {
+		return "", fmt.Errorf("can't cast Balance of value (%v) to Int64", b)
+	}
+	i, err := amount.Int64()
+	if err != nil {
+		return "", fmt.Errorf("can't cast amount of value (%v) to Int64", amount)
+	}
+	lock := event.DelegatePoolLock{
+		Client:       clientID,
+		ProviderId:   providerId,
+		ProviderType: providerType,
+		Amount:       b,
+		Reward:       amount,
+		Total:        b + i,
+	}
+	balances.EmitEvent(event.TypeStats, event.TagUnlockStakePool, clientID, lock)
+	return toJson(lock), nil
 }
 
-func (sp *StakePool) UnlockPool(
-	clientID string,
-	providerType spenum.Provider,
-	providerId datastore.Key,
-	poolId datastore.Key,
-	usp *UserStakePools,
-	balances cstate.StateContextI,
-) (currency.Coin, error) {
-	foundProvider := usp.FindProvider(poolId)
-	if len(foundProvider) == 0 || providerId != foundProvider {
-		return 0, fmt.Errorf("user %v does not own stake pool %v", clientID, poolId)
-	}
-
-	dp, ok := sp.Pools[poolId]
+func (sp *StakePool) DeletePool(clientID string, providerType spenum.Provider, providerId datastore.Key,
+	balances cstate.StateContextI) error {
+	dp, ok := sp.Pools[clientID]
 	if !ok {
-		return 0, fmt.Errorf("can't find pool: %v", poolId)
+		return fmt.Errorf("can't find pool of %v", clientID)
 	}
 
-	dp.Status = spenum.Deleting
-	amount, err := sp.MintRewards(
-		clientID, poolId, providerId, providerType, usp, balances,
-	)
-	if err != nil {
-		return 0, fmt.Errorf("error emptying account, %v", err)
+	if dp.Status == spenum.Deleted {
+		delete(sp.Pools, clientID)
 	}
 
-	return amount, nil
+	dpUpdate := newDelegatePoolUpdate(clientID, providerId, providerType)
+	dpUpdate.Updates["status"] = dp.Status
+	dpUpdate.emitUpdate(balances)
+
+	return nil
 }

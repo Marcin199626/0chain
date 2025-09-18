@@ -2,13 +2,14 @@ package transaction
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
-	"0chain.net/core/logging"
 	"0chain.net/core/memorystore"
+	"github.com/0chain/common/core/logging"
 	"go.uber.org/zap"
 )
 
@@ -22,6 +23,22 @@ func GetTransaction(ctx context.Context, r *http.Request) (interface{}, error) {
 	return datastore.GetEntityHandler(ctx, r, transactionEntityMetadata, "hash")
 }
 
+func GetTransactionByHash(ctx context.Context, hash string) (interface{}, error) {
+	// check if txn is invalid future txn
+	if IsInvalidFutureTxn(hash) {
+		return nil, errors.New("invalid future transaction")
+	}
+
+	tem := datastore.GetEntityMetadata("txn")
+	if tem == nil {
+		return nil, nil
+	}
+
+	cctx := memorystore.WithConnection(ctx)
+	defer memorystore.Close(cctx)
+	return datastore.GetEntityByHash(cctx, tem, hash)
+}
+
 /*PutTransaction - Given a transaction data, it stores it */
 func PutTransaction(ctx context.Context, entity datastore.Entity) (interface{}, error) {
 	txn, ok := entity.(*Transaction)
@@ -29,32 +46,20 @@ func PutTransaction(ctx context.Context, entity datastore.Entity) (interface{}, 
 		return nil, fmt.Errorf("invalid request %T", entity)
 	}
 
-	if err := txn.ComputeProperties(); err != nil {
-		logging.Logger.Error("put transaction error", zap.String("txn", txn.Hash), zap.Error(err))
-		return nil, err
+	if txn.DebugTxn() {
+		logging.Logger.Info("put transaction", zap.Any("txn", txn))
+	} else {
+		logging.Logger.Info("put transaction", zap.String("txn", txn.Hash))
 	}
 
-	debugTxn := txn.DebugTxn()
-	err := txn.Validate(ctx)
-	if err != nil {
-		logging.Logger.Error("put transaction error", zap.String("txn", txn.Hash), zap.Error(err))
-		return nil, err
-	}
-	if debugTxn {
-		logging.Logger.Info("put transaction (debug transaction)", zap.String("txn", txn.Hash), zap.String("txn_obj", datastore.ToJSON(txn).String()))
-	}
-
-	cli, err := txn.GetClient(ctx)
-	if err != nil || cli == nil || cli.PublicKey == "" {
-		return nil, common.NewError("put transaction error", fmt.Sprintf("client %v doesn't exist, please register", txn.ClientID))
-	}
 	if datastore.DoAsync(ctx, txn) {
 		IncTransactionCount()
 		return txn, nil
 	}
-	err = entity.GetEntityMetadata().GetStore().Write(ctx, txn)
+
+	err := entity.GetEntityMetadata().GetStore().Write(ctx, txn)
 	if err != nil {
-		logging.Logger.Info("put transaction", zap.Any("error", err), zap.Any("txn", txn.Hash), zap.Any("txn_obj", datastore.ToJSON(txn).String()))
+		logging.Logger.Error("put transaction", zap.Error(err), zap.String("txn", txn.Hash), zap.String("txn_obj", datastore.ToJSON(txn).String()))
 		return nil, err
 	}
 
@@ -88,7 +93,7 @@ func PutTransactionWithoutVerifySig(ctx context.Context, entity datastore.Entity
 	}
 	err = entity.GetEntityMetadata().GetStore().Write(ctx, txn)
 	if err != nil {
-		logging.Logger.Info("put transaction", zap.Any("error", err), zap.Any("txn", txn.Hash), zap.Any("txn_obj", datastore.ToJSON(txn).String()))
+		logging.Logger.Error("put transaction", zap.Error(err), zap.String("txn", txn.Hash), zap.String("txn_obj", datastore.ToJSON(txn).String()))
 		return nil, err
 	}
 

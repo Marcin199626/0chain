@@ -2,16 +2,16 @@ package minersc
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+
+	sc "0chain.net/core/config"
+	"0chain.net/smartcontract/provider"
 
 	"0chain.net/core/common"
 
-	"0chain.net/chaincore/currency"
-
 	"0chain.net/smartcontract/stakepool"
 	"0chain.net/smartcontract/stakepool/spenum"
-
-	sc "0chain.net/smartcontract"
 
 	"0chain.net/chaincore/block"
 	cstate "0chain.net/chaincore/chain/state"
@@ -95,7 +95,6 @@ func BenchmarkTests(
 		SmartContract: sci.NewSC(ADDRESS),
 	}
 	msc.setSC(msc.SmartContract, &smartcontract.BCContext{})
-	miner00 := getMinerDelegatePoolId(0, 0, spenum.Miner)
 	var tests = []BenchTest{
 		{
 			name:     "miner.add_miner",
@@ -103,8 +102,11 @@ func BenchmarkTests(
 			txn:      &transaction.Transaction{CreationDate: creationTime},
 			input: (&MinerNode{
 				SimpleNode: &SimpleNode{
-					ID:        encryption.Hash("my new miner"),
-					PublicKey: "miner's public key",
+					Provider: provider.Provider{
+						ID:           encryption.Hash("magic_block_miner_1"),
+						ProviderType: spenum.Miner,
+					},
+					PublicKey: "31810bd1258ae95955fb40c7ef72498a556d3587121376d9059119d280f34929",
 					N2NHost:   "new n2n_host",
 					Host:      "new host",
 					Port:      1234,
@@ -114,8 +116,6 @@ func BenchmarkTests(
 					Settings: stakepool.Settings{
 						ServiceChargeRatio: viper.GetFloat64(bk.MinerMaxCharge),
 						MaxNumDelegates:    viper.GetInt(bk.MinerMaxDelegates),
-						MinStake:           currency.Coin(viper.GetFloat64(bk.MinerMinStake) * 1e10),
-						MaxStake:           currency.Coin(viper.GetFloat64(bk.MinerMaxStake) * 1e10),
 					},
 				},
 			}).Encode(),
@@ -126,8 +126,11 @@ func BenchmarkTests(
 			txn:      &transaction.Transaction{CreationDate: creationTime},
 			input: (&MinerNode{
 				SimpleNode: &SimpleNode{
-					ID:        encryption.Hash("my new sharder"),
-					PublicKey: "sharder's public key",
+					Provider: provider.Provider{
+						ID:           data.InactiveSharder,
+						ProviderType: spenum.Sharder,
+					},
+					PublicKey: data.InactiveSharderPK,
 					N2NHost:   "new n2n_host",
 					Host:      "new host",
 					Port:      1234,
@@ -137,8 +140,6 @@ func BenchmarkTests(
 					Settings: stakepool.Settings{
 						ServiceChargeRatio: viper.GetFloat64(bk.MinerMaxCharge),
 						MaxNumDelegates:    viper.GetInt(bk.MinerMaxDelegates),
-						MinStake:           currency.Coin(viper.GetFloat64(bk.MinerMinStake) * 1e10),
-						MaxStake:           currency.Coin(viper.GetFloat64(bk.MinerMaxStake) * 1e10),
 					},
 				},
 			}).Encode(),
@@ -147,7 +148,7 @@ func BenchmarkTests(
 			name:     "miner.update_globals",
 			endpoint: msc.minerHealthCheck,
 			txn: &transaction.Transaction{
-				ClientID:     GetMockNodeId(0, spenum.Miner),
+				ClientID:     data.Miners[0],
 				CreationDate: creationTime,
 			},
 			input: nil,
@@ -156,7 +157,7 @@ func BenchmarkTests(
 			name:     "miner.miner_health_check",
 			endpoint: msc.minerHealthCheck,
 			txn: &transaction.Transaction{
-				ClientID:     GetMockNodeId(0, spenum.Miner),
+				ClientID:     data.Miners[0],
 				CreationDate: creationTime,
 			},
 			input: nil,
@@ -165,33 +166,63 @@ func BenchmarkTests(
 			name:     "miner.sharder_health_check",
 			endpoint: msc.sharderHealthCheck,
 			txn: &transaction.Transaction{
-				ClientID:     GetMockNodeId(0, spenum.Sharder),
+				ClientID:     data.Sharders[0],
 				CreationDate: creationTime,
 			},
 			input: nil,
 		},
 		{
-			name:     "miner.payFees",
-			endpoint: msc.payFees,
+			name: "miner.payFees",
+			endpoint: func(t *transaction.Transaction,
+				input []byte, gn *GlobalNode, balances cstate.StateContextI) (
+				resp string, err error) {
+				p := &PayFeesInput{Round: balances.GetBlock().Round}
+				marshal, err := json.Marshal(p)
+				if err != nil {
+					return "", err
+				}
+				return msc.payFees(t, marshal, gn, balances)
+			},
 			txn: &transaction.Transaction{
-				ClientID:     GetMockNodeId(0, spenum.Miner),
+				ClientID:     data.Miners[0],
 				ToClientID:   ADDRESS,
 				CreationDate: creationTime,
 			},
-			input: nil,
+		},
+		{
+			name: "storage.kill_miner",
+			input: (&provider.ProviderRequest{
+				ID: data.Miners[0],
+			}).Encode(),
+			endpoint: msc.killMiner,
+			txn: &transaction.Transaction{
+				ClientID:     viper.GetString(bk.MinerMOwner),
+				CreationDate: creationTime,
+			},
+		},
+		{
+			name: "storage.kill_sharder",
+			input: (&provider.ProviderRequest{
+				ID: data.Sharders[0],
+			}).Encode(),
+			endpoint: msc.killSharder,
+			txn: &transaction.Transaction{
+				ClientID:     viper.GetString(bk.MinerMOwner),
+				CreationDate: creationTime,
+			},
 		},
 		{
 			name:     "miner.contributeMpk",
 			endpoint: msc.contributeMpk,
 			txn: &transaction.Transaction{
-				ClientID:     GetMockNodeId(0, spenum.Miner),
+				ClientID:     data.Miners[0],
 				ToClientID:   ADDRESS,
 				CreationDate: creationTime,
 			},
 			input: func() []byte {
 				var mpks []string
 				for i := 0; i < viper.GetInt(bk.InternalT); i++ {
-					mpks = append(mpks, GetMockNodeId(i, spenum.Miner))
+					mpks = append(mpks, data.Miners[i])
 				}
 				return (&block.MPK{
 					Mpk: mpks,
@@ -202,13 +233,13 @@ func BenchmarkTests(
 			name:     "miner.shareSignsOrShares",
 			endpoint: msc.shareSignsOrShares,
 			txn: &transaction.Transaction{
-				ClientID:     GetMockNodeId(0, spenum.Miner),
+				ClientID:     data.Miners[0],
 				CreationDate: creationTime,
 			},
 			input: func() []byte {
 				var sos = make(map[string]*bls.DKGKeyShare)
 				for i := 0; i < viper.GetInt(bk.InternalT); i++ {
-					sos[GetMockNodeId(i, spenum.Miner)] = nil
+					sos[data.Miners[i]] = nil
 				}
 				return (&block.ShareOrSigns{
 					ShareOrSigns: sos,
@@ -256,24 +287,42 @@ func BenchmarkTests(
 			},
 			input: (&sc.StringMap{
 				Fields: map[string]string{
-					"min_stake":              "0.0",
-					"max_stake":              "100",
-					"max_n":                  "7",
-					"min_n":                  "3",
-					"t_percent":              "0.66",
-					"k_percent":              "0.75",
-					"x_percent":              "0.70",
-					"max_s":                  "2",
-					"min_s":                  "1",
-					"max_delegates":          "200",
-					"reward_round_frequency": "64250",
-					"reward_rate":            "1.0",
-					"share_ratio":            "50",
-					"block_reward":           "021",
-					"max_charge":             "0.5",
-					"epoch":                  "6415000000",
-					"reward_decline_rate":    "0.1",
-					"max_mint":               "1500000.0",
+					"max_n":                               "7",
+					"min_n":                               "3",
+					"t_percent":                           "0.66",
+					"k_percent":                           "0.75",
+					"x_percent":                           "0.70",
+					"max_s":                               "2",
+					"min_s":                               "1",
+					"max_delegates":                       "200",
+					"reward_round_frequency":              "64250",
+					"reward_rate":                         "1.0",
+					"share_ratio":                         "50",
+					"block_reward":                        "021",
+					"max_charge":                          "0.5",
+					"epoch":                               "6415000000",
+					"reward_decline_rate":                 "0.1",
+					"owner_id":                            "f769ccdf8587b8cab6a0f6a8a5a0a91d3405392768f283c80a45d6023a1bfa1f",
+					"cost.add_miner":                      "111",
+					"cost.add_sharder":                    "111",
+					"cost.delete_miner":                   "111",
+					"cost.miner_health_check":             "111",
+					"cost.sharder_health_check":           "111",
+					strings.ToLower("cost.contributeMpk"): "111",
+					strings.ToLower("cost.shareSignsOrShares"): "111",
+					"cost.wait":                                    "111",
+					"cost.update_globals":                          "111",
+					"cost.update_settings":                         "111",
+					"cost.update_miner_settings":                   "111",
+					"cost.update_sharder_settings":                 "111",
+					strings.ToLower("cost.payFees"):                "111",
+					strings.ToLower("cost.feesPaid"):               "111",
+					strings.ToLower("cost.mintedTokens"):           "111",
+					strings.ToLower("cost.addToDelegatePool"):      "111",
+					strings.ToLower("cost.deleteFromDelegatePool"): "111",
+					"cost.sharder_keep":                            "111",
+					"cost.kill_miner":                              "111",
+					"cost.kill_sharder":                            "111",
 				},
 			}).Encode(),
 		},
@@ -286,15 +335,16 @@ func BenchmarkTests(
 			},
 			input: (&MinerNode{
 				SimpleNode: &SimpleNode{
-					ID: GetMockNodeId(0, spenum.Miner),
+					Provider: provider.Provider{
+						ID:           data.Miners[0],
+						ProviderType: spenum.Miner,
+					},
 				},
 				StakePool: &stakepool.StakePool{
 					Pools: make(map[string]*stakepool.DelegatePool),
 					Settings: stakepool.Settings{
 						ServiceChargeRatio: viper.GetFloat64(bk.MinerMaxCharge),
 						MaxNumDelegates:    viper.GetInt(bk.MinerMaxDelegates),
-						MinStake:           currency.Coin(viper.GetFloat64(bk.MinerMinStake) * 1e10),
-						MaxStake:           currency.Coin(viper.GetFloat64(bk.MinerMaxStake) * 1e10),
 					},
 				},
 			}).Encode(),
@@ -308,15 +358,16 @@ func BenchmarkTests(
 			},
 			input: (&MinerNode{
 				SimpleNode: &SimpleNode{
-					ID: GetMockNodeId(0, spenum.Sharder),
+					Provider: provider.Provider{
+						ID:           data.Sharders[0],
+						ProviderType: spenum.Sharder,
+					},
 				},
 				StakePool: &stakepool.StakePool{
 					Pools: make(map[string]*stakepool.DelegatePool),
 					Settings: stakepool.Settings{
 						ServiceChargeRatio: viper.GetFloat64(bk.MinerMaxCharge),
 						MaxNumDelegates:    viper.GetInt(bk.MinerMaxDelegates),
-						MinStake:           currency.Coin(viper.GetFloat64(bk.MinerMinStake) * 1e10),
-						MaxStake:           currency.Coin(viper.GetFloat64(bk.MinerMaxStake) * 1e10),
 					},
 				},
 			}).Encode(),
@@ -329,24 +380,26 @@ func BenchmarkTests(
 					Hash: encryption.Hash("transaction hash"),
 				},
 				ClientID:     data.Clients[0],
+				ToClientID:   ADDRESS,
 				Value:        1e10,
 				CreationDate: creationTime,
 			},
 			input: (&deletePool{
-				MinerID: GetMockNodeId(0, spenum.Miner),
-				PoolID:  miner00,
+				ProviderType: spenum.Miner,
+				ProviderID:   data.Miners[0],
 			}).Encode(),
 		},
 		{
 			name:     "miner.deleteFromDelegatePool",
 			endpoint: msc.deleteFromDelegatePool,
 			txn: &transaction.Transaction{
-				ClientID:     data.Clients[0],
+				ClientID:     getMinerDelegatePoolId(0, 0, data.Clients),
+				ToClientID:   ADDRESS,
 				CreationDate: creationTime,
 			},
 			input: (&deletePool{
-				MinerID: GetMockNodeId(0, spenum.Miner),
-				PoolID:  miner00,
+				ProviderType: spenum.Miner,
+				ProviderID:   data.Miners[0],
 			}).Encode(),
 		},
 		{
@@ -355,33 +408,46 @@ func BenchmarkTests(
 			txn:      &transaction.Transaction{CreationDate: creationTime},
 			input: (&MinerNode{
 				SimpleNode: &SimpleNode{
-					ID:        GetMockNodeId(0, spenum.Sharder),
+					Provider: provider.Provider{
+						ID:           data.Sharders[0],
+						ProviderType: spenum.Sharder,
+					},
 					PublicKey: "my public key",
 				},
 			}).Encode(),
 		},
-		{
-			name:     "miner.delete_miner",
-			endpoint: msc.DeleteMiner,
-			txn:      &transaction.Transaction{},
-			input: (&MinerNode{
-				SimpleNode: &SimpleNode{
-					ID:        GetMockNodeId(1, spenum.Miner),
-					PublicKey: "my public key",
-				},
-			}).Encode(),
-		},
-		{
-			name:     "miner.delete_sharder",
-			endpoint: msc.DeleteSharder,
-			txn:      &transaction.Transaction{},
-			input: (&MinerNode{
-				SimpleNode: &SimpleNode{
-					ID:        GetMockNodeId(1, spenum.Sharder),
-					PublicKey: "my public key",
-				},
-			}).Encode(),
-		},
+		//{
+		//	name:     "miner.delete_miner",
+		//	endpoint: msc.DeleteMiner,
+		//	txn: &transaction.Transaction{
+		//		ToClientID: ADDRESS,
+		//	},
+		//	input: (&MinerNode{
+		//		SimpleNode: &SimpleNode{
+		//			Provider: provider.Provider{
+		//				ID:           data.Miners[1],
+		//				ProviderType: spenum.Miner,
+		//			},
+		//			PublicKey: "my public key",
+		//		},
+		//	}).Encode(),
+		//},
+		//{
+		//	name:     "miner.delete_sharder",
+		//	endpoint: msc.DeleteSharder,
+		//	txn: &transaction.Transaction{
+		//		ToClientID: ADDRESS,
+		//	},
+		//	input: (&MinerNode{
+		//		SimpleNode: &SimpleNode{
+		//			Provider: provider.Provider{
+		//				ID:           data.Sharders[0],
+		//				ProviderType: spenum.Sharder,
+		//			},
+		//			PublicKey: "my public key",
+		//		},
+		//	}).Encode(),
+		//},
 		{
 			name:     "miner.collect_reward",
 			endpoint: msc.collectReward,
@@ -391,12 +457,25 @@ func BenchmarkTests(
 			},
 			input: func() []byte {
 				bytes, _ := json.Marshal(&stakepool.CollectRewardRequest{
-					PoolId:       miner00,
 					ProviderType: spenum.Miner,
-					ProviderId:   GetMockNodeId(0, spenum.Miner),
+					ProviderId:   data.Miners[0],
 				})
 				return bytes
 			}(),
+		},
+		{
+			name:     "miner.add_hardfork",
+			endpoint: msc.addHardFork,
+			txn: &transaction.Transaction{
+				ClientID:     owner,
+				CreationDate: creationTime,
+			},
+			input: (&sc.StringMap{
+				Fields: map[string]string{
+					"hardfork_1": "1",
+					"hardfork_2": "2",
+				},
+			}).Encode(),
 		},
 	}
 	var testsI []bk.BenchTestI

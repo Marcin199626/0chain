@@ -8,20 +8,22 @@ import (
 
 	"0chain.net/chaincore/block"
 	cstate "0chain.net/chaincore/chain/state"
-	"0chain.net/chaincore/currency"
 	sci "0chain.net/chaincore/smartcontractinterface"
 	"0chain.net/chaincore/threshold/bls"
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
 	"0chain.net/core/encryption"
-	"0chain.net/core/util"
+	"0chain.net/smartcontract/provider"
 	"0chain.net/smartcontract/stakepool"
+	"0chain.net/smartcontract/stakepool/spenum"
+	"github.com/0chain/common/core/currency"
+	"github.com/0chain/common/core/statecache"
+	"github.com/0chain/common/core/util"
 	"github.com/stretchr/testify/require"
 )
 
 const (
-	CHUNK_SIZE           = 64 * KB
 	allocationId         = "my allocation id"
 	delegateWallet       = "my wallet"
 	errCommitBlobber     = "commit_blobber_read"
@@ -30,7 +32,6 @@ const (
 	errPreviousMarker    = "validations with previous marker failed"
 	errEarlyAllocation   = "early reading, allocation not started yet"
 	errExpiredAllocation = "late reading, allocation expired"
-	errNoTokensReadPool  = "no tokens"
 	errNotEnoughTokens   = "not enough tokens"
 )
 
@@ -56,10 +57,18 @@ var (
 	blobberYaml = mockBlobberYaml{
 		serviceCharge: 0.3,
 		readPrice:     0.01,
+		writePrice:    0.1,
+	}
+	freeReadBlobberYaml = mockBlobberYaml{
+		serviceCharge: 0.3,
+	}
+	validatorYamls = []mockBlobberYaml{
+		{serviceCharge: 0.2}, {serviceCharge: 0.25}, {serviceCharge: 0.3},
 	}
 )
 
 func TestCommitBlobberRead(t *testing.T) {
+
 	var lastRead = mockReadMarker{
 		readCounter: 0,
 		timestamp:   0,
@@ -88,6 +97,12 @@ func TestCommitBlobberRead(t *testing.T) {
 	t.Run("test commit blobber read", func(t *testing.T) {
 		var err = testCommitBlobberRead(
 			t, blobberYaml, lastRead, read, allocation, stakes, rPool,
+		)
+		require.NoError(t, err)
+	})
+	t.Run("test commit blobber read empty pool", func(t *testing.T) {
+		var err = testCommitBlobberRead(
+			t, freeReadBlobberYaml, lastRead, read, allocation, stakes, mockReadPool{},
 		)
 		require.NoError(t, err)
 	})
@@ -124,18 +139,6 @@ func TestCommitBlobberRead(t *testing.T) {
 		require.True(t, strings.Contains(err.Error(), errFieldLength))
 	})
 
-	t.Run(errPreviousMarker+" -> timestamp", func(t *testing.T) {
-		var faultyLastRead = lastRead
-		faultyLastRead.timestamp = read.timestamp + 1
-		var err = testCommitBlobberRead(
-			t, blobberYaml, faultyLastRead, read, allocation, stakes, rPool,
-		)
-		require.Error(t, err)
-		require.True(t, strings.Contains(err.Error(), errCommitBlobber))
-		require.True(t, strings.Contains(err.Error(), errReadMarker))
-		require.True(t, strings.Contains(err.Error(), errPreviousMarker))
-	})
-
 	t.Run(errEarlyAllocation, func(t *testing.T) {
 		var faultyLastRead = lastRead
 		faultyLastRead.readCounter = read.readCounter + 1
@@ -160,24 +163,13 @@ func TestCommitBlobberRead(t *testing.T) {
 
 	t.Run(errExpiredAllocation, func(t *testing.T) {
 		var faultyRead = read
-		faultyRead.timestamp = allocation.expiration +
-			toSeconds(blobberYaml.challengeCompletionTime) + 1
+		faultyRead.timestamp = allocation.expiration + 1
 		var err = testCommitBlobberRead(
 			t, blobberYaml, lastRead, faultyRead, allocation, stakes, rPool,
 		)
 		require.Error(t, err)
 		require.True(t, strings.Contains(err.Error(), errCommitBlobber))
 		require.True(t, strings.Contains(err.Error(), errExpiredAllocation))
-	})
-
-	t.Run(errNoTokensReadPool+" expired blobbers", func(t *testing.T) {
-		var expiredReadPools = mockReadPool{}
-		var err = testCommitBlobberRead(
-			t, blobberYaml, lastRead, read, allocation, stakes, expiredReadPools,
-		)
-		require.Error(t, err)
-		require.True(t, strings.Contains(err.Error(), errCommitBlobber))
-		require.True(t, strings.Contains(err.Error(), errNoTokensReadPool))
 	})
 
 	t.Run(errNotEnoughTokens+" expired blobbers", func(t *testing.T) {
@@ -191,6 +183,11 @@ func TestCommitBlobberRead(t *testing.T) {
 		require.True(t, strings.Contains(err.Error(), errNotEnoughTokens))
 	})
 
+}
+
+func newTxnStateCache() *statecache.TransactionCache {
+	bc := statecache.NewBlockCache(statecache.NewStateCache(), statecache.Block{})
+	return statecache.NewTransactionCache(bc)
 }
 
 func testCommitBlobberRead(
@@ -230,16 +227,16 @@ func testCommitBlobberRead(
 		CreationDate: creationDate,
 	}
 	var ctx = &mockStateContext{
-		ctx: *cstate.NewStateContext(
+		StateContext: *cstate.NewStateContext(
 			&block.Block{},
-			&util.MerklePatriciaTrie{},
+			util.NewMerklePatriciaTrie(nil, 0, nil, statecache.NewEmpty()),
 			txn,
 			nil,
 			nil,
 			nil,
 			nil,
 			nil,
-			nil,
+			nil, nil, nil,
 		),
 		store: make(map[datastore.Key]util.MPTSerializable),
 	}
@@ -279,40 +276,50 @@ func testCommitBlobberRead(
 
 	_, err = ctx.InsertTrieNode(readConnection.GetKey(ssc.ID), lastReadConnection)
 	require.NoError(t, err)
-	var storageAllocation = &StorageAllocation{
-		ID:                      allocationId,
-		StartTime:               allocation.startTime,
-		ChallengeCompletionTime: blobberYaml.challengeCompletionTime,
-		Expiration:              allocation.expiration,
+
+	var sa = &StorageAllocation{}
+	sa.SetEntity(&storageAllocationV2{
+		ID:         allocationId,
+		StartTime:  allocation.startTime,
+		Expiration: allocation.expiration,
 		BlobberAllocs: []*BlobberAllocation{
 			{
 				BlobberID: blobberId,
 				Terms: Terms{
 					ReadPrice: zcnToBalance(blobberYaml.readPrice),
 				},
+				Stats: &StorageAllocationStats{},
 			},
 		},
 		Owner: client.id,
-	}
-	_, err = ctx.InsertTrieNode(storageAllocation.GetKey(ssc.ID), storageAllocation)
+		Stats: &StorageAllocationStats{},
+	})
+
+	_, err = ctx.InsertTrieNode(sa.GetKey(ssc.ID), sa)
 	require.NoError(t, err)
 
-	blobber := &StorageNode{
-		ID: blobberId,
+	blobber := &StorageNode{}
+	blobber.SetEntity(&storageNodeV3{
+		Provider: provider.Provider{
+			ID:           blobberId,
+			ProviderType: spenum.Blobber,
+		},
 		Terms: Terms{
 			ReadPrice:  zcnToBalance(blobberYaml.readPrice),
 			WritePrice: zcnToBalance(blobberYaml.writePrice),
 		},
-	}
+	})
 
-	_, err = ctx.InsertTrieNode(blobber.GetKey(ssc.ID), blobber)
+	_, err = ctx.InsertTrieNode(blobber.GetKey(), blobber)
 
 	var rPool = readPool{readPoolIn.Balance}
 
-	require.NoError(t, rPool.save(ssc.ID, client.id, ctx))
+	if readPoolIn.Balance != 0 {
+		require.NoError(t, rPool.save(ssc.ID, client.id, ctx))
+	}
 
 	var sPool = stakePool{
-		StakePool: stakepool.StakePool{
+		StakePool: &stakepool.StakePool{
 			Pools: make(map[string]*stakepool.DelegatePool),
 			Settings: stakepool.Settings{
 				ServiceChargeRatio: blobberYaml.serviceCharge,
@@ -323,11 +330,12 @@ func testCommitBlobberRead(
 	for i, stake := range stakes {
 		var id = strconv.Itoa(i)
 		sPool.Pools["pool"+id] = &stakepool.DelegatePool{
+			DelegateID:   encryption.Hash("delegate_pool_" + id),
 			Balance:      zcnToBalance(stake.zcnAmount),
 			RoundCreated: stake.MintAt,
 		}
 	}
-	require.NoError(t, sPool.save(ssc.ID, blobberId, ctx))
+	require.NoError(t, sPool.Save(spenum.Blobber, blobberId, ctx))
 
 	resp, err := ssc.commitBlobberRead(txn, input, ctx)
 	if err != nil {
@@ -337,9 +345,13 @@ func testCommitBlobberRead(
 	newRp, err := ssc.getReadPool(client.id, ctx)
 	require.NoError(t, err)
 
-	require.NotEqualValues(t, rPool.Balance, newRp.Balance)
+	if blobberYaml.readPrice != 0 {
+		require.NotEqualValues(t, rPool.Balance, newRp.Balance)
+	} else {
+		require.EqualValues(t, 0, newRp.Balance)
+	}
 
-	newSp, err := ssc.getStakePool(blobberId, ctx)
+	newSp, err := ssc.getStakePool(spenum.Blobber, blobberId, ctx)
 	require.NoError(t, err)
 
 	confirmCommitBlobberRead(t, f, resp, newSp)

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"math"
 	"time"
 
@@ -12,24 +11,28 @@ import (
 	"0chain.net/chaincore/chain"
 	"0chain.net/chaincore/node"
 	"0chain.net/chaincore/round"
-	. "0chain.net/core/logging"
+	"0chain.net/core/common"
+	. "github.com/0chain/common/core/logging"
 	"go.uber.org/zap"
 )
 
-var ErrNoPreviousBlock = errors.New("previous block does not exist")
+var (
+	ErrNoPreviousBlock = errors.New("previous block does not exist")
+	ErrNoPreviousState = common.NewError("previous block state is not computed", "")
+)
 
 // AddNotarizedBlock - add a notarized block for a given round.
 func (sc *Chain) AddNotarizedBlock(ctx context.Context, r round.RoundI,
 	b *block.Block) error {
 
-	b, _ = r.AddNotarizedBlock(b)
+	r.AddNotarizedBlock(b)
 
 	if sc.BlocksToSharder == chain.FINALIZED {
 		nb := r.GetNotarizedBlocks()
 		if len(nb) > 0 {
 			Logger.Error("*** different blocks for the same round ***",
-				zap.Any("round", b.Round), zap.Any("block", b.Hash),
-				zap.Any("existing_block", nb[0].Hash))
+				zap.Int64("round", b.Round), zap.String("block", b.Hash),
+				zap.String("existing_block", nb[0].Hash))
 		}
 	}
 
@@ -39,7 +42,7 @@ func (sc *Chain) AddNotarizedBlock(ctx context.Context, r round.RoundI,
 	}
 
 	if pb.ClientState == nil || pb.GetStateStatus() != block.StateSuccessful {
-		return fmt.Errorf("previous block state is not computed, round: %d, hash: %s, ptr: %p, state status: %d",
+		return common.NewErrorf("previous block state is not computed", "round: %d, hash: %s, ptr: %p, state status: %d",
 			pb.Round, pb.Hash, pb, pb.GetStateStatus())
 	}
 
@@ -75,7 +78,12 @@ func (sc *Chain) AddNotarizedBlock(ctx context.Context, r round.RoundI,
 
 	select {
 	case <-doneC:
-		Logger.Debug("AddNotarizedBlock compute state successfully", zap.Any("duration", time.Since(t)))
+		Logger.Debug("AddNotarizedBlock compute state successfully",
+			zap.Int64("round", b.Round),
+			zap.String("block", b.Hash),
+			zap.Duration("duration", time.Since(t)))
+		// force update the block to sync the block state in sharders.blocks store
+		sc.SetBlock(b)
 	case err := <-errC:
 		Logger.Error("AddNotarizedBlock failed to compute state",
 			zap.Int64("round", b.Round),

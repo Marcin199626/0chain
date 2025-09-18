@@ -3,19 +3,20 @@ package wallet
 import (
 	"encoding/hex"
 	"fmt"
-	"io/ioutil"
+
 	"math/rand"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"0chain.net/chaincore/currency"
+	"0chain.net/core/config"
+	"github.com/0chain/common/core/currency"
+	"github.com/0chain/common/core/statecache"
 
-	"0chain.net/core/logging"
+	"github.com/0chain/common/core/logging"
 
 	"0chain.net/chaincore/chain"
-	"0chain.net/chaincore/config"
 	"0chain.net/chaincore/node"
 	"0chain.net/chaincore/state"
 	"0chain.net/chaincore/transaction"
@@ -23,7 +24,7 @@ import (
 	"0chain.net/core/encryption"
 	"0chain.net/core/memorystore"
 
-	"0chain.net/core/util"
+	"github.com/0chain/common/core/util"
 )
 
 var randTime = time.Now().UnixNano()
@@ -129,18 +130,18 @@ func GetMPT(dbType int, version util.Sequence, root util.Key) util.MerklePatrici
 	switch dbType {
 	case MEMORY:
 		mndb := util.NewMemoryNodeDB()
-		mpt = util.NewMerklePatriciaTrie(mndb, version, root)
+		mpt = util.NewMerklePatriciaTrie(mndb, version, root, statecache.NewEmpty())
 	case PERSIST:
 		pndb, err := util.NewPNodeDB("/tmp/mpt", "/tmp/mpt/log")
 		if err != nil {
 			panic(err)
 		}
-		mpt = util.NewMerklePatriciaTrie(pndb, version, root)
+		mpt = util.NewMerklePatriciaTrie(pndb, version, root, statecache.NewEmpty())
 	case LEVEL:
 		mndb := util.NewMemoryNodeDB()
 		pndb := util.NewMemoryNodeDB()
 		lndb := util.NewLevelNodeDB(mndb, pndb, false)
-		mpt = util.NewMerklePatriciaTrie(lndb, version, root)
+		mpt = util.NewMerklePatriciaTrie(lndb, version, root, statecache.NewEmpty())
 	}
 	return mpt
 }
@@ -263,7 +264,7 @@ func getState(mpt util.MerklePatriciaTrieI, clientID string) (*state.State, erro
 	return s, nil
 }
 
-//TestGenerateCompressionTrainingData - generate the training data for compression
+// TestGenerateCompressionTrainingData - generate the training data for compression
 func TestGenerateCompressionTrainingData(t *testing.T) {
 	if err := os.MkdirAll("/tmp/txn/data/", 0700); err != nil {
 		t.Fatal(err)
@@ -295,9 +296,11 @@ func TestGenerateCompressionTrainingData(t *testing.T) {
 		if err != nil {
 			panic(err)
 		}
-		txn := wf.CreateSendTransaction(wt.ClientID, value, "", 0)
+		txn := wf.CreateSendTransaction(wt.ClientID, value, "", func(transaction2 *transaction.Transaction) currency.Coin {
+			return 0
+		})
 		data := common.ToMsgpack(txn)
-		err = ioutil.WriteFile(fmt.Sprintf("/tmp/txn/data/%v.json", txn.Hash), data.Bytes(), 0644)
+		err = os.WriteFile(fmt.Sprintf("/tmp/txn/data/%v.json", txn.Hash), data.Bytes(), 0644)
 		if err != nil {
 			panic(err)
 		}

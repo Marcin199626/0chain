@@ -1,74 +1,49 @@
 version: '3'
 services:
-  cassandra:
-    image: cassandra:3.11.4
-    # deploy:
-    #   resources:
-    #     limits:
-    #       cpus: '0.5'
-    #       memory: 1500M
-    #     reservations:
-    #       cpus: '0.25'
-    #       memory: 100M
-    networks:
-      default:
-    #ports:
-    #- "9042:9042"
-    volumes:
-    - ../sharder${SHARDER}/data/cassandra:/var/lib/cassandra/data
-
-  cassandra-init:
-    image: cassandra:latest
-    volumes:
-      - ../../bin:/0chain/bin
-      - ../../sql:/0chain/sql
-    command: ./0chain/bin/cassandra-init.sh
-    links:
-      - cassandra:cassandra
-    restart: on-failure
-
   postgres:
+    container_name: sharder-postgres-${SHARDER}
     image: postgres:14
     environment:
+      POSTGRES_DB: events_db
       POSTGRES_PORT: 5432
-      POSTGRES_HOST: postgres
-      POSTGRES_USER: postgres
+      POSTGRES_HOST: sharder-postgres-${SHARDER}
+      POSTGRES_USER: zchain_user
       POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_PASSWORD: zchian
+      SLOW_TABLESPACE_PATH: /var/lib/postgresql/hdd_ts
+      SLOW_TABLESPACE: hdd_tablespace # this should match with the dbs.events.slowtablespace in 0chain.yaml
     volumes:
+      - ../config/postgresql.conf:/etc/postgresql/postgresql.conf
       - ../sharder${SHARDER}/data/postgresql:/var/lib/postgresql/data
       - ../sql_script/:/docker-entrypoint-initdb.d/
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf
+    restart: unless-stopped
     networks:
       default:
-
   sharder:
+    container_name: sharder-${SHARDER}
     image: "sharder"
-    # deploy:
-    #   resources:
-    #     limits:
-    #       cpus: '0.5'
-    #       memory: 500M
-    #     reservations:
-    #       cpus: '0.1'
-    #       memory: 100M
     environment:
+      - POSTGRES_HOST=sharder-postgres-${SHARDER}
       - DOCKER=true
-      - CASSANDRA_CLUSTER=cassandra
+      - AWS_ACCESS_KEY_ID=key_id
+      - AWS_SECRET_ACCESS_KEY=secret_key
+      - SHARDER_SECRET_NAME=sharder_secret_name
     depends_on:
-      - cassandra-init
       - postgres
-    links:
-      - cassandra-init:cassandra-init
     volumes:
       - ../config:/0chain/config
       - ../sharder${SHARDER}/log:/0chain/log
       - ../sharder${SHARDER}/data:/0chain/data
+      - ../sharder${SHARDER}/data/blocks:/0chain/data/blocks
     ports:
       - "717${SHARDER}:717${SHARDER}"
     networks:
       default:
       testnet0:
         ipv4_address: 198.18.0.8${SHARDER}
-    command: ./bin/sharder --deployment_mode 0 --keys_file config${CONFIG_SUBPATH}/b0snode${SHARDER}_keys.txt --minio_file config/minio_config.txt ${CLI_ARGS}
+    command: ./bin/sharder --deployment_mode 0 --keys_file config${KEYS_CONFIG_PATH}/b0snode${SHARDER}_keys.txt ${CLI_ARGS}
+    restart: unless-stopped
 
 networks:
   default:

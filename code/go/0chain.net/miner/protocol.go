@@ -1,7 +1,6 @@
 package miner
 
 import (
-	"0chain.net/core/datastore"
 	"context"
 
 	"0chain.net/chaincore/chain"
@@ -10,7 +9,7 @@ import (
 	"0chain.net/chaincore/round"
 )
 
-//ProtocolRoundRandomBeacon - an interface for the round random beacon
+// ProtocolRoundRandomBeacon - an interface for the round random beacon
 type ProtocolRoundRandomBeacon interface {
 	AddVRFShare(ctx context.Context, r *Round, vrfs *round.VRFShare) bool
 }
@@ -51,12 +50,12 @@ type ProtocolRound interface {
 
 /*ProtocolBlock - this is the interface that deals with the block level logic of the protocol */
 type ProtocolBlock interface {
-	GenerateBlock(ctx context.Context, b *block.Block, bsh chain.BlockStateHandler, waitOver bool) error
+	GenerateBlock(ctx context.Context, b *block.Block, waitOver bool, waitC chan struct{}) error
 	ValidateMagicBlock(context.Context, *round.Round, *block.Block) bool
 	VerifyBlock(ctx context.Context, b *block.Block) (*block.BlockVerificationTicket, error)
 
-	VerifyTickets(ctx context.Context, blockHash string, vts []*block.VerificationTicket, round int64) error
-	VerifyNotarization(ctx context.Context, hash datastore.Key, bvt []*block.VerificationTicket, round int64) error
+	VerifyTickets(ctx context.Context, blockHash string, vts []*block.VerificationTicket, round int64, bmb *block.MagicBlock) error
+	VerifyNotarization(ctx context.Context, b *block.Block, bvt []*block.VerificationTicket) error
 
 	AddVerificationTicket(b *block.Block, bvt *block.VerificationTicket) bool
 	UpdateBlockNotarization(b *block.Block) bool

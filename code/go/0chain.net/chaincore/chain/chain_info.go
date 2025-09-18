@@ -6,7 +6,7 @@ import (
 	"0chain.net/chaincore/block"
 	"0chain.net/chaincore/round"
 	"0chain.net/core/metric"
-	"0chain.net/core/util"
+	"github.com/0chain/common/core/util"
 )
 
 /*Info - a struct to capture the chain info at runtime */
@@ -18,12 +18,12 @@ type Info struct {
 	ClientStateHash util.Key   `json:"client_state_hash"`
 }
 
-//GetKey - implements Metric interface
+// GetKey - implements Metric interface
 func (info *Info) GetKey() int64 {
 	return info.FinalizedRound
 }
 
-//GetTime - implements Metric Interface
+// GetTime - implements Metric Interface
 func (info *Info) GetTime() *time.Time {
 	return info.TimeStamp
 }
@@ -61,9 +61,6 @@ func (c *Chain) UpdateRoundInfo(r round.RoundI) {
 		NotarizedBlocksCount:      nnb,
 		MultiNotarizedBlocksCount: c.MultiNotarizedBlocksCount,
 		ZeroNotarizedBlocksCount:  c.ZeroNotarizedBlocksCount,
-		RollbackCount:             c.RollbackCount,
-		MissedBlocks:              c.MissedBlocks,
-		LongestRollbackLength:     c.LongestRollbackLength,
 	}
 	t := time.Now()
 	ri.TimeStamp = &t

@@ -9,10 +9,11 @@ import (
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
 	"0chain.net/core/ememorystore"
-	"0chain.net/core/util"
+	"github.com/0chain/common/core/util"
 )
 
 /*BlockSummary - the summary of the block */
+// swagger:model
 type BlockSummary struct {
 	datastore.VersionField
 	datastore.CreationDateField

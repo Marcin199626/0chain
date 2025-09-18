@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 
 	"0chain.net/core/encryption"
-	"0chain.net/core/util"
+	"github.com/0chain/common/core/util"
 )
 
 //go:generate msgp -io=false -tests=false -v
@@ -42,4 +42,15 @@ func (mn *MinerNodes) FindNodeById(id string) *MinerNode {
 		}
 	}
 	return nil
+}
+
+func (mn *MinerNodes) RemoveNodes(ids []string) {
+	for _, id := range ids {
+		for i, minerNode := range mn.Nodes {
+			if minerNode.ID == id {
+				mn.Nodes[i] = mn.Nodes[len(mn.Nodes)-1]
+				mn.Nodes = mn.Nodes[:len(mn.Nodes)-1]
+			}
+		}
+	}
 }

@@ -3,11 +3,11 @@ package cmd
 import (
 	"fmt"
 
+	"0chain.net/core/config"
 	"0chain.net/smartcontract/benchmark/main/cmd/log"
 
 	"0chain.net/smartcontract/multisigsc"
 
-	"0chain.net/chaincore/config"
 	cviper "0chain.net/core/viper"
 	bk "0chain.net/smartcontract/benchmark"
 	"github.com/spf13/viper"
@@ -89,6 +89,11 @@ func validateConfig() {
 			viper.GetInt(bk.NumClients), multisigsc.MaxSigners))
 	}
 
+	if viper.GetInt(bk.NumBlobberDelegates) > viper.GetInt(bk.NumActiveClients) {
+		log.Fatal(fmt.Errorf("blolbber delegates %d cannot exceed active clients %d",
+			viper.GetInt(bk.NumBlobberDelegates), viper.GetInt(bk.NumActiveClients)))
+	}
+
 	if viper.GetInt(bk.NumClients) > viper.GetInt(bk.NumAllocations) {
 		log.Fatal(fmt.Errorf("number of clients %d must not exceed the number of allocations %d",
 			viper.GetInt(bk.NumClients), viper.GetInt(bk.NumAllocations)))
@@ -118,4 +123,31 @@ func validateConfig() {
 		log.Fatal(fmt.Errorf("number of active sharders %d cannot exceed the number of sharders %d",
 			viper.GetInt(bk.NumActiveSharders), viper.GetInt(bk.NumSharders)))
 	}
+	if viper.GetInt(bk.BenchDataListLength) <= 0 {
+		log.Fatal(fmt.Errorf("bench_data_list_length %d, must be greater than zero", viper.GetInt(bk.BenchDataListLength)))
+	}
+	if viper.GetInt(bk.BenchDataListLength) <= viper.GetInt(bk.NumAuthorizers) {
+		log.Fatal(fmt.Errorf("bench data list length %v must be strickly greater than authorizer count %v",
+			viper.GetInt(bk.BenchDataListLength), viper.GetInt(bk.NumAuthorizers)))
+	}
+	if viper.GetInt(bk.NumBlobbersPerAllocation) > viper.GetInt(bk.BenchDataListLength) {
+		log.Fatal(fmt.Errorf("blobbers per allocation %d must not exceed the bench data length %d",
+			viper.GetInt(bk.NumBlobbersPerAllocation), viper.GetInt(bk.BenchDataListLength)))
+	}
+
+	if viper.GetInt(bk.NumValidators) < viper.GetInt(bk.StorageValidatorsPerChallenge) {
+		log.Fatal(fmt.Errorf("validators %d must be at least equal in number to the validators per challenge %d",
+			viper.GetInt(bk.NumValidators), viper.GetInt(bk.StorageValidatorsPerChallenge)))
+	}
+
+	if viper.GetInt(bk.BenchDataListLength) < multisigsc.MaxSigners {
+		log.Fatal(fmt.Errorf("mulitsinc max signers %d must not exceed the bench data length %d",
+			multisigsc.MaxSigners, viper.GetInt(bk.BenchDataListLength)))
+	}
+
+	if viper.GetInt64(bk.NumAllocations) > viper.GetInt64(bk.NumBlocks) {
+		log.Fatal(fmt.Errorf("number of allocations %d can't exceed the number of blocks %d",
+			viper.GetInt64(bk.NumAllocations), viper.GetInt64(bk.NumBlocks)))
+	}
+
 }

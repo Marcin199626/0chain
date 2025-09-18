@@ -2,12 +2,8 @@ package zcnsc
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"math"
 	"net/url"
-
-	"0chain.net/core/util"
 
 	"github.com/rcrowley/go-metrics"
 
@@ -23,6 +19,7 @@ const (
 	NAME                          = "zcnsc"
 	AddAuthorizerFunc             = "add-authorizer"
 	DeleteAuthorizerFunc          = "delete-authorizer"
+	AuthorizerHealthCheckFunc     = "authorizer-health-check"
 	UpdateGlobalConfigFunc        = "update-global-config"
 	UpdateAuthorizerConfigFunc    = "update-authorizer-config"
 	MintFunc                      = "mint"
@@ -31,6 +28,7 @@ const (
 	DeleteFromDelegatePoolFunc    = "delete-from-delegate-pool"
 	UpdateAuthorizerStakePoolFunc = "update-authorizer-stake-pool"
 	CollectRewardsFunc            = "collect-rewards"
+	RepairEthAddressMergeFunc     = "repair-eth-address-merge"
 )
 
 // ZCNSmartContract ...
@@ -51,7 +49,6 @@ func NewZCNSmartContract() smartcontractinterface.SmartContractInterface {
 }
 
 // InitSC ...
-//
 func (zcn *ZCNSmartContract) InitSC() {
 	// Config
 	zcn.smartContractFunctions[UpdateGlobalConfigFunc] = zcn.UpdateGlobalConfig
@@ -62,12 +59,17 @@ func (zcn *ZCNSmartContract) InitSC() {
 	// Authorizer
 	zcn.smartContractFunctions[AddAuthorizerFunc] = zcn.AddAuthorizer
 	zcn.smartContractFunctions[DeleteAuthorizerFunc] = zcn.DeleteAuthorizer
-	// StakePool
+	zcn.smartContractFunctions[AuthorizerHealthCheckFunc] = zcn.AuthorizerHealthCheck
+
+	// Provider
 	zcn.smartContractFunctions[UpdateAuthorizerStakePoolFunc] = zcn.UpdateAuthorizerStakePool
 	// Rewards
 	zcn.smartContractFunctions[CollectRewardsFunc] = zcn.CollectRewards
 	zcn.smartContractFunctions[AddToDelegatePoolFunc] = zcn.AddToDelegatePool           // stakepool lock
 	zcn.smartContractFunctions[DeleteFromDelegatePoolFunc] = zcn.DeleteFromDelegatePool // stakepool unlock
+
+	//Repair
+	zcn.smartContractFunctions[RepairEthAddressMergeFunc] = zcn.RepairEthAddressMerge
 }
 
 // SetSC ...
@@ -111,27 +113,31 @@ func (zcn *ZCNSmartContract) GetHandlerStats(ctx context.Context, params url.Val
 	return zcn.SmartContract.HandlerStats(ctx, params)
 }
 
-func (zcn *ZCNSmartContract) GetCost(_ *transaction.Transaction, funcName string, balances cstate.StateContextI) (int, error) {
+func (zcn *ZCNSmartContract) GetCostTable(balances cstate.StateContextI) (map[string]int, error) {
 	node, err := GetGlobalNode(balances)
-	if err != nil && err != util.ErrValueNotPresent {
-		return math.MaxInt32, err
+	if err != nil {
+		return map[string]int{}, err
 	}
-
 	if node.Cost == nil {
-		return math.MaxInt32, errors.New("can't get cost")
+		return map[string]int{}, err
 	}
-
-	cost, ok := node.Cost[funcName]
-	if !ok {
-		return math.MaxInt32, errors.New("no cost given for " + funcName)
-	}
-
-	return cost, nil
+	return node.Cost, nil
 }
 
 // Execute ...
 func (zcn *ZCNSmartContract) Execute(trans *transaction.Transaction, method string, input []byte, ctx cstate.StateContextI,
 ) (string, error) {
+	if actErr := cstate.WithActivation(ctx, "hermes", func() error {
+		if method == "repair-eth-address-merge" {
+			return common.NewErrorf("failed execution", "no zcnsc smart contract method with name: %v", method)
+		}
+		return nil
+	}, func() error {
+		return nil
+	}); actErr != nil {
+		return "", actErr
+	}
+
 	scFunc, found := zcn.smartContractFunctions[method]
 	if !found {
 		return common.NewErrorf("failed execution", "no zcnsc smart contract method with name: %v", method).Error(), nil

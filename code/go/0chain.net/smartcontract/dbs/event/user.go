@@ -1,20 +1,21 @@
 package event
 
 import (
-	"fmt"
-
-	"0chain.net/chaincore/currency"
-	"0chain.net/core/util"
+	"0chain.net/smartcontract/dbs/model"
+	"github.com/0chain/common/core/currency"
+	"github.com/0chain/common/core/util"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type User struct {
-	gorm.Model
-	UserID  string        `json:"user_id" gorm:"uniqueIndex"`
-	TxnHash string        `json:"txn"`
-	Balance currency.Coin `json:"balance"`
-	Round   int64         `json:"round"`
-	Nonce   int64         `json:"nonce"`
+	model.UpdatableModel
+	UserID    string        `json:"user_id" gorm:"uniqueIndex"`
+	TxnHash   string        `json:"txn_hash"`
+	Balance   currency.Coin `json:"balance"`
+	Round     int64         `json:"round"`
+	Nonce     int64         `json:"nonce"`
+	MintNonce int64         `json:"mint_nonce"`
 }
 
 func (edb *EventDb) GetUser(userID string) (*User, error) {
@@ -30,49 +31,91 @@ func (edb *EventDb) GetUser(userID string) (*User, error) {
 	return &user, nil
 }
 
-func (edb *EventDb) overwriteUser(u User) error {
-	return edb.Store.Get().Model(&User{}).
-		Where("user_id = ?", u.UserID).
-		Updates(map[string]interface{}{
-			"txn_hash": u.TxnHash,
-			"balance":  u.Balance,
-			"round":    u.Round,
-			"nonce":    u.Nonce,
-		}).Error
+// update or create users
+func (edb *EventDb) addOrUpdateUsers(users []User) error {
+	return edb.Store.Get().Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "user_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"txn_hash", "round", "balance", "nonce"}),
+	}).Create(&users).Error
 }
 
-func (edb *EventDb) addOrOverwriteUser(u User) error {
-	exists, err := u.exists(edb)
-	if err != nil {
-		return err
-	}
-	if exists {
-		return edb.overwriteUser(u)
-	}
-
-	result := edb.Store.Get().Create(&u)
-	return result.Error
+// update or create users
+func (edb *EventDb) updateUserMintNonce(users []User) error {
+	return edb.Store.Get().Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "user_id"}},
+		DoUpdates: clause.Assignments(map[string]interface{}{
+			"mint_nonce": gorm.Expr("GREATEST(users.mint_nonce, EXCLUDED.mint_nonce)"),
+		}),
+	}).Create(&users).Error
 }
 
-func (edb *EventDb) GetUserFromId(userId string) (User, error) {
-	user := User{}
-	return user, edb.Store.Get().Model(&User{}).Where(User{UserID: userId}).Scan(&user).Error
-
+func mergeUpdateUserCollectedRewardsEvents() *eventsMergerImpl[UserAggregate] {
+	return newEventsMerger[UserAggregate](TagUpdateUserCollectedRewards, withCollectedRewardsMerged())
 }
 
-func (u *User) exists(edb *EventDb) (bool, error) {
-	var user User
-	err := edb.Store.Get().Model(&User{}).
-		Where("user_id = ?", u.UserID).
-		Take(&user).Error
+func withCollectedRewardsMerged() eventMergeMiddleware {
+	return withEventMerge(func(a, b *UserAggregate) (*UserAggregate, error) {
+		a.CollectedReward += b.CollectedReward
+		return a, nil
+	})
+}
 
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return false, nil
-		}
-		return false, fmt.Errorf("failed to check user's existence %v,"+
-			" error %v", user, err)
-	}
+func mergeUserStakeEvents() *eventsMergerImpl[DelegatePoolLock] {
+	return newEventsMerger[DelegatePoolLock](TagLockStakePool, withTotalStakeMerged())
+}
 
-	return true, nil
+func mergeUserUnstakeEvents() *eventsMergerImpl[DelegatePoolLock] {
+	return newEventsMerger[DelegatePoolLock](TagUnlockStakePool, withTotalStakeMerged())
+}
+
+func withTotalStakeMerged() eventMergeMiddleware {
+	return withEventMerge(func(a, b *DelegatePoolLock) (*DelegatePoolLock, error) {
+		a.Amount += b.Amount
+		return a, nil
+	})
+}
+
+func mergeUserReadPoolLockEvents() *eventsMergerImpl[ReadPoolLock] {
+	return newEventsMerger[ReadPoolLock](TagLockReadPool, withReadPoolMerged())
+}
+
+func mergeUserReadPoolUnlockEvents() *eventsMergerImpl[ReadPoolLock] {
+	return newEventsMerger[ReadPoolLock](TagUnlockReadPool, withReadPoolMerged())
+}
+
+func withReadPoolMerged() eventMergeMiddleware {
+	return withEventMerge(func(a, b *ReadPoolLock) (*ReadPoolLock, error) {
+		a.Amount += b.Amount
+		return a, nil
+	})
+}
+
+func mergeUserWritePoolLockEvents() *eventsMergerImpl[WritePoolLock] {
+	return newEventsMerger[WritePoolLock](TagLockWritePool, withWritePoolMerged())
+}
+
+func mergeUserWritePoolUnlockEvents() *eventsMergerImpl[WritePoolLock] {
+	return newEventsMerger[WritePoolLock](TagUnlockWritePool, withWritePoolMerged())
+}
+
+func withWritePoolMerged() eventMergeMiddleware {
+	return withEventMerge(func(a, b *WritePoolLock) (*WritePoolLock, error) {
+		a.Amount += b.Amount
+		return a, nil
+	})
+}
+
+func mergeUpdateUserPayedFeesEvents() *eventsMergerImpl[UserAggregate] {
+	return newEventsMerger[UserAggregate](TagUpdateUserPayedFees, withPayedFeesMerged())
+}
+
+func withPayedFeesMerged() eventMergeMiddleware {
+	return withEventMerge(func(a, b *UserAggregate) (*UserAggregate, error) {
+		a.PayedFees += b.PayedFees
+		return a, nil
+	})
+}
+
+func mergeAddUsersEvents() *eventsMergerImpl[User] {
+	return newEventsMerger[User](TagAddOrOverwriteUser, withUniqueEventOverwrite())
 }

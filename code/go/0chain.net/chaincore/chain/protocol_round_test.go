@@ -1,10 +1,19 @@
 package chain
 
 import (
-	"0chain.net/core/common"
+	"0chain.net/chaincore/node"
+	"0chain.net/core/config"
+	"0chain.net/core/memorystore"
+	"0chain.net/core/viper"
+	"0chain.net/smartcontract/setupsc"
+	"github.com/0chain/common/core/logging"
+
 	"context"
+	"fmt"
 	"strconv"
 	"testing"
+
+	"0chain.net/core/common"
 
 	"0chain.net/chaincore/block"
 	"0chain.net/chaincore/round"
@@ -12,6 +21,26 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func init() {
+	config.SetupDefaultConfig()
+	viper.Set("server_chain.smart_contract.faucet", true)
+	viper.Set("server_chain.smart_contract.miner", true)
+	viper.Set("server_chain.smart_contract.storage", true)
+	viper.Set("server_chain.smart_contract.vesting", true)
+	viper.Set("server_chain.smart_contract.zcn", true)
+	viper.Set("server_chain.smart_contract.multisig", true)
+	config.SmartContractConfig = viper.New()
+	config.SmartContractConfig.Set("smart_contracts.faucetsc.ownerId", "1746b06bb09f55ee01b33b5e2e055d6cc7a900cb57c0a3a5eaabb8a0e7745802")
+	config.SmartContractConfig.Set("smart_contracts.minersc.ownerId", "1746b06bb09f55ee01b33b5e2e055d6cc7a900cb57c0a3a5eaabb8a0e7745802")
+	config.SmartContractConfig.Set("smart_contracts.vestingsc.ownerId", "1746b06bb09f55ee01b33b5e2e055d6cc7a900cb57c0a3a5eaabb8a0e7745802")
+	config.SmartContractConfig.Set("smart_contracts.storagesc.ownerId", "1746b06bb09f55ee01b33b5e2e055d6cc7a900cb57c0a3a5eaabb8a0e7745802")
+
+	setupsc.SetupSmartContracts()
+	logging.InitLogging("development", "")
+	common.ConfigRateLimits()
+	block.SetupEntity(memorystore.GetStorageProvider())
+}
 
 func TestChain_GetLatestFinalizedMagicBlockRound(t *testing.T) {
 	lfmb := &block.Block{
@@ -62,11 +91,26 @@ func TestChain_GetLatestFinalizedMagicBlockRound(t *testing.T) {
 
 	for _, test := range cases {
 		t.Run(test.Name, func(t *testing.T) {
-			chain := &Chain{
-				magicBlockStartingRounds: map[int64]*block.Block{},
-				getLFMB:                  make(chan *block.Block),
-				updateLFMB:               make(chan *updateLFMBWithReply, 1),
-			}
+			chain := NewChainFromConfig()
+
+			//chain := &Chain{
+			//	magicBlockStartingRoundsMap: map[int64]*block.Block{},
+			//	getLFMB:                     make(chan *block.Block),
+			//	updateLFMB:                  make(chan *updateLFMBWithReply, 1),
+			//}
+			chain.Initialize()
+			mb := block.NewMagicBlock()
+			mb.Miners = node.NewPool(node.NodeTypeMiner)
+			mb.Miners.NodesMap = make(map[string]*node.Node)
+			fmt.Println("len(mb.Miners.NodesMap)", len(mb.Miners.NodesMap))
+			fmt.Println("Size", mb.Miners.Size())
+			fmt.Println("MinGenerators", chain.MinGenerators())
+			fmt.Println("GeneratorPercent", chain.GeneratorsPercent())
+			mb.Sharders = node.NewPool(node.NodeTypeSharder)
+			mb.Sharders.NodesMap = make(map[string]*node.Node)
+			chain.SetMagicBlock(mb)
+			lfmb.MagicBlock = mb
+
 			ctx, cancel := context.WithCancel(context.Background())
 			doneC := make(chan struct{})
 			go func() {
@@ -75,9 +119,10 @@ func TestChain_GetLatestFinalizedMagicBlockRound(t *testing.T) {
 			}()
 			chain.updateLatestFinalizedMagicBlock(ctx, lfmb)
 			for _, r := range test.MagicBlocks {
-				chain.magicBlockStartingRounds[r] = &block.Block{
+				chain.magicBlockStartingRoundsMap[r] = &block.Block{
 					HashIDField: datastore.HashIDField{Hash: strconv.FormatInt(r, 10)},
 				}
+				chain.magicBlockStartingRounds.Add(r)
 			}
 
 			for _, checkRound := range test.CheckRounds {
@@ -87,7 +132,7 @@ func TestChain_GetLatestFinalizedMagicBlockRound(t *testing.T) {
 				if checkRound.WantRound == -1 {
 					assert.Equal(t, lfmb, got)
 				} else {
-					assert.Equal(t, chain.magicBlockStartingRounds[checkRound.WantRound].Hash, got.Hash)
+					assert.Equal(t, chain.magicBlockStartingRoundsMap[checkRound.WantRound].Hash, got.Hash)
 				}
 			}
 

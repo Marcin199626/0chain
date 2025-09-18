@@ -2,37 +2,25 @@ package storagesc
 
 import (
 	"0chain.net/smartcontract/dbs"
+	"0chain.net/smartcontract/provider"
 	"0chain.net/smartcontract/stakepool"
+	"0chain.net/smartcontract/stakepool/spenum"
+	"github.com/0chain/common/core/logging"
 
 	cstate "0chain.net/chaincore/chain/state"
 	"0chain.net/smartcontract/dbs/event"
 )
 
-func writeMarkerToValidationNode(vn *ValidationNode) *event.Validator { //nolint
-	return &event.Validator{
-		ValidatorID: vn.ID,
-		BaseUrl:     vn.BaseURL,
-		PublicKey:   vn.PublicKey,
-		// TO-DO: Update stake in eventDB
-		Stake: 0,
-
-		DelegateWallet: vn.StakePoolSettings.DelegateWallet,
-		MinStake:       vn.StakePoolSettings.MinStake,
-		MaxStake:       vn.StakePoolSettings.MaxStake,
-		NumDelegates:   vn.StakePoolSettings.MaxNumDelegates,
-		ServiceCharge:  vn.StakePoolSettings.ServiceChargeRatio,
-	}
-}
-
 func validatorTableToValidationNode(v event.Validator) *ValidationNode {
 	return &ValidationNode{
-		ID:        v.ValidatorID,
+		Provider: provider.Provider{
+			ID:           v.ID,
+			ProviderType: spenum.Validator,
+		},
 		BaseURL:   v.BaseUrl,
 		PublicKey: v.PublicKey,
 		StakePoolSettings: stakepool.Settings{
 			DelegateWallet:     v.DelegateWallet,
-			MinStake:           v.MinStake,
-			MaxStake:           v.MaxStake,
 			MaxNumDelegates:    v.NumDelegates,
 			ServiceChargeRatio: v.ServiceCharge,
 		},
@@ -52,34 +40,62 @@ func getValidators(validatorIDs []string, edb *event.EventDb) ([]*ValidationNode
 	return vNodes, nil
 }
 
-func (vn *ValidationNode) emitUpdate(balances cstate.StateContextI) error {
-	data := &dbs.DbUpdates{
-		Id: vn.ID,
-		Updates: map[string]interface{}{
-			"base_url":        vn.BaseURL,
-			"delegate_wallet": vn.StakePoolSettings.DelegateWallet,
-			"min_stake":       vn.StakePoolSettings.MinStake,
-			"max_stake":       vn.StakePoolSettings.MaxStake,
-			"num_delegates":   vn.StakePoolSettings.MaxNumDelegates,
-			"service_charge":  vn.StakePoolSettings.ServiceChargeRatio,
+func (vn *ValidationNode) emitUpdate(sp *stakePool, balances cstate.StateContextI) error {
+	staked, err := sp.stake()
+	if err != nil {
+		return err
+	}
+
+	logging.Logger.Info("emitting validator update event")
+
+	data := &event.Validator{
+		BaseUrl: vn.BaseURL,
+		Provider: event.Provider{
+			ID:              vn.ID,
+			TotalStake:      staked,
+			DelegateWallet:  vn.StakePoolSettings.DelegateWallet,
+			NumDelegates:    vn.StakePoolSettings.MaxNumDelegates,
+			ServiceCharge:   vn.StakePoolSettings.ServiceChargeRatio,
+			LastHealthCheck: vn.LastHealthCheck,
 		},
+		CreationRound: balances.GetBlock().Round,
 	}
 
 	balances.EmitEvent(event.TypeStats, event.TagUpdateValidator, vn.ID, data)
 	return nil
 }
 
-func (vn *ValidationNode) emitAdd(balances cstate.StateContextI) error {
-	data := &event.Validator{
-		ValidatorID:    vn.ID,
-		BaseUrl:        vn.BaseURL,
-		DelegateWallet: vn.StakePoolSettings.DelegateWallet,
-		MinStake:       vn.StakePoolSettings.MinStake,
-		MaxStake:       vn.StakePoolSettings.MaxStake,
-		NumDelegates:   vn.StakePoolSettings.MaxNumDelegates,
-		ServiceCharge:  vn.StakePoolSettings.ServiceChargeRatio,
+func (vn *ValidationNode) emitAddOrOverwrite(sp *stakePool, balances cstate.StateContextI) error {
+	staked, err := sp.stake()
+	if err != nil {
+		return err
 	}
 
-	balances.EmitEvent(event.TypeStats, event.TagAddValidator, vn.ID, data)
+	logging.Logger.Info("emitting validator add or overwrite event")
+	data := &event.Validator{
+		BaseUrl: vn.BaseURL,
+		Provider: event.Provider{
+			ID:              vn.ID,
+			TotalStake:      staked,
+			DelegateWallet:  vn.StakePoolSettings.DelegateWallet,
+			NumDelegates:    vn.StakePoolSettings.MaxNumDelegates,
+			ServiceCharge:   vn.StakePoolSettings.ServiceChargeRatio,
+			Rewards:         event.ProviderRewards{ProviderID: vn.ID},
+			LastHealthCheck: vn.LastHealthCheck,
+		},
+		CreationRound: balances.GetBlock().Round,
+	}
+
+	balances.EmitEvent(event.TypeStats, event.TagAddOrOverwiteValidator, vn.ID, data)
 	return nil
+}
+
+func emitValidatorHealthCheck(vn *ValidationNode, downtime uint64, balances cstate.StateContextI) {
+	data := dbs.DbHealthCheck{
+		ID:              vn.ID,
+		LastHealthCheck: vn.LastHealthCheck,
+		Downtime:        downtime,
+	}
+
+	balances.EmitEvent(event.TypeStats, event.TagValidatorHealthCheck, vn.ID, data)
 }

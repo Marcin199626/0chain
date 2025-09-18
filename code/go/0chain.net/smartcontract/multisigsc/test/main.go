@@ -9,11 +9,10 @@ import (
 	"strings"
 	"time"
 
-	chainconfig "0chain.net/chaincore/config"
-	mptwallet "0chain.net/chaincore/wallet"
+	chainconfig "0chain.net/core/config"
 	"0chain.net/core/encryption"
-	. "0chain.net/core/logging"
 	"0chain.net/smartcontract/multisigsc"
+	. "github.com/0chain/common/core/logging"
 	"go.uber.org/zap"
 )
 
@@ -56,7 +55,7 @@ func main() {
 		n:               *n,
 	}
 
-	// Initialize 0chain.net/core/logging
+	// Initialize github.com/0chain/common/core/logging
 	chainconfig.Configuration().DeploymentMode = chainconfig.DeploymentDevelopment
 	chainconfig.SetupDefaultConfig()
 	chainconfig.SetupConfig("")
@@ -298,14 +297,6 @@ func newRegisteredMPTWallet() string {
 	}
 
 	clientID := clientIDForKey(scheme)
-
-	w := mptwallet.Wallet{
-		SignatureScheme: scheme,
-		PublicKey:       scheme.GetPublicKey(),
-		ClientID:        clientID,
-	}
-
-	registerMPTWallet(w)
 
 	return clientID
 }

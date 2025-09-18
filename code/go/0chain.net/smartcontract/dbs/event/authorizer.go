@@ -3,49 +3,88 @@ package event
 import (
 	"errors"
 	"fmt"
+	"time"
 
-	"0chain.net/chaincore/currency"
-
-	"gorm.io/gorm"
+	"0chain.net/chaincore/state"
+	"0chain.net/core/common"
+	"0chain.net/smartcontract/dbs"
+	"github.com/0chain/common/core/currency"
 )
 
 type Authorizer struct {
-	gorm.Model
+	Provider
 
-	AuthorizerID string `json:"id" gorm:"uniqueIndex"`
-	URL          string `json:"url"`
+	URL string `json:"url"`
 
 	// Configuration
 	Fee currency.Coin `json:"fee"`
 
-	// Geolocation
-	Latitude  float64 `json:"latitude"`
-	Longitude float64 `json:"longitude"`
+	TotalMint currency.Coin `json:"total_mint"`
+	TotalBurn currency.Coin `json:"total_burn"`
 
-	// Stats
-	LastHealthCheck int64 `json:"last_health_check"`
-
-	// stake_pool_settings
-	DelegateWallet string        `json:"delegate_wallet"`
-	MinStake       currency.Coin `json:"min_stake"`
-	MaxStake       currency.Coin `json:"max_stake"`
-	NumDelegates   int           `json:"num_delegates"`
-	ServiceCharge  float64       `json:"service_charge"`
+	CreationRound int64 `json:"creation_round"`
 }
 
-func (edb *EventDb) AddAuthorizer(a *Authorizer) error {
-	exists, err := a.exists(edb)
-	if err != nil {
-		return err
+func (m *Authorizer) TableName() string {
+	return "authorizers"
+}
+
+func (a Authorizer) GetID() string {
+	return a.ID
+}
+
+func (a *Authorizer) GetTotalStake() currency.Coin {
+	return a.TotalStake
+}
+
+func (a *Authorizer) GetServiceCharge() float64 {
+	return a.ServiceCharge
+}
+
+func (a *Authorizer) GetTotalRewards() currency.Coin {
+	return a.Rewards.TotalRewards
+}
+
+func (a *Authorizer) SetTotalStake(value currency.Coin) {
+	a.TotalStake = value
+}
+
+func (a *Authorizer) SetServiceCharge(value float64) {
+	a.ServiceCharge = value
+}
+
+func (a *Authorizer) SetTotalRewards(value currency.Coin) {
+	a.Rewards.TotalRewards = value
+}
+
+func (edb *EventDb) AddAuthorizer(authorizers *[]Authorizer) error {
+	auths := *authorizers
+	for _, a := range auths {
+		exists, err := a.exists(edb)
+		if err != nil {
+			return err
+		}
+
+		if exists {
+			return errors.New("authorizer already exists")
+		}
+
+		result := edb.Store.Get().Create(&a)
+
+		if result.Error != nil {
+			return result.Error
+		}
+
 	}
 
-	if exists {
-		return errors.New("authorizer already exists")
-	}
+	return nil
+}
 
-	result := edb.Store.Get().Create(a)
+func (edb *EventDb) GetAuthorizerCount() (int64, error) {
+	var count int64
+	res := edb.Store.Get().Model(Authorizer{}).Count(&count)
 
-	return result.Error
+	return count, res.Error
 }
 
 func (edb *EventDb) GetAuthorizer(id string) (*Authorizer, error) {
@@ -53,7 +92,7 @@ func (edb *EventDb) GetAuthorizer(id string) (*Authorizer, error) {
 
 	result := edb.Store.Get().
 		Model(&Authorizer{}).
-		Where(&Authorizer{AuthorizerID: id}).
+		Where(&Authorizer{Provider: Provider{ID: id}}).
 		First(&auth)
 
 	if result.Error != nil {
@@ -66,6 +105,16 @@ func (edb *EventDb) GetAuthorizer(id string) (*Authorizer, error) {
 	return &auth, nil
 }
 
+func (edb *EventDb) GetActiveAuthorizers(activeAuthorizerTimeLimitive time.Duration) ([]Authorizer, error) {
+	now := common.Now()
+	var authorizers []Authorizer
+	result := edb.Store.Get().
+		Model(&Authorizer{}).
+		Where("last_health_check > ?", common.ToTime(now).Add(-activeAuthorizerTimeLimitive).Unix()).
+		Find(&authorizers)
+	return authorizers, result.Error
+}
+
 func (edb *EventDb) GetAuthorizers() ([]Authorizer, error) {
 	var authorizers []Authorizer
 	result := edb.Store.Get().
@@ -76,8 +125,14 @@ func (edb *EventDb) GetAuthorizers() ([]Authorizer, error) {
 
 func (edb *EventDb) DeleteAuthorizer(id string) error {
 	result := edb.Store.Get().
-		Where("authorizer_id = ?", id).
+		Where("id = ?", id).
 		Delete(&Authorizer{})
+
+	if result.Error == nil {
+		result = edb.Store.Get().
+			Where("provider_id = ?", id).
+			Delete(&ProviderRewards{})
+	}
 	return result.Error
 }
 
@@ -86,15 +141,86 @@ func (a *Authorizer) exists(edb *EventDb) (bool, error) {
 
 	result := edb.Get().
 		Model(&Authorizer{}).
-		Where(&Authorizer{AuthorizerID: a.AuthorizerID}).
+		Where(&Authorizer{Provider: Provider{ID: a.ID}}).
 		Count(&count)
 
 	if result.Error != nil {
 		return false,
 			fmt.Errorf(
 				"error searching for authorizer %v, error %v",
-				a.AuthorizerID, result.Error,
+				a.ID, result.Error,
 			)
 	}
 	return count > 0, nil
+}
+
+func NewUpdateAuthorizerTotalStakeEvent(ID string, totalStake currency.Coin) (tag EventTag, data interface{}) {
+	return TagUpdateAuthorizerTotalStake, Authorizer{
+		Provider: Provider{
+			ID:         ID,
+			TotalStake: totalStake,
+		},
+	}
+}
+
+func (edb *EventDb) updateAuthorizersTotalStakes(authorizer []Authorizer) error {
+	var provs []Provider
+	for _, a := range authorizer {
+		provs = append(provs, a.Provider)
+	}
+	return edb.updateProviderTotalStakes(provs, "authorizers")
+}
+
+func (edb *EventDb) updateAuthorizersTotalMint(mints []state.Mint) error {
+	var (
+		ids       []string
+		totalMint []int64
+	)
+	for _, m := range mints {
+		ids = append(ids, m.ToClientID)
+		amt, err := m.Amount.Int64()
+		if err != nil {
+			return err
+		}
+		totalMint = append(totalMint, amt)
+	}
+
+	return CreateBuilder("authorizers", "id", ids).
+		AddUpdate("total_mint", totalMint, "authorizers.total_mint + t.total_mint").
+		Exec(edb).Debug().Error
+}
+
+func (edb *EventDb) updateAuthorizersTotalBurn(burns []state.Burn) error {
+	var (
+		ids        []string
+		totalBurns []int64
+	)
+	for _, m := range burns {
+		ids = append(ids, m.Burner)
+		amt, err := m.Amount.Int64()
+		if err != nil {
+			return err
+		}
+		totalBurns = append(totalBurns, amt)
+	}
+
+	return CreateBuilder("authorizers", "id", ids).
+		AddUpdate("total_burn", totalBurns, "authorizers.total_burn + t.total_burn").
+		Exec(edb).Debug().Error
+}
+
+func mergeUpdateAuthorizerTotalStakesEvents() *eventsMergerImpl[Authorizer] {
+	return newEventsMerger[Authorizer](TagUpdateAuthorizerTotalStake, withUniqueEventOverwrite())
+}
+
+func mergeAuthorizerHealthCheckEvents() *eventsMergerImpl[dbs.DbHealthCheck] {
+	return newEventsMerger[dbs.DbHealthCheck](TagAuthorizerHealthCheck, withUniqueEventOverwrite())
+}
+
+func mergeAuthorizerBurnEvents() *eventsMergerImpl[state.Burn] {
+	return newEventsMerger[state.Burn](TagAuthorizerBurn, withUniqueEventOverwrite())
+}
+
+func mergeAddBridgeMintEvents() *eventsMergerImpl[BridgeMint] {
+	return newEventsMerger[BridgeMint](TagAddBridgeMint, withUniqueEventOverwrite())
 }

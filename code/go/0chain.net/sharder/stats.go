@@ -16,7 +16,7 @@ func init() {
 	BlockSyncTimer = metrics.GetOrRegisterTimer("block_sync_timer", nil)
 }
 
-//Stats - a struct to store various runtime stats of the chain
+// Stats - a struct to store various runtime stats of the chain
 type Stats struct {
 	ShardedBlocksCount int64
 
@@ -217,20 +217,23 @@ func (sc *Chain) WriteBlockSyncStatistics(w http.ResponseWriter, scan HealthChec
 	diagnostics.WriteTimerStatistics(w, sc.Chain, cc.BlockSyncTimer, 1000000.0)
 }
 
+// swagger:model ExplorerStats
 type ExplorerStats struct {
+	// Latest finalized round as known to the sharder.
 	LastFinalizedRound     int64   `json:"last_finalized_round"`
-	StateHealth            int64   `json:"state_health"`
-	AverageBlockSize       int     `json:"average_block_size"`
-	PrevInvocationCount    uint64  `json:"pervious_invocation_count"`
-	PrevInvocationScanTime string  `json:"previous_incovcation_scan_time"`
-	MeanScanBlockStatsTime float64 `json:"mean_scan_block_stats_time"`
-}
 
-func (sc *Chain) WriteMinioStats(w http.ResponseWriter) {
-	fmt.Fprintf(w, "<table width='100%%'>")
-	fmt.Fprintf(w, "<tr><th class='sheader' colspan='2'>Minio Stats</th></tr>")
-	fmt.Fprintf(w, "<tr><td>Total Rounds processed</td><td>%d</td></tr>", sc.TieringStats.TotalBlocksUploaded)
-	fmt.Fprintf(w, "<tr><td>Last Round processed</td><td>%d</td></tr>", sc.TieringStats.LastRoundUploaded)
-	fmt.Fprintf(w, "<tr><td>Last Upload time</td class='string'><td>%v</td></tr>", sc.TieringStats.LastUploadTime.Format(HealthCheckDateTimeFormat))
-	fmt.Fprintf(w, "</table>")
+	// Number of missing nodes as seen by the sharder.
+	StateHealth            int64   `json:"state_health"`
+
+	// Average size of the block in terms of number of transaction.
+	AverageBlockSize       int     `json:"average_block_size"`
+
+	// How many times health check was invoked for the sharder.
+	PrevInvocationCount    uint64  `json:"pervious_invocation_count"`
+
+	// How long did it take the previous health check invocation to run, in seconds.
+	PrevInvocationScanTime string  `json:"previous_incovcation_scan_time"`
+
+	// Mean sharder health check time.
+	MeanScanBlockStatsTime float64 `json:"mean_scan_block_stats_time"`
 }

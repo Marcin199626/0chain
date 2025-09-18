@@ -1,17 +1,17 @@
 package block
 
 import (
-	"fmt"
-
-	"0chain.net/core/util"
 	"0chain.net/smartcontract/dbs/event"
+	"fmt"
+	"github.com/0chain/common/core/util"
+	"time"
 )
 
-func blockToBlockEvent(block *Block) *event.Block {
+func blockToBlockEvent(block *Block, steadyStateFinalityDuration int64) *event.Block {
 	return &event.Block{
 		Hash:                  block.Hash,
 		Version:               block.Version,
-		CreationDate:          int64(block.CreationDate.Duration()),
+		CreationDate:          int64(block.CreationDate.Duration().Seconds()),
 		Round:                 block.Round,
 		MinerID:               block.MinerID,
 		RoundRandomSeed:       block.RoundRandomSeed,
@@ -23,20 +23,22 @@ func blockToBlockEvent(block *Block) *event.Block {
 		PrevHash:              block.PrevHash,
 		Signature:             block.Signature,
 		ChainId:               block.ChainID,
+		StateChangesCount:     block.StateChangesCount,
 		RunningTxnCount:       fmt.Sprintf("%d", block.RunningTxnCount),
 		RoundTimeoutCount:     block.RoundTimeoutCount,
-		CreatedAt:             block.CreationDateField.ToTime(),
+		FinalityDuration:      steadyStateFinalityDuration,
+		FinalizationTime:      time.Now(),
 	}
 }
 
-func CreateBlockEvent(block *Block) (error, event.Event) {
-
-	return nil, event.Event{
+func CreateFinalizeBlockEvent(block *Block, steadyStateFinalityDuration int64) event.Event {
+	return event.Event{
 		BlockNumber: block.Round,
 		TxHash:      "",
-		Type:        int(event.TypeStats),
-		Tag:         int(event.TagAddBlock),
+		Type:        event.TypeChain,
+		Tag:         event.TagFinalizeBlock,
 		Index:       block.Hash,
-		Data:        blockToBlockEvent(block),
+		Data:        blockToBlockEvent(block, steadyStateFinalityDuration),
+		Version:     event.Version1,
 	}
 }

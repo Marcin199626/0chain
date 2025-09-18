@@ -8,13 +8,13 @@ import (
 	"strings"
 	"time"
 
-	"0chain.net/chaincore/currency"
+	"github.com/0chain/common/core/currency"
 
 	"0chain.net/core/common"
 
 	"0chain.net/core/datastore"
 	"0chain.net/core/encryption"
-	"0chain.net/core/util"
+	"github.com/0chain/common/core/util"
 )
 
 //go:generate msgp -io=false -tests=false -v
@@ -27,6 +27,8 @@ type periodicResponse struct {
 	Allowed currency.Coin `json:"tokens_allowed"`
 }
 
+var globalNodeKey = ADDRESS + encryption.Hash("faucetsc_config")
+
 type GlobalNode struct {
 	*FaucetConfig `json:"faucet_config"`
 	ID            string        `json:"id"`
@@ -35,7 +37,7 @@ type GlobalNode struct {
 }
 
 func (gn *GlobalNode) GetKey() datastore.Key {
-	return datastore.Key(gn.ID + gn.ID)
+	return globalNodeKey
 }
 
 func (gn *GlobalNode) GetHash() string {

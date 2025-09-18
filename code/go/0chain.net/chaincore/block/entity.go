@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -14,19 +13,20 @@ import (
 	"time"
 
 	"0chain.net/chaincore/state"
+	"0chain.net/core/config"
 	"github.com/rcrowley/go-metrics"
 	"go.uber.org/zap"
 
 	"0chain.net/chaincore/client"
-	"0chain.net/chaincore/config"
 	"0chain.net/chaincore/node"
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
 	"0chain.net/core/encryption"
-	"0chain.net/core/logging"
-	"0chain.net/core/util"
 	"0chain.net/smartcontract/dbs/event"
+	"github.com/0chain/common/core/logging"
+	"github.com/0chain/common/core/statecache"
+	"github.com/0chain/common/core/util"
 )
 
 const (
@@ -140,6 +140,7 @@ func (u *UnverifiedBlockBody) Clone() *UnverifiedBlockBody {
 }
 
 /*Block - data structure that holds the block data */
+// swagger:model
 type Block struct {
 	UnverifiedBlockBody
 	VerificationTickets []*VerificationTicket `json:"verification_tickets,omitempty"`
@@ -150,7 +151,7 @@ type Block struct {
 	ChainID   datastore.Key `json:"chain_id"`
 	RoundRank int           `json:"-" msgpack:"-"` // rank of the block in the round it belongs to
 	PrevBlock *Block        `json:"-" msgpack:"-"`
-	Events    []event.Event
+	Events    []event.Event `json:"-" msgpack:"-"`
 
 	TxnsMap   map[string]bool `json:"-" msgpack:"-"`
 	mutexTxns sync.RWMutex    `json:"-" msgpack:"-"`
@@ -161,10 +162,12 @@ type Block struct {
 	stateMutex            sync.RWMutex `json:"-" msgpack:"-"`
 	blockState            int8
 	isNotarized           bool
+	isFinalised           bool         // set this field when the block is finalised
 	ticketsMutex          sync.RWMutex `json:"-" msgpack:"-"`
 	verificationStatus    int
 	RunningTxnCount       int64           `json:"running_txn_count"`
-	UniqueBlockExtensions map[string]bool `json:"-" msgpack:"-"`
+	uniqueBlockExtensions map[string]bool `json:"-" msgpack:"-"`
+	uniqueBlockExtMutex   sync.RWMutex    `json:"-" msgpack:"-"`
 	*MagicBlock           `json:"magic_block,omitempty" msgpack:"mb,omitempty"`
 	// StateChangesCount represents the state changes number in client state of current block.
 	// this will be used to verify the state changes acquire from remote
@@ -177,6 +180,17 @@ func NewBlock(chainID datastore.Key, round int64) *Block {
 	b.Round = round
 	b.ChainID = chainID
 	return b
+}
+
+func (b *Block) GetUniqueBlockExtensions() map[string]bool {
+	b.uniqueBlockExtMutex.RLock()
+	defer b.uniqueBlockExtMutex.RUnlock()
+
+	cb := make(map[string]bool, len(b.uniqueBlockExtensions))
+	for k, v := range b.uniqueBlockExtensions {
+		cb[k] = v
+	}
+	return cb
 }
 
 // GetVerificationTickets of the block async safe.
@@ -248,9 +262,18 @@ func (b *Block) Validate(_ context.Context) error {
 	if datastore.IsEmpty(b.MinerID) {
 		return common.InvalidRequest("miner id is required")
 	}
+
 	miner := node.GetNode(b.MinerID)
 	if miner == nil {
-		return common.NewError("unknown_miner", "Do not know this miner")
+		if b.MagicBlock != nil {
+			miner = b.MagicBlock.Miners.GetNode(b.MinerID)
+		} else {
+			logging.Logger.Error("unknown_miner when validating block",
+				zap.String("miner", b.MinerID),
+				zap.Any("block", b))
+		}
+
+		return common.NewError("unknown_miner", "Do not know this miner : "+b.MinerID)
 	}
 
 	b.mutexTxns.RLock()
@@ -331,29 +354,6 @@ func (b *Block) SetPreviousBlock(prevBlock *Block) {
 	}
 }
 
-/*SetStateDB - set the state from the previous block */
-func (b *Block) SetStateDB(prevBlock *Block, stateDB util.NodeDB) {
-	var pndb util.NodeDB
-	var rootHash util.Key
-	if prevBlock.ClientState == nil {
-		logging.Logger.Error("set state db - prior state not available",
-			zap.Int64("round", b.Round),
-			zap.String("block", b.Hash),
-			zap.Int64("previous round", prevBlock.Round),
-			zap.String("previous block", prevBlock.Hash))
-		pndb = stateDB
-	} else {
-		pndb = prevBlock.ClientState.GetNodeDB()
-	}
-	rootHash = prevBlock.ClientStateHash
-	logging.Logger.Warn("set state db",
-		zap.Int64("round", b.Round),
-		zap.String("block", b.Hash),
-		zap.String("prev_block", prevBlock.Hash),
-		zap.String("root", util.ToHex(rootHash)))
-	b.CreateState(pndb, rootHash)
-}
-
 // InitStateDB - initialize the block's state from the db
 // (assuming it's already computed).
 func (b *Block) InitStateDB(ndb util.NodeDB) error {
@@ -371,7 +371,7 @@ func (b *Block) InitStateDB(ndb util.NodeDB) error {
 func (b *Block) CreateState(pndb util.NodeDB, root util.Key) {
 	mndb := util.NewMemoryNodeDB()
 	ndb := util.NewLevelNodeDB(mndb, pndb, false)
-	b.ClientState = util.NewMerklePatriciaTrie(ndb, util.Sequence(b.Round), root)
+	b.ClientState = util.NewMerklePatriciaTrie(ndb, util.Sequence(b.Round), root, statecache.NewEmpty())
 }
 
 // setClientState sets the block client state
@@ -628,7 +628,7 @@ func (b *Block) GetReceiptsMerkleTree() *util.MerkleTree {
 	return &mt
 }
 
-//GetTransaction - get the transaction from the block
+// GetTransaction - get the transaction from the block
 func (b *Block) GetTransaction(hash string) *transaction.Transaction {
 	for _, txn := range b.Txns {
 		if txn.GetKey() == hash {
@@ -638,19 +638,34 @@ func (b *Block) GetTransaction(hash string) *transaction.Transaction {
 	return nil
 }
 
-//SetBlockNotarized - set the block as notarized
+// SetBlockNotarized - set the block as notarized
 func (b *Block) SetBlockNotarized() {
 	b.ticketsMutex.Lock()
 	defer b.ticketsMutex.Unlock()
 	b.isNotarized = true
 }
 
-//IsBlockNotarized - is block notarized?
+// IsBlockNotarized - is block notarized?
 func (b *Block) IsBlockNotarized() bool {
 	b.ticketsMutex.RLock()
 	defer b.ticketsMutex.RUnlock()
 
 	return b.isNotarized
+}
+
+// SetBlockFinalised - set the block as finalised
+func (b *Block) SetBlockFinalised() {
+	b.ticketsMutex.Lock()
+	defer b.ticketsMutex.Unlock()
+	b.isFinalised = true
+}
+
+// IsBlockFinalised - is block notarized?
+func (b *Block) IsBlockFinalised() bool {
+	b.ticketsMutex.RLock()
+	defer b.ticketsMutex.RUnlock()
+
+	return b.isFinalised
 }
 
 /*SetVerificationStatus - set the verification status of the block by this node */
@@ -687,11 +702,13 @@ func (b *Block) UnknownTickets(vts []*VerificationTicket) []*VerificationTicket 
 
 // AddUniqueBlockExtension - add unique block extensions.
 func (b *Block) AddUniqueBlockExtension(eb *Block) {
+	b.uniqueBlockExtMutex.Lock()
+	defer b.uniqueBlockExtMutex.Unlock()
 	//TODO: We need to compare for view change and add the eb.MinerID only if he was in the view that b belongs to
-	if b.UniqueBlockExtensions == nil {
-		b.UniqueBlockExtensions = make(map[string]bool)
+	if b.uniqueBlockExtensions == nil {
+		b.uniqueBlockExtensions = make(map[string]bool)
 	}
-	b.UniqueBlockExtensions[eb.MinerID] = true
+	b.uniqueBlockExtensions[eb.MinerID] = true
 }
 
 // DoReadLock - implement ReadLockable interface.
@@ -753,6 +770,7 @@ func (b *Block) Clone() *Block {
 		blockState:          b.blockState,
 		isNotarized:         b.isNotarized,
 		verificationStatus:  b.verificationStatus,
+		StateChangesCount:   b.StateChangesCount,
 	}
 	if b.MagicBlock != nil {
 		clone.MagicBlock = b.MagicBlock.Clone()
@@ -771,10 +789,7 @@ func (b *Block) Clone() *Block {
 	}
 	b.stateMutex.RUnlock()
 
-	clone.UniqueBlockExtensions = make(map[string]bool, len(b.UniqueBlockExtensions))
-	for k, v := range b.UniqueBlockExtensions {
-		clone.UniqueBlockExtensions[k] = v
-	}
+	clone.uniqueBlockExtensions = b.GetUniqueBlockExtensions()
 
 	return clone
 }
@@ -782,10 +797,15 @@ func (b *Block) Clone() *Block {
 type Chainer interface {
 	GetPreviousBlock(ctx context.Context, b *Block) *Block
 	GetBlockStateChange(b *Block) error
-	ComputeState(ctx context.Context, pb *Block) error
+	ComputeState(ctx context.Context, pb *Block, waitC ...chan struct{}) error
 	GetStateDB() util.NodeDB
-	UpdateState(ctx context.Context, b *Block, bState util.MerklePatriciaTrieI, txn *transaction.Transaction) ([]event.Event, error)
+	UpdateState(ctx context.Context,
+		b *Block, bState util.MerklePatriciaTrieI,
+		txn *transaction.Transaction,
+		blockStateCache *statecache.BlockCache,
+		waitC ...chan struct{}) ([]event.Event, error)
 	GetEventDb() *event.EventDb
+	GetStateCache() *statecache.StateCache
 }
 
 // CreateStateWithPreviousBlock creates block client state with previous block
@@ -800,6 +820,13 @@ func CreateStateWithPreviousBlock(prevBlock *Block, stateDB util.NodeDB, round i
 		pndb = stateDB
 	} else {
 		pndb = prevBlock.ClientState.GetNodeDB()
+		if !bytes.Equal(prevBlock.ClientStateHash, prevBlock.ClientState.GetRoot()) {
+			logging.Logger.Error("create state db - previous block state root does not match",
+				zap.String("state root", string(prevBlock.ClientState.GetRoot())),
+				zap.String("client state root", string(prevBlock.ClientStateHash)),
+				zap.String("prev block", prevBlock.Hash),
+				zap.Int64("prev round", prevBlock.Round))
+		}
 	}
 	rootHash = prevBlock.ClientStateHash
 
@@ -810,11 +837,11 @@ func CreateStateWithPreviousBlock(prevBlock *Block, stateDB util.NodeDB, round i
 func CreateState(stateDB util.NodeDB, round int64, root util.Key) util.MerklePatriciaTrieI {
 	mndb := util.NewMemoryNodeDB()
 	ndb := util.NewLevelNodeDB(mndb, stateDB, false)
-	return util.NewMerklePatriciaTrie(ndb, util.Sequence(round), root)
+	return util.NewMerklePatriciaTrie(ndb, util.Sequence(round), root, statecache.NewEmpty())
 }
 
 // ComputeState computes block client state
-func (b *Block) ComputeState(ctx context.Context, c Chainer) error {
+func (b *Block) ComputeState(ctx context.Context, c Chainer, waitC ...chan struct{}) error {
 	select {
 	case <-ctx.Done():
 		logging.Logger.Warn("computeState context done", zap.Error(ctx.Err()))
@@ -883,15 +910,21 @@ func (b *Block) ComputeState(ctx context.Context, c Chainer) error {
 		logging.Logger.Error("previous state not compute yet",
 			zap.Int64("round", b.Round),
 			zap.String("block", b.Hash),
-			zap.Any("state status", pb.GetStateStatus()))
+			zap.Int8("state status", pb.GetStateStatus()))
 		return ErrPreviousStateNotComputed
 	}
 	//b.SetStateDB(pb, c.GetStateDB())
 
 	bState := CreateStateWithPreviousBlock(pb, c.GetStateDB(), b.Round)
+	blockStateCache := statecache.NewBlockCache(c.GetStateCache(), statecache.Block{
+		Round:    b.Round,
+		Hash:     b.Hash,
+		PrevHash: b.PrevHash,
+	})
 
 	beginStateRoot := bState.GetRoot()
 	b.Events = []event.Event{}
+	ts := time.Now()
 	for _, txn := range b.Txns {
 		if datastore.IsEmpty(txn.ClientID) {
 			if err := txn.ComputeClientID(); err != nil {
@@ -902,14 +935,23 @@ func (b *Block) ComputeState(ctx context.Context, c Chainer) error {
 		b.Events = append(b.Events, event.Event{
 			BlockNumber: b.Round,
 			TxHash:      txn.Hash,
-			Type:        int(event.TypeStats),
-			Tag:         int(event.TagAddTransaction),
+			Type:        event.TypeStats,
+			Tag:         event.TagAddTransactions,
 			Index:       txn.Hash,
-			Data:        transactionNodeToEventTransaction(txn, b.Hash),
+			Data:        transactionNodeToEventTransaction(txn, b.Hash, b.Round),
 		})
 
-		events, err := c.UpdateState(ctx, b, bState, txn)
-		b.Events = append(b.Events, events...)
+		b.Events = append(b.Events, event.Event{
+			Type:  event.TypeStats,
+			Tag:   event.TagUpdateUserPayedFees,
+			Index: txn.ClientID,
+			Data: event.UserAggregate{
+				UserID:    txn.ClientID,
+				PayedFees: int64(txn.Fee),
+			},
+		})
+
+		events, err := c.UpdateState(ctx, b, bState, txn, blockStateCache, waitC...)
 		switch err {
 		case context.Canceled:
 			b.SetStateStatus(StateCancelled)
@@ -925,7 +967,6 @@ func (b *Block) ComputeState(ctx context.Context, c Chainer) error {
 			b.Events = nil
 			return err
 		case context.DeadlineExceeded:
-			// TODO: keeping the same block state (Canceled) as creating a new state may cause unexpected issues
 			b.SetStateStatus(StateCancelled)
 			logging.Logger.Error("compute state - deadline exceeded",
 				zap.Int64("round", b.Round),
@@ -964,6 +1005,7 @@ func (b *Block) ComputeState(ctx context.Context, c Chainer) error {
 				return common.NewError("state_update_error", err.Error())
 			}
 		}
+		b.Events = append(b.Events, events...)
 	}
 
 	if !bytes.Equal(b.ClientStateHash, bState.GetRoot()) {
@@ -986,23 +1028,29 @@ func (b *Block) ComputeState(ctx context.Context, c Chainer) error {
 	StateSanityCheck(ctx, b)
 	b.SetStateStatus(StateSuccessful)
 
+	// commit the block state cache to the global state cache
+	blockStateCache.Commit()
+
 	logging.Logger.Info("compute state successful",
 		zap.Int64("round", b.Round),
 		zap.String("block", b.Hash),
 		zap.String("block ptr", fmt.Sprintf("%p", b)),
 		zap.Int("block_size", len(b.Txns)),
+		zap.Any("duration", time.Since(ts)),
 		zap.Int("changes", b.ClientState.GetChangeCount()),
 		zap.String("begin_client_state", util.ToHex(beginStateRoot)),
 		zap.String("computed_state_hash", util.ToHex(b.ClientState.GetRoot())),
 		zap.String("block_state_hash", util.ToHex(b.ClientStateHash)),
 		zap.String("prev_block", b.PrevHash),
 		zap.String("prev_block_client_state", util.ToHex(pb.ClientStateHash)))
+
 	return nil
 }
 
-func transactionNodeToEventTransaction(tr *transaction.Transaction, blockHash string) event.Transaction {
+func transactionNodeToEventTransaction(tr *transaction.Transaction, blockHash string, round int64) event.Transaction {
 	return event.Transaction{
 		Hash:              tr.Hash,
+		Round:             round,
 		BlockHash:         blockHash,
 		Version:           tr.Version,
 		ClientId:          tr.ClientID,
@@ -1012,6 +1060,7 @@ func transactionNodeToEventTransaction(tr *transaction.Transaction, blockHash st
 		Signature:         tr.Signature,
 		CreationDate:      int64(tr.CreationDate.Duration()),
 		Fee:               tr.Fee,
+		Nonce:             tr.Nonce,
 		TransactionType:   tr.TransactionType,
 		TransactionOutput: tr.TransactionOutput,
 		OutputHash:        tr.OutputHash,
@@ -1028,13 +1077,12 @@ func (b *Block) ApplyBlockStateChange(bsc *StateChange, c Chainer) error {
 		return nil
 	}
 
-	// TODO: debug logs, remove when this does not happen anymore
 	ts := time.Now()
 	defer func() {
 		du := time.Since(ts)
 		if du > 5*time.Second {
 			logging.Logger.Error("apply block state changes took too long",
-				zap.Any("duration", du))
+				zap.Duration("duration", du))
 		}
 	}()
 
@@ -1071,7 +1119,7 @@ func (b *Block) ApplyBlockStateChange(bsc *StateChange, c Chainer) error {
 		return state.ErrMalformedPartialState
 	}
 
-	err := clientState.MergeDB(bsc.GetNodeDB(), bsc.GetRoot().GetHashBytes())
+	err := clientState.MergeDB(bsc.GetNodeDB(), bsc.GetRoot().GetHashBytes(), bsc.GetDeadNodes())
 	if err != nil {
 		logging.Logger.Error("apply block state changes - error merging",
 			zap.Int64("round", b.Round), zap.String("block", b.Hash))
@@ -1091,7 +1139,7 @@ func (b *Block) ApplyBlockStateChange(bsc *StateChange, c Chainer) error {
 	return nil
 }
 
-// SaveChanges persistents the state changes
+// SaveChanges persistent the state changes
 func (b *Block) SaveChanges(ctx context.Context, c Chainer) error {
 	b.stateMutex.Lock()
 	defer b.stateMutex.Unlock()
@@ -1099,26 +1147,43 @@ func (b *Block) SaveChanges(ctx context.Context, c Chainer) error {
 		logging.Logger.Error("save changes - client state is nil",
 			zap.Int64("round", b.Round),
 			zap.String("hash", b.Hash))
-		return errors.New("save changes - client state is nil")
+		return common.NewError("save_state_changes", "client state is nil")
 	}
 
-	var err error
-	ts := time.Now()
+	var (
+		ts          = time.Now()
+		changeCount = b.ClientState.GetChangeCount()
+	)
+
 	switch b.GetStateStatus() {
 	case StateSynched, StateSuccessful:
-		err = b.ClientState.SaveChanges(ctx, c.GetStateDB(), false)
+		if err := b.ClientState.SaveChanges(ctx, c.GetStateDB(), false); err != nil {
+			logging.Logger.Error("save state",
+				zap.Int64("round", b.Round),
+				zap.String("block", b.Hash),
+				zap.Int("block_size", len(b.Txns)),
+				zap.Int("changes", changeCount),
+				zap.String("client_state", util.ToHex(b.ClientStateHash)),
+				zap.Duration("duration", time.Since(ts)),
+				zap.Error(err))
+			return err
+		}
 	default:
-		return common.NewError("state_save_without_success", "State can't be saved without successful computation")
+		return common.NewError("save_state_changes", "invalid state status")
 	}
-	duration := time.Since(ts)
+
 	StateSaveTimer.UpdateSince(ts)
-	p95 := StateSaveTimer.Percentile(.95)
-	changeCount := b.ClientState.GetChangeCount()
+	var (
+		p95      = StateSaveTimer.Percentile(.95)
+		duration = time.Since(ts)
+	)
+
 	if changeCount > 0 {
 		StateChangeSizeMetric.Update(int64(changeCount))
 	}
+
 	if StateSaveTimer.Count() > 100 && 2*p95 < float64(duration) {
-		logging.Logger.Info("save state - slow",
+		logging.Logger.Debug("save state - slow",
 			zap.Int64("round", b.Round),
 			zap.String("block", b.Hash),
 			zap.Int("block_size", len(b.Txns)),
@@ -1127,7 +1192,7 @@ func (b *Block) SaveChanges(ctx context.Context, c Chainer) error {
 			zap.Duration("duration", duration),
 			zap.Duration("p95", time.Duration(math.Round(p95/1000000))*time.Millisecond))
 	} else {
-		logging.Logger.Debug("save state",
+		logging.Logger.Info("save state",
 			zap.Int64("round", b.Round),
 			zap.String("block", b.Hash),
 			zap.Int("block_size", len(b.Txns)),
@@ -1135,18 +1200,8 @@ func (b *Block) SaveChanges(ctx context.Context, c Chainer) error {
 			zap.String("client_state", util.ToHex(b.ClientStateHash)),
 			zap.Duration("duration", duration))
 	}
-	if err != nil {
-		logging.Logger.Info("save state",
-			zap.Int64("round", b.Round),
-			zap.String("block", b.Hash),
-			zap.Int("block_size", len(b.Txns)),
-			zap.Int("changes", changeCount),
-			zap.String("client_state", util.ToHex(b.ClientStateHash)),
-			zap.Duration("duration", duration),
-			zap.Error(err))
-	}
 
-	return err
+	return nil
 }
 
 func copyVerificationTickets(src []*VerificationTicket) []*VerificationTicket {

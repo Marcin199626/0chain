@@ -6,15 +6,16 @@ import (
 	"strconv"
 	"testing"
 
-	"0chain.net/chaincore/currency"
+	config2 "0chain.net/core/config"
+	"0chain.net/smartcontract/provider"
 
-	"0chain.net/smartcontract"
+	"github.com/0chain/common/core/currency"
+
 	"0chain.net/smartcontract/stakepool"
 	"0chain.net/smartcontract/stakepool/spenum"
 	"github.com/spf13/viper"
 
 	cstate "0chain.net/chaincore/chain/state"
-	"0chain.net/chaincore/config"
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
@@ -62,21 +63,37 @@ func (bt benchTest) Run(state cstate.TimedQueryStateContext, b *testing.B) error
 func BenchmarkTests(data benchmark.BenchData, scheme benchmark.SignatureScheme) benchmark.TestSuite {
 	sc := createSmartContract()
 
-	indexOfNewAuth := len(data.Clients) - 1
+	indexOfNewAuth := viper.GetInt(benchmark.NumAuthorizers)
 
 	return createTestSuite(
 		[]benchTest{
 			{
 				name:     benchmark.ZcnSc + AddAuthorizerFunc,
 				endpoint: sc.AddAuthorizer,
-				txn:      createTransaction(data.Clients[indexOfNewAuth], data.PublicKeys[indexOfNewAuth]),
+				txn:      createTransaction(owner, "", 3000),
 				input:    createAuthorizerPayload(data, indexOfNewAuth),
+			},
+			{
+				name:     benchmark.ZcnSc + AuthorizerHealthCheckFunc,
+				endpoint: sc.AuthorizerHealthCheck,
+				txn:      createTransaction(data.Clients[0], "", 3000),
+				input: func() []byte {
+					input, _ := (&AuthorizerHealthCheckPayload{
+						ID: data.Clients[0],
+					}).Encode()
+					return input
+				}(),
 			},
 			{
 				name:     benchmark.ZcnSc + DeleteAuthorizerFunc,
 				endpoint: sc.DeleteAuthorizer,
-				txn:      createTransaction(data.Clients[0], data.PublicKeys[0]),
-				input:    nil,
+				txn:      createTransaction(data.Clients[0], data.PublicKeys[0], 3000),
+				input: func() []byte {
+					input, _ := (&DeleteAuthorizerPayload{
+						ID: data.Clients[0],
+					}).Encode()
+					return input
+				}(),
 			},
 			{
 				name:     benchmark.ZcnSc + BurnFunc,
@@ -93,8 +110,8 @@ func BenchmarkTests(data benchmark.BenchData, scheme benchmark.SignatureScheme) 
 			{
 				name:     benchmark.ZcnSc + UpdateGlobalConfigFunc,
 				endpoint: sc.UpdateGlobalConfig,
-				txn:      createTransaction(owner, ""),
-				input: (&smartcontract.StringMap{
+				txn:      createTransaction(owner, "", 3000),
+				input: (&config2.StringMap{
 					Fields: map[string]string{
 						MinMintAmount:      "2",
 						MinBurnAmount:      "3",
@@ -103,16 +120,20 @@ func BenchmarkTests(data benchmark.BenchData, scheme benchmark.SignatureScheme) 
 						MinAuthorizers:     "17",
 						PercentAuthorizers: "73",
 						MaxFee:             "800",
-						BurnAddress:        "7000000000000000000000000000000000000000000000000000000000000000",
+						MaxStakeAmount:     "100",
+						HealthCheckPeriod:  "10s",
 					},
 				}).Encode(),
 			},
 			{
 				name:     benchmark.ZcnSc + UpdateAuthorizerConfigFunc,
 				endpoint: sc.UpdateAuthorizerConfig,
-				txn:      createTransaction(data.Clients[0], data.PublicKeys[0]),
+				txn:      createTransaction(data.Clients[0], data.PublicKeys[0], 3000),
 				input: (&AuthorizerNode{
-					ID:        data.Clients[0],
+					Provider: provider.Provider{
+						ID:           data.Clients[0],
+						ProviderType: spenum.Validator,
+					},
 					PublicKey: data.PublicKeys[0],
 					URL:       "http://localhost:3030",
 					Config: &AuthorizerConfig{
@@ -123,12 +144,10 @@ func BenchmarkTests(data benchmark.BenchData, scheme benchmark.SignatureScheme) 
 			{
 				name:     benchmark.ZcnSc + UpdateAuthorizerStakePoolFunc,
 				endpoint: sc.UpdateAuthorizerStakePool,
-				txn:      createTransaction(data.Clients[0], data.PublicKeys[0]),
+				txn:      createTransaction(data.Clients[0], data.PublicKeys[0], 3000),
 				input: (&UpdateAuthorizerStakePoolPayload{
 					StakePoolSettings: stakepool.Settings{
 						DelegateWallet:     data.Clients[0],
-						MinStake:           currency.Coin(1.1 * 1e10),
-						MaxStake:           currency.Coin(103 * 1e10),
 						MaxNumDelegates:    7,
 						ServiceChargeRatio: 0.17,
 					},
@@ -137,28 +156,29 @@ func BenchmarkTests(data benchmark.BenchData, scheme benchmark.SignatureScheme) 
 			{
 				name:     benchmark.ZcnSc + CollectRewardsFunc,
 				endpoint: sc.CollectRewards,
-				txn:      createTransaction(data.Clients[0], data.PublicKeys[0]),
+				txn:      createTransaction(data.Clients[0], data.PublicKeys[0], 3000),
 				input: (&stakepool.CollectRewardRequest{
+					ProviderId:   data.Clients[0],
 					ProviderType: spenum.Authorizer,
-					PoolId:       getMockAuthoriserStakePoolId(data.Clients[0], 0),
 				}).Encode(),
 			},
 			{
 				name:     benchmark.ZcnSc + AddToDelegatePoolFunc,
 				endpoint: sc.AddToDelegatePool,
-				txn:      createTransaction(data.Clients[0], data.PublicKeys[0]),
-				input: (&stakePoolRequest{
-					AuthorizerID: data.Clients[0],
-				}).encode(),
+				txn:      createTransaction(data.Clients[0], data.PublicKeys[0], 10000000000),
+				input: (&stakepool.StakePoolRequest{
+					ProviderID:   data.Clients[0],
+					ProviderType: spenum.Authorizer,
+				}).Encode(),
 			},
 			{
 				name:     benchmark.ZcnSc + DeleteFromDelegatePoolFunc,
 				endpoint: sc.DeleteFromDelegatePool,
-				txn:      createTransaction(data.Clients[0], data.PublicKeys[0]),
-				input: (&stakePoolRequest{
-					PoolID:       getMockAuthoriserStakePoolId(data.Clients[0], 0),
-					AuthorizerID: data.Clients[0],
-				}).encode(),
+				txn:      createTransaction(data.Clients[0], data.PublicKeys[0], 3000),
+				input: (&stakepool.StakePoolRequest{
+					ProviderID:   data.Clients[0],
+					ProviderType: spenum.Authorizer,
+				}).Encode(),
 			},
 		},
 	)
@@ -167,7 +187,7 @@ func BenchmarkTests(data benchmark.BenchData, scheme benchmark.SignatureScheme) 
 func createMintPayloadForZCNSCMint(scheme benchmark.SignatureScheme, data benchmark.BenchData) []byte {
 	var sigs []*AuthorizerSignature
 
-	client := data.Clients[1]
+	client := data.Clients[0]
 
 	for i := 0; i < viper.GetInt(benchmark.NumAuthorizers); i++ {
 		pb := &proofOfBurn{
@@ -199,11 +219,11 @@ func createMintPayloadForZCNSCMint(scheme benchmark.SignatureScheme, data benchm
 	// mintNonce = mintNonce + 1
 	payload := &MintPayload{
 		EthereumTxnID:     "0xc8285f5304b1B7aAB09a7d26721D6F585448D0ed",
-		Amount:            1,
 		Nonce:             mintNonce + 1,
 		Signatures:        sigs,
 		ReceivingClientID: client,
 	}
+	payload.Amount, _ = currency.ParseZCN(1000)
 
 	return payload.Encode()
 }
@@ -220,7 +240,7 @@ func createAuthorizerPayload(data benchmark.BenchData, index int) []byte {
 	an := &AddAuthorizerPayload{
 		PublicKey:         data.PublicKeys[index],
 		URL:               "http://localhost:303" + strconv.Itoa(index),
-		StakePoolSettings: getMockStakePoolSettings(data.Clients[index]),
+		StakePoolSettings: getMockStakePoolSettings(data.Clients[0]),
 	}
 	ap, err := an.Encode()
 	if err != nil {
@@ -230,7 +250,8 @@ func createAuthorizerPayload(data benchmark.BenchData, index int) []byte {
 }
 
 func createRandomTransaction(id, publicKey string) *transaction.Transaction {
-	return createTransaction(id, publicKey)
+	value, _ := currency.ParseZCN(3000)
+	return createTransaction(id, publicKey, value)
 }
 
 func createRandomBurnTransaction(clients, publicKey []string) *transaction.Transaction {
@@ -239,19 +260,20 @@ func createRandomBurnTransaction(clients, publicKey []string) *transaction.Trans
 }
 
 func createBurnTransaction(clientId, publicKey string) *transaction.Transaction {
+	burnAmount, _ := currency.ParseZCN(3000.0)
 	return &transaction.Transaction{
 		HashIDField: datastore.HashIDField{
 			Hash: encryption.Hash("mock transaction hash"),
 		},
 		ClientID:     clientId,
 		PublicKey:    publicKey,
-		ToClientID:   config.SmartContractConfig.GetString(benchmark.ZcnBurnAddress),
-		Value:        3000,
+		ToClientID:   config2.SmartContractConfig.GetString(benchmark.ZcnBurnAddress),
+		Value:        burnAmount,
 		CreationDate: common.Now(),
 	}
 }
 
-func createTransaction(clientId, publicKey string) *transaction.Transaction {
+func createTransaction(clientId, publicKey string, value currency.Coin) *transaction.Transaction {
 	creationTimeRaw := viper.GetInt64(benchmark.MptCreationTime)
 	creationTime := common.Now()
 	if creationTimeRaw != 0 {
@@ -264,7 +286,7 @@ func createTransaction(clientId, publicKey string) *transaction.Transaction {
 		ClientID:     clientId,
 		PublicKey:    publicKey,
 		ToClientID:   ADDRESS,
-		Value:        3000,
+		Value:        value,
 		CreationDate: creationTime,
 	}
 }

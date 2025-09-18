@@ -1,54 +1,26 @@
 package zcnsc
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
-
-	"0chain.net/chaincore/currency"
 
 	cstate "0chain.net/chaincore/chain/state"
 	"0chain.net/chaincore/state"
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
-	"0chain.net/core/util"
 	"0chain.net/smartcontract/stakepool"
 	"0chain.net/smartcontract/stakepool/spenum"
+	"github.com/0chain/common/core/util"
 )
 
 //msgp:ignore unlockResponse stakePoolRequest
 
 //go:generate msgp -v -io=false -tests=false -unexported
 
-// unlock response
-type unlockResponse struct {
-	// one of the fields is set in a response, the Unstake if can't unstake
-	// for now and the TokenPoolTransferResponse if it has a pool had unlocked
-	Unstake bool          `json:"unstake"` // max time to wait to unstake
-	Balance currency.Coin `json:"balance"`
-}
-
-type stakePoolRequest struct {
-	PoolID       string `json:"pool_id,omitempty"`
-	AuthorizerID string `json:"authorizer_id,omitempty"`
-}
-
-func (spr *stakePoolRequest) decode(p []byte) (err error) {
-	if err = json.Unmarshal(p, spr); err != nil {
-		return
-	}
-	return // ok
-}
-
-func (spr *stakePoolRequest) encode() []byte {
-	bytes, _ := json.Marshal(spr)
-	return bytes
-}
-
 // ----------- LockingPool pool --------------------------
 
-//type stakePool stakepool.StakePool
+//type stakePool stakepool.Provider
 
 type StakePool struct {
 	stakepool.StakePool
@@ -61,26 +33,23 @@ func NewStakePool() *StakePool {
 	}
 }
 
-// StakePoolKey stake pool key for the storage SC and service provider ID
-func StakePoolKey(scKey, providerID string) datastore.Key {
-	return scKey + ":stakepool:" + providerID
-}
-
 func (sp *StakePool) GetKey() datastore.Key {
-	return StakePoolKey(ADDRESS, sp.Settings.DelegateWallet)
+	return stakepool.StakePoolKey(spenum.Authorizer, sp.Settings.DelegateWallet)
 }
 
 // save the stake pool
 func (sp *StakePool) save(sscKey, providerID string, balances cstate.StateContextI) (err error) {
-	_, err = balances.InsertTrieNode(StakePoolKey(sscKey, providerID), sp)
+	_, err = balances.InsertTrieNode(stakepool.StakePoolKey(spenum.Authorizer, providerID), sp)
 	return
 }
 
 // empty a delegate pool if possible, call update before the empty
-func (sp *StakePool) empty(sscID, poolID, clientID string, balances cstate.StateContextI) (bool, error) {
-	var dp, ok = sp.Pools[poolID]
+//
+//nolint:unused
+func (sp *StakePool) empty(sscID, clientID string, balances cstate.StateContextI) (bool, error) {
+	var dp, ok = sp.Pools[clientID]
 	if !ok {
-		return false, fmt.Errorf("no such delegate pool: %q", poolID)
+		return false, fmt.Errorf("no such delegate pool: %q", clientID)
 	}
 
 	if dp.DelegateID != clientID {
@@ -92,8 +61,8 @@ func (sp *StakePool) empty(sscID, poolID, clientID string, balances cstate.State
 		return false, err
 	}
 
-	sp.Pools[poolID].Balance = 0
-	sp.Pools[poolID].Status = spenum.Deleting
+	sp.Pools[clientID].Balance = 0
+	sp.Pools[clientID].Status = spenum.Deleted
 
 	return true, nil
 }
@@ -105,12 +74,32 @@ func (sp *StakePool) empty(sscID, poolID, clientID string, balances cstate.State
 // getStakePool of given authorizer
 func (zcn *ZCNSmartContract) getStakePool(authorizerID datastore.Key, balances cstate.StateContextI) (sp *StakePool, err error) {
 	sp = NewStakePool()
-	err = balances.GetTrieNode(StakePoolKey(zcn.ID, authorizerID), sp)
+	err = balances.GetTrieNode(stakepool.StakePoolKey(spenum.Authorizer, authorizerID), sp)
 	if err != nil {
 		return nil, err
 	}
 
 	return sp, nil
+}
+
+func (zcn *ZCNSmartContract) getStakePoolForAdapter(_ spenum.Provider, providerID datastore.Key, balances cstate.CommonStateContextI) (sp *StakePool, err error) {
+	sp = NewStakePool()
+	err = balances.GetTrieNode(stakepool.StakePoolKey(spenum.Authorizer, providerID), sp)
+	if err != nil {
+		return nil, err
+	}
+
+	return sp, nil
+}
+
+func (zcn *ZCNSmartContract) getStakePoolAdapter(providerType spenum.Provider, providerID string,
+	balances cstate.StateContextI) (sp stakepool.AbstractStakePool, err error) {
+	pool, err := zcn.getStakePoolForAdapter(providerType, providerID, balances)
+	if err != nil {
+		return nil, err
+	}
+
+	return pool, nil
 }
 
 // initial or successive method should be used by add_authorizer
@@ -119,13 +108,16 @@ func (zcn *ZCNSmartContract) getStakePool(authorizerID datastore.Key, balances c
 
 // get existing stake pool or create new one not saving it
 func (zcn *ZCNSmartContract) getOrUpdateStakePool(
-	gn *GlobalNode,
 	authorizerID datastore.Key,
 	settings stakepool.Settings,
 	ctx cstate.StateContextI,
 ) (*StakePool, error) {
-	if err := validateStakePoolSettings(settings, gn); err != nil {
-		return nil, fmt.Errorf("invalid stake_pool settings: %v", err)
+	gn, err := GetGlobalNode(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err = validateStakePoolSettings(settings, gn); err != nil {
+		return nil, err
 	}
 
 	changed := false
@@ -137,18 +129,8 @@ func (zcn *ZCNSmartContract) getOrUpdateStakePool(
 			return nil, fmt.Errorf("unexpected error: %v", err)
 		}
 		sp = NewStakePool()
-		sp.Minter = cstate.MinterStorage
+		sp.Minter = cstate.MinterZcn
 		sp.Settings.DelegateWallet = settings.DelegateWallet
-		changed = true
-	}
-
-	if sp.Settings.MinStake != settings.MinStake {
-		sp.Settings.MinStake = settings.MinStake
-		changed = true
-	}
-
-	if sp.Settings.MaxStake != settings.MaxStake {
-		sp.Settings.MaxStake = settings.MaxStake
 		changed = true
 	}
 
@@ -162,6 +144,11 @@ func (zcn *ZCNSmartContract) getOrUpdateStakePool(
 		changed = true
 	}
 
+	if sp.Settings.MinStake != gn.MinStakePerDelegate {
+		sp.Settings.MinStake = gn.MinStakePerDelegate
+		changed = true
+	}
+
 	if changed {
 		return sp, nil
 	}
@@ -169,11 +156,7 @@ func (zcn *ZCNSmartContract) getOrUpdateStakePool(
 	return nil, fmt.Errorf("no changes have been made to stakepool for authorizerID (%s)", authorizerID)
 }
 
-func validateStakePoolSettings(poolSettings stakepool.Settings, conf *GlobalNode) error {
-	err := conf.validateStakeRange(poolSettings.MinStake, poolSettings.MaxStake)
-	if err != nil {
-		return err
-	}
+func validateStakePoolSettings(poolSettings stakepool.Settings, gn ...*GlobalNode) error {
 	if poolSettings.ServiceChargeRatio < 0.0 {
 		return errors.New("negative service charge")
 	}
@@ -181,103 +164,32 @@ func validateStakePoolSettings(poolSettings stakepool.Settings, conf *GlobalNode
 		return errors.New("num_delegates <= 0")
 	}
 
+	if len(gn) > 0 && poolSettings.MaxNumDelegates > gn[0].MaxDelegates {
+		return errors.New("num_delegates > max_delegates")
+	}
+
 	return nil
 }
 
-func (gn *GlobalNode) validateStakeRange(min, max currency.Coin) (err error) {
-	if min < gn.MinStakeAmount {
-		return fmt.Errorf("min_stake is less than allowed by SC: %v < %v", min, gn.MinStakeAmount)
-	}
-	if max < min {
-		return fmt.Errorf("max_stake less than min_stake: %v < %v", min, max)
-	}
-
-	return
-}
-
-func (zcn *ZCNSmartContract) AddToDelegatePool(
-	t *transaction.Transaction,
-	input []byte,
-	ctx cstate.StateContextI,
-) (resp string, err error) {
-	code := "stake_pool_lock_failed"
-
-	gn, err := GetGlobalNode(ctx)
+func (zcn *ZCNSmartContract) AddToDelegatePool(t *transaction.Transaction,
+	input []byte, balances cstate.StateContextI) (
+	resp string, err error) {
+	gn, err := GetGlobalNode(balances)
 	if err != nil {
-		msg := fmt.Sprintf("failed to get global node, err: %v", err)
-		return "", common.NewError(code, msg)
+		return "", common.NewErrorf("add-to-delegate-pool-failed",
+			"failed to get global node error: %v", err)
 	}
 
-	if t.Value < gn.MinLockAmount {
-		return "", common.NewError(code, "too small stake to lock")
-	}
-
-	var spr stakePoolRequest
-	if err = spr.decode(input); err != nil {
-		return "", common.NewErrorf(code, "invalid request: %v", err)
-	}
-
-	var sp *StakePool
-	if sp, err = zcn.getStakePool(spr.AuthorizerID, ctx); err != nil {
-		return "", common.NewErrorf(code, "can't get stake pool: %v", err)
-	}
-
-	if len(sp.Pools) >= gn.MaxDelegates {
-		return "", common.NewErrorf(code, "max_delegates reached: %v, no more stake pools allowed", gn.MaxDelegates)
-	}
-
-	err = sp.LockPool(t, spenum.Authorizer, spr.AuthorizerID, spenum.Active, ctx)
-	if err != nil {
-		return "", common.NewErrorf(code, "stake pool digging error: %v", err)
-	}
-
-	if err = sp.save(zcn.ID, spr.AuthorizerID, ctx); err != nil {
-		return "", common.NewErrorf(code, "saving stake pool: %v", err)
-	}
-
-	// TO-DO: Update stake in eventDB
-
-	return
+	return stakepool.StakePoolLock(t, input, balances, stakepool.ValidationSettings{
+		MinStake:        gn.MinStakeAmount,
+		MaxStake:        gn.MaxStakeAmount,
+		MaxNumDelegates: gn.MaxDelegates,
+	}, zcn.getStakePoolAdapter)
 }
 
 func (zcn *ZCNSmartContract) DeleteFromDelegatePool(
-	t *transaction.Transaction,
-	input []byte,
-	ctx cstate.StateContextI,
-) (resp string, err error) {
-	const code = "stake_pool_unlock_failed"
-	var spr stakePoolRequest
+	t *transaction.Transaction, inputData []byte,
+	balances cstate.StateContextI) (resp string, err error) {
 
-	if err = spr.decode(input); err != nil {
-		return "", common.NewErrorf(code, "can't decode request: %v", err)
-	}
-	var sp *StakePool
-	if sp, err = zcn.getStakePool(spr.AuthorizerID, ctx); err != nil {
-		return "", common.NewErrorf(code, "can't get related stake pool: %v", err)
-	}
-
-	_, err = sp.empty(zcn.ID, spr.PoolID, t.ClientID, ctx)
-	if err != nil {
-		return "", common.NewErrorf(code, "unlocking tokens: %v", err)
-	}
-
-	amount, err := sp.UnlockClientStakePool(t.ClientID, spenum.Blobber, spr.AuthorizerID, spr.PoolID, ctx)
-	if err != nil {
-		return "", common.NewErrorf(code, "%v", err)
-	}
-
-	// save the pool
-	if err = sp.save(zcn.ID, spr.AuthorizerID, ctx); err != nil {
-		return "", common.NewErrorf(code, "saving stake pool: %v", err)
-	}
-
-	return toJson(&unlockResponse{Unstake: true, Balance: amount}), nil
-}
-
-func toJson(val interface{}) string {
-	var b, err = json.Marshal(val)
-	if err != nil {
-		panic(err)
-	}
-	return string(b)
+	return stakepool.StakePoolUnlock(t, inputData, balances, zcn.getStakePoolAdapter)
 }

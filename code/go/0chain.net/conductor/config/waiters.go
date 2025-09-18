@@ -1,6 +1,11 @@
 package config
 
-import "time"
+import (
+	"strings"
+	"time"
+
+	"0chain.net/conductor/conductrpc/stats"
+)
 
 // ExpectMagicBlock represents expected magic block.
 type ExpectMagicBlock struct {
@@ -94,14 +99,34 @@ func (wssos *WaitShareSignsOrShares) IsZero() bool {
 
 // WaitAdd used to wait for add_miner and add_sharder SC calls.
 type WaitAdd struct {
-	Miners   []NodeName `json:"miners" yaml:"miners" mapstructure:"miners"`
-	Sharders []NodeName `json:"sharders" yaml:"sharders" mapstructure:"sharders"`
-	Blobbers []NodeName `json:"blobbers" yaml:"blobbers" mapstructure:"blobbers"`
-	Start    bool       `json:"start" yaml:"start" mapstructure:"start"`
+	Miners      []NodeName `json:"miners" yaml:"miners" mapstructure:"miners"`
+	Sharders    []NodeName `json:"sharders" yaml:"sharders" mapstructure:"sharders"`
+	Blobbers    []NodeName `json:"blobbers" yaml:"blobbers" mapstructure:"blobbers"`
+	Validators  []NodeName `json:"validators" yaml:"validators" mapstructure:"validators"`
+	Authorizers []NodeName `json:"authorizers" yaml:"authorizers" mapstructure:"authorizers"`
+	Start       bool       `json:"start" yaml:"start" mapstructure:"start"`
 }
 
 func (wa *WaitAdd) IsZero() bool {
-	return len(wa.Miners) == 0 && len(wa.Sharders) == 0 && len(wa.Blobbers) == 0
+	return len(wa.Miners) == 0 && len(wa.Sharders) == 0 && len(wa.Blobbers) == 0 && len(wa.Authorizers) == 0
+}
+
+func (wa *WaitAdd) Take(name NodeName) (ok bool) {
+	if strings.Contains(string(name), "miner") {
+		return wa.TakeMiner(name)
+	} else if strings.Contains(string(name), "sharder") {
+		return wa.TakeSharder(name)
+	} else if strings.Contains(string(name), "blobber") {
+		return wa.TakeBlobber(name)
+	} else if strings.Contains(string(name), "validator") {
+		return wa.TakeValidator(name)	
+	} else if strings.Contains(string(name), "authorizer") {
+		return wa.TakeAuthorizer(name)
+	} else if strings.Contains(string(name), "validator") {
+		return wa.TakeValidator(name)
+	}
+
+	return false
 }
 
 func (wa *WaitAdd) TakeMiner(name NodeName) (ok bool) {
@@ -134,6 +159,26 @@ func (wa *WaitAdd) TakeBlobber(name NodeName) (ok bool) {
 	return
 }
 
+func (wa *WaitAdd) TakeValidator(name NodeName) (ok bool) {
+	for i, validatorName := range wa.Validators {
+		if validatorName == name {
+			wa.Validators = append(wa.Validators[:i], wa.Validators[i+1:]...)
+			return true
+		}
+	}
+	return
+}
+
+func (wa *WaitAdd) TakeAuthorizer(name NodeName) (ok bool) {
+	for i, authorizerName := range wa.Authorizers {
+		if authorizerName == name {
+			wa.Authorizers = append(wa.Authorizers[:i], wa.Authorizers[i+1:]...)
+			return true
+		}
+	}
+	return
+}
+
 type WaitNoProgress struct {
 	Start time.Time
 	Until time.Time
@@ -145,6 +190,10 @@ func (wnp *WaitNoProgress) IsZero() bool {
 
 type WaitNoViewChainge struct {
 	Round Round `json:"round" yaml:"round" mapstructure:"round"`
+}
+
+type WaitShardersFinalizeNearBlocks struct {
+	Sharders []NodeName `json:"sharders" yaml:"sharders" mapstructure:"sharders"`
 }
 
 func (wnvc *WaitNoViewChainge) IsZero() bool {
@@ -169,4 +218,17 @@ func (wsk *WaitSharderKeep) TakeSharder(name NodeName) (ok bool) {
 		}
 	}
 	return
+}
+
+// WaitMinerGeneratesBlock used in waiting if a miner generates a block
+type WaitMinerGeneratesBlock struct {
+	MinerName NodeName `json:"miner" yaml:"miner" mapstructure:"miner"`
+}
+
+// WaitSharderLFB used when checking a sharder recieves the LFB
+type WaitSharderLFB struct {
+	Target NodeName `json:"sharder" yaml:"sharder" mapstructure:"sharder"`
+
+	// Not part of the directive parameters
+	LFBs map[NodeID]*stats.BlockFromSharder `json:"-" yaml:"-" mapstructure:"-"`
 }

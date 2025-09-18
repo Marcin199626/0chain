@@ -1,10 +1,13 @@
-package minersc_test
+package minersc
 
 import (
 	"strconv"
 	"testing"
 
-	"0chain.net/chaincore/currency"
+	"0chain.net/smartcontract/provider"
+
+	"github.com/0chain/common/core/currency"
+	"github.com/0chain/common/core/statecache"
 
 	"0chain.net/smartcontract/stakepool"
 	"0chain.net/smartcontract/stakepool/spenum"
@@ -15,9 +18,7 @@ import (
 	sci "0chain.net/chaincore/smartcontractinterface"
 	"0chain.net/chaincore/state"
 	"0chain.net/chaincore/transaction"
-	"0chain.net/core/datastore"
-	"0chain.net/core/util"
-	. "0chain.net/smartcontract/minersc"
+	"github.com/0chain/common/core/util"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -55,7 +56,6 @@ func TestDeleteSharder(t *testing.T) {
 			mn.Pools[id] = &dp
 		}
 		for i, amount := range p.pendingPools {
-			id := "pending pool " + strconv.Itoa(i)
 			delegateId := "delegate " + strconv.Itoa(i)
 			var dp stakepool.DelegatePool
 			dp.Status = spenum.Pending
@@ -66,14 +66,6 @@ func TestDeleteSharder(t *testing.T) {
 				ToClientID: delegateId,
 				Amount:     dp.Balance,
 			}).Return(nil).Once()
-
-			var un stakepool.UserStakePools
-			un.Pools = map[datastore.Key][]datastore.Key{mn.ID: {id}}
-			balances.On("GetTrieNode", stakepool.UserStakePoolsKey(spenum.Sharder, id),
-				mock.MatchedBy(func(n *stakepool.UserStakePools) bool {
-					return true
-				})).Return(nil).Once()
-			balances.On("DeleteTrieNode", stakepool.UserStakePoolsKey(spenum.Sharder, id)).Return("", nil).Once()
 		}
 
 		balances.On("GetTrieNode", GetSharderKey(mockDeletedSharderId),
@@ -89,6 +81,8 @@ func TestDeleteSharder(t *testing.T) {
 			}),
 		).Return("", nil).Once()
 
+		balances.On("Cache").Return(statecache.NewEmpty())
+
 		pn := &PhaseNode{}
 		balances.On("GetTrieNode", pn.GetKey(), mock.AnythingOfType("*minersc.PhaseNode")).Return(util.ErrValueNotPresent).Once()
 		mockBlock := &block.Block{}
@@ -99,7 +93,10 @@ func TestDeleteSharder(t *testing.T) {
 
 		mnInput := &MinerNode{
 			SimpleNode: &SimpleNode{
-				ID: mockDeletedSharderId,
+				Provider: provider.Provider{
+					ID:           mockDeletedSharderId,
+					ProviderType: spenum.Miner,
+				},
 			},
 		}
 		return args{
@@ -154,4 +151,51 @@ func TestDeleteSharder(t *testing.T) {
 			require.True(t, mock.AssertExpectationsForObjects(t, args.balances))
 		})
 	}
+}
+
+func TestAddSharder(t *testing.T) {
+	const stakeVal, stakeHolders = 10e10, 5
+
+	var (
+		balances = newTestBalances()
+		msc      = newTestMinerSC()
+		now      int64
+
+		sharders []*sharder
+	)
+
+	setConfig(t, balances)
+
+	for i := 0; i < 10; i++ {
+		sn, err := addSharder(t, msc, now, true, balances)
+		require.NoError(t, err)
+		sharders = append(sharders, sn)
+		now += 10
+	}
+
+	// check miners are added successfully
+	ids, err := getNodeIDs(balances, AllShardersKey)
+	require.NoError(t, err)
+
+	for i := 0; i < len(sharders); i++ {
+		require.Equal(t, ids[i], sharders[i].sharder.id)
+	}
+
+	t.Run("add sharder not in magic block", func(t *testing.T) {
+		_, err = addSharder(t, msc, now, false, balances)
+		require.EqualError(t, err, "add_sharder: failed to add new sharder: Not in magic block")
+	})
+
+	t.Run("add sharder already exist", func(t *testing.T) {
+		s := sharders[0]
+		_, err := s.execAddSharderTxn(msc, now, balances)
+		require.NoError(t, err) // no error expected
+	})
+
+	t.Run("duplicate n2n host", func(t *testing.T) {
+		m := newSharder(t, true, balances)
+		m.node.N2NHost = sharders[0].node.N2NHost
+		_, err := m.execAddSharderTxn(msc, now, balances)
+		require.ErrorContains(t, err, "add_sharder: n2nhost:port already exists") // no error expected
+	})
 }

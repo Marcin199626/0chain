@@ -1,10 +1,13 @@
 package minersc
 
 import (
+	"0chain.net/chaincore/threshold/bls"
 	"testing"
 
 	cstate "0chain.net/chaincore/chain/state"
-	"0chain.net/chaincore/currency"
+	"0chain.net/chaincore/node"
+	"github.com/0chain/common/core/currency"
+	"github.com/0chain/common/core/statecache"
 
 	"0chain.net/chaincore/block"
 	"0chain.net/chaincore/state"
@@ -12,8 +15,8 @@ import (
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
 	"0chain.net/core/encryption"
-	"0chain.net/core/util"
 	"0chain.net/smartcontract/dbs/event"
+	"github.com/0chain/common/core/util"
 	"github.com/stretchr/testify/require"
 )
 
@@ -25,13 +28,39 @@ type testBalances struct {
 	block         *block.Block
 	blockSharders []string
 	lfmb          *block.Block
+	magicBlock    *block.MagicBlock
+	tc            *statecache.TransactionCache
+}
+
+func (tb *testBalances) LoadDKGSummary(magicBlockNum int64) (*bls.DKGSummary, error) {
+	return nil, nil
+}
+
+func (tb *testBalances) SetDKG(dkg *bls.DKG) error {
+	//TODO implement me
+	panic("implement me")
 }
 
 func newTestBalances() *testBalances {
-	return &testBalances{
+	bc := statecache.NewBlockCache(statecache.NewStateCache(), statecache.Block{})
+	balances := &testBalances{
 		balances: make(map[datastore.Key]currency.Coin),
 		tree:     make(map[datastore.Key]util.MPTSerializable),
+		magicBlock: &block.MagicBlock{
+			Miners:   node.NewPool(node.NodeTypeMiner),
+			Sharders: node.NewPool(node.NodeTypeSharder),
+		},
+		tc: statecache.NewTransactionCache(bc),
 	}
+	b := &block.Block{}
+	b.Round = 100
+	balances.block = b
+
+	return balances
+}
+
+func (tb *testBalances) Cache() *statecache.TransactionCache {
+	return tb.tc
 }
 
 func (tb *testBalances) zeroize() { //nolint
@@ -44,6 +73,10 @@ func (tb *testBalances) setBalance(key datastore.Key, b currency.Coin) { //nolin
 
 func (tb *testBalances) setLFMB(lfmb *block.Block) {
 	tb.lfmb = lfmb
+}
+
+func (tb *testBalances) setMagicBlock(magicBlock *block.MagicBlock) {
+	tb.magicBlock = magicBlock
 }
 
 func (tb *testBalances) requireAllBeZeros(t *testing.T) { //nolint
@@ -59,14 +92,14 @@ func (tb *testBalances) GetBlock() *block.Block {
 	return tb.block
 }
 
+func (tb *testBalances) GetMagicBlock(round int64) *block.MagicBlock {
+	return tb.magicBlock
+}
+
 func (tb *testBalances) SetMagicBlock(mb *block.MagicBlock) {
 	if tb.block != nil {
 		tb.block.MagicBlock = mb
 	}
-}
-
-func (tb *testBalances) GetBlockSharders(*block.Block) []string {
-	return tb.blockSharders
 }
 
 // stubs
@@ -78,6 +111,8 @@ func (tb *testBalances) SetStateContext(*state.State) error         { return nil
 func (tb *testBalances) GetTransfers() []*state.Transfer            { return nil }
 func (tb *testBalances) AddSignedTransfer(st *state.SignedTransfer) {}
 func (tb *testBalances) GetEventDB() *event.EventDb                 { return nil }
+func (tb *testBalances) EmitEventWithVersion(eventVersion event.EventVersion, eventType event.EventType, tag event.EventTag, index string, data interface{}, appenders ...cstate.Appender) {
+}
 func (tb *testBalances) EmitEvent(event.EventType, event.EventTag, string, interface{}, ...cstate.Appender) {
 }
 func (tb *testBalances) EmitError(error)                       {}
@@ -86,7 +121,8 @@ func (tb *testBalances) GetLatestFinalizedBlock() *block.Block { return nil }
 func (tb *testBalances) GetSignedTransfers() []*state.SignedTransfer {
 	return nil
 }
-func (tb *testBalances) DeleteTrieNode(datastore.Key) (datastore.Key, error) {
+func (tb *testBalances) DeleteTrieNode(key datastore.Key) (datastore.Key, error) {
+	delete(tb.tree, key)
 	return "", nil
 }
 func (tb *testBalances) GetLastestFinalizedMagicBlock() *block.Block {
@@ -105,6 +141,10 @@ func (tb *testBalances) GetClientBalance(clientID datastore.Key) (
 		return 0, util.ErrValueNotPresent
 	}
 	return
+}
+
+func (tb *testBalances) GetInvalidStateErrors() []error {
+	return nil
 }
 
 func (tb *testBalances) GetTrieNode(key datastore.Key, v util.MPTSerializable) error {
@@ -152,5 +192,15 @@ func (tb *testBalances) AddMint(mint *state.Mint) error {
 }
 
 func (tb *testBalances) GetChainCurrentMagicBlock() *block.MagicBlock {
-	return nil
+	return tb.magicBlock
 }
+
+func (tb *testBalances) GetClientState(clientID datastore.Key) (*state.State, error) {
+	return nil, nil
+}
+
+func (tb *testBalances) SetClientState(clientID datastore.Key, s *state.State) (util.Key, error) {
+	return nil, nil
+}
+
+func (tb *testBalances) GetMissingNodeKeys() []util.Key { return nil }

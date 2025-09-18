@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strconv"
 	"testing"
@@ -12,14 +13,15 @@ import (
 
 	"0chain.net/core/datastore"
 	"0chain.net/core/encryption"
-	"0chain.net/core/logging"
 	"0chain.net/core/mocks"
-	"0chain.net/core/util"
+	"github.com/0chain/common/core/logging"
+	"github.com/0chain/common/core/util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
 
 func init() {
+	fmt.Println("init logging")
 	logging.InitLogging("testing", "")
 
 	setupPartialStateDBMocks()
@@ -294,6 +296,7 @@ func TestPartialState_UnmarshalJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ps.DeadNodes = []util.Node{}
 
 	type fields struct {
 		Hash    util.Key
@@ -465,6 +468,7 @@ func TestPartialState_MarshalJSON(t *testing.T) {
 		Nodes: []util.Node{
 			util.NewValueNode(),
 		},
+		DeadNodes: []util.Node{},
 	}
 	ps.SetKey(encryption.Hash("data"))
 
@@ -474,6 +478,7 @@ func TestPartialState_MarshalJSON(t *testing.T) {
 		"nodes": [][]byte{
 			ps.Nodes[0].Encode(),
 		},
+		"dead_nodes": [][]byte{},
 	}
 
 	blob, err := json.Marshal(mapPS)
@@ -482,9 +487,10 @@ func TestPartialState_MarshalJSON(t *testing.T) {
 	}
 
 	type fields struct {
-		Hash    util.Key
-		Version string
-		Nodes   []util.Node
+		Hash      util.Key
+		Version   string
+		Nodes     []util.Node
+		DeadNodes []util.Node
 	}
 	tests := []struct {
 		name    string
@@ -495,9 +501,10 @@ func TestPartialState_MarshalJSON(t *testing.T) {
 		{
 			name: "OK",
 			fields: fields{
-				Hash:    ps.Hash,
-				Version: ps.Version,
-				Nodes:   ps.Nodes,
+				Hash:      ps.Hash,
+				Version:   ps.Version,
+				Nodes:     ps.Nodes,
+				DeadNodes: ps.DeadNodes,
 			},
 			want:    blob,
 			wantErr: false,
@@ -509,9 +516,10 @@ func TestPartialState_MarshalJSON(t *testing.T) {
 			t.Parallel()
 
 			ps := &PartialState{
-				Hash:    tt.fields.Hash,
-				Version: tt.fields.Version,
-				Nodes:   tt.fields.Nodes,
+				Hash:      tt.fields.Hash,
+				Version:   tt.fields.Version,
+				Nodes:     tt.fields.Nodes,
+				DeadNodes: tt.fields.DeadNodes,
 			}
 
 			got, err := ps.MarshalJSON()

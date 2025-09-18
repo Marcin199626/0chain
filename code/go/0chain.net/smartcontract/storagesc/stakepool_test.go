@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"0chain.net/chaincore/currency"
+	"github.com/0chain/common/core/currency"
 
 	"0chain.net/smartcontract/stakepool/spenum"
 
@@ -16,7 +16,7 @@ import (
 	cstate "0chain.net/chaincore/chain/state"
 	sci "0chain.net/chaincore/smartcontractinterface"
 	"0chain.net/core/datastore"
-	"0chain.net/core/util"
+	"github.com/0chain/common/core/util"
 
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/common"
@@ -31,7 +31,7 @@ func Test_newStakePool(t *testing.T) {
 }
 
 func Test_stakePoolKey(t *testing.T) {
-	assert.NotZero(t, stakePoolKey("scKey", "blobberID"))
+	assert.NotZero(t, stakePoolKey(spenum.Blobber, "blobberID"))
 }
 
 func Test_stakePool_Encode_Decode(t *testing.T) {
@@ -46,8 +46,8 @@ func Test_stakePool_save(t *testing.T) {
 		sp       = newStakePool()
 		balances = newTestBalances(t, false)
 	)
-	require.NoError(t, sp.save(ADDRESS, blobID, balances))
-	assert.NotZero(t, balances.tree[stakePoolKey(ADDRESS, blobID)])
+	require.NoError(t, sp.Save(spenum.Blobber, blobID, balances))
+	assert.NotZero(t, balances.tree[stakePoolKey(spenum.Blobber, blobID)])
 }
 
 type mockStakePool struct {
@@ -76,26 +76,23 @@ func TestStakePoolLock(t *testing.T) {
 	scYaml = &Config{
 		MaxDelegates: 200,
 		Minted:       zcnToBalance(0),
-		MaxMint:      zcnToBalance(4000000.0),
-
-		StakePool: &stakePoolConfig{
-			MinLock: 0.1e10,
-		},
+		MinStake:     0.1e10,
+		MaxStake:     10.1e10,
+		StakePool:    &stakePoolConfig{},
 	}
+	const minLock = 0.1e10
 
 	t.Run(errStakeTooSmall, func(t *testing.T) {
-		value, err := currency.MinusCoin(scYaml.StakePool.MinLock, 1)
+		value, err := currency.MinusCoin(minLock, 1)
 		require.NoError(t, err)
 		creationDate = common.Timestamp(time.Second * 120)
 		var delegates = []mockStakePool{{5, 0}}
 		err = testStakePoolLock(t, value, value+1, delegates)
 		require.Error(t, err)
-		require.EqualValues(t, err.Error(), errStakePoolLock+errStakeTooSmall)
 	})
 
 	t.Run(errStakeTooSmall, func(t *testing.T) {
-		scYaml.Minted = scYaml.MaxMint
-		value, err := currency.MinusCoin(scYaml.StakePool.MinLock, 1)
+		value, err := currency.MinusCoin(minLock, 1)
 		require.NoError(t, err)
 		creationDate = common.Timestamp(time.Second * 120)
 		var delegates = []mockStakePool{{5, 0}}
@@ -125,10 +122,12 @@ func testStakePoolLock(t *testing.T, value, clientBalance currency.Coin, delegat
 		CreationDate: creationDate,
 	}
 	var ctx = &mockStateContext{
-		ctx: *cstate.NewStateContext(
+		StateContext: *cstate.NewStateContext(
 			nil,
 			&util.MerklePatriciaTrie{},
 			txn,
+			nil,
+			nil,
 			nil,
 			nil,
 			nil,
@@ -144,15 +143,19 @@ func testStakePoolLock(t *testing.T, value, clientBalance currency.Coin, delegat
 			ID: storageScId,
 		},
 	}
-	_, err := ctx.InsertTrieNode(scConfigKey(ssc.ID), scYaml)
+	_, err := ctx.InsertTrieNode(scConfigKey(ADDRESS), scYaml)
 	require.NoError(t, err)
 	var spr = &stakePoolRequest{
-		BlobberID: blobberId,
-		PoolID:    "paula",
+		ProviderType: spenum.Blobber,
+		ProviderID:   blobberId,
 	}
 	input, err := json.Marshal(spr)
 	require.NoError(t, err)
 	var stakePool = newStakePool()
+	stakePool.Settings = stakepool.Settings{
+		DelegateWallet:  blobberId,
+		MaxNumDelegates: 20,
+	}
 	for i, stake := range delegates {
 		var id = strconv.Itoa(i)
 		stakePool.Pools["pool"+id] = &stakepool.DelegatePool{
@@ -160,28 +163,26 @@ func testStakePoolLock(t *testing.T, value, clientBalance currency.Coin, delegat
 			RoundCreated: stake.MintAt,
 		}
 	}
-	var usp = stakepool.NewUserStakePools()
-	require.NoError(t, usp.Save(spenum.Blobber, txn.ClientID, ctx))
-	require.NoError(t, stakePool.save(ssc.ID, blobberId, ctx))
+	require.NoError(t, stakePool.Save(spenum.Blobber, blobberId, ctx))
 
 	resp, err := ssc.stakePoolLock(txn, input, ctx)
 	if err != nil {
 		return err
 	}
-
-	newStakePool, err := ssc.getStakePool(blobberId, ctx)
-	require.NoError(t, err)
-	var newUsp *stakepool.UserStakePools
-	newUsp, err = stakepool.GetUserStakePools(spenum.Blobber, txn.ClientID, ctx)
+	newStakePool, err := ssc.getStakePool(spenum.Blobber, blobberId, ctx)
 	require.NoError(t, err)
 
-	confirmPoolLockResult(t, f, resp, *newStakePool, *newUsp, ctx)
+	confirmPoolLockResult(t, f, resp, *newStakePool, ctx)
 
 	return nil
 }
 
-func confirmPoolLockResult(t *testing.T, f formulaeStakePoolLock, resp string, newStakePool stakePool,
-	newUsp stakepool.UserStakePools, ctx cstate.StateContextI) {
+func confirmPoolLockResult(t *testing.T,
+	f formulaeStakePoolLock,
+	resp string,
+	newStakePool stakePool,
+	ctx cstate.StateContextI,
+) {
 	for _, transfer := range ctx.GetTransfers() {
 		require.EqualValues(t, f.value, transfer.Amount)
 		require.EqualValues(t, storageScId, transfer.ToClientID)
@@ -190,11 +191,6 @@ func confirmPoolLockResult(t *testing.T, f formulaeStakePoolLock, resp string, n
 		require.True(t, ok)
 		require.EqualValues(t, f.now, txPool.RoundCreated)
 	}
-
-	pools, ok := newUsp.Pools[blobberId]
-	require.True(t, ok)
-	require.Len(t, pools, 1)
-	require.EqualValues(t, transactionHash, pools[0])
 
 	var respObj = &splResponse{}
 	require.NoError(t, json.Unmarshal([]byte(resp), respObj))

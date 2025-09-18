@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"time"
 
-	"gorm.io/gorm/logger"
-
-	"0chain.net/chaincore/config"
+	"0chain.net/core/config"
+	"0chain.net/core/viper"
 	"0chain.net/smartcontract/dbs"
-
+	"github.com/0chain/common/core/logging"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
+	"moul.io/zapgorm2"
 )
 
 func GetPostgresSqlDb(config config.DbAccess) (dbs.Store, error) {
@@ -31,6 +32,13 @@ type PostgresStore struct {
 	db *gorm.DB
 }
 
+// New creates a PostgresStore instance with gorm.DB
+func New(db *gorm.DB) *PostgresStore {
+	return &PostgresStore{
+		db: db,
+	}
+}
+
 func (store *PostgresStore) Open(config config.DbAccess) error {
 	if !config.Enabled {
 		return errors.New("db_open_error, db disabled")
@@ -40,9 +48,14 @@ func (store *PostgresStore) Open(config config.DbAccess) error {
 	var sqldb *sql.DB
 	var err error
 
+	lgr := logger.Default.LogMode(logger.Silent)
+	if viper.GetBool("logging.verbose") {
+		lgr := zapgorm2.New(logging.Logger)
+		lgr.SetAsDefault()
+	}
+
 	maxRetries := 60 * 1 // 1 minutes
 	for i := 0; i < maxRetries; i++ {
-
 		db, err = gorm.Open(postgres.Open(fmt.Sprintf(
 			"host=%v port=%v user=%v dbname=%v password=%v sslmode=disable",
 			config.Host,
@@ -51,9 +64,9 @@ func (store *PostgresStore) Open(config config.DbAccess) error {
 			config.Name,
 			config.Password)),
 			&gorm.Config{
-				Logger:                 logger.Default.LogMode(logger.Silent),
+				Logger:                 lgr,
 				SkipDefaultTransaction: true,
-				PrepareStmt:            true,
+				CreateBatchSize:        50,
 			})
 
 		if err == nil { // tcp host/port are ready
@@ -80,7 +93,6 @@ func (store *PostgresStore) Open(config config.DbAccess) error {
 		return fmt.Errorf("db_open_error, Error opening the DB connection: %v", err)
 	}
 
-	fmt.Println("made event sql database ok")
 	return nil
 }
 

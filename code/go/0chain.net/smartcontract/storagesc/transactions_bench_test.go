@@ -3,18 +3,16 @@ package storagesc
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"0chain.net/chaincore/block"
 	"0chain.net/chaincore/transaction"
-	"0chain.net/core/common"
 	"0chain.net/core/encryption"
-	"0chain.net/core/util"
+	"github.com/0chain/common/core/statecache"
+	"github.com/0chain/common/core/util"
 
 	"github.com/stretchr/testify/require"
 )
@@ -30,7 +28,7 @@ type mptStore struct {
 func newMptStore(tb testing.TB) (mpts *mptStore) {
 	mpts = new(mptStore)
 
-	var dir, err = ioutil.TempDir("", "storage-mpt")
+	var dir, err = os.MkdirTemp("", "storage-mpt")
 	require.NoError(tb, err)
 
 	mpts.pndb, err = util.NewPNodeDB(filepath.Join(dir, "data"),
@@ -74,9 +72,9 @@ func (mpts *mptStore) merge(tb testing.TB) {
 	// for a worst case, no cached data, and we have to get everything from
 	// the persistent store, from rocksdb
 
-	mpts.mndb = util.NewMemoryNodeDB()                           //
-	mpts.lndb = util.NewLevelNodeDB(mpts.mndb, mpts.pndb, false) // transaction
-	mpts.mpt = util.NewMerklePatriciaTrie(mpts.lndb, 1, root)    //
+	mpts.mndb = util.NewMemoryNodeDB()                                               //
+	mpts.lndb = util.NewLevelNodeDB(mpts.mndb, mpts.pndb, false)                     // transaction
+	mpts.mpt = util.NewMerklePatriciaTrie(mpts.lndb, 1, root, statecache.NewEmpty()) //
 }
 
 //
@@ -100,10 +98,10 @@ func Benchmark_newAllocationRequest(b *testing.B) {
 		b.Run(fmt.Sprintf("%d blobbers", n), func(b *testing.B) {
 
 			var (
-				ssc            = newTestStorageSC()
-				balances       = newTestBalances(b, true)
-				client         = newClient(100000*x10, balances)
-				tp, exp  int64 = 0, int64(toSeconds(time.Hour))
+				ssc      = newTestStorageSC()
+				balances = newTestBalances(b, true)
+				client   = newClient(100000*x10, balances)
+				tp       = int64(0)
 
 				conf *Config
 				err  error
@@ -117,7 +115,7 @@ func Benchmark_newAllocationRequest(b *testing.B) {
 			// call the addAllocation to create and stake n blobbers, the resulting
 			// allocation will not be used
 			tp += 1
-			addAllocation(b, ssc, client, tp, exp, n, balances)
+			addAllocation(b, ssc, client, tp, 0, 0, 0, 0, n, balances, false, false, false)
 
 			conf.MinAllocSize = 1 * KB
 			mustSave(b, scConfigKey(ADDRESS), conf, balances)
@@ -142,7 +140,6 @@ func Benchmark_newAllocationRequest(b *testing.B) {
 					var nar = new(newAllocationRequest)
 					nar.DataShards = 10
 					nar.ParityShards = 10
-					nar.Expiration = common.Timestamp(exp)
 					nar.Owner = client.id
 					nar.OwnerPublicKey = client.pk
 					nar.ReadPriceRange = PriceRange{1e10, 10e10}
@@ -176,10 +173,10 @@ func Benchmark_newAllocationRequest(b *testing.B) {
 func Benchmark_generateChallenges(b *testing.B) {
 
 	var (
-		ssc            = newTestStorageSC()
-		balances       = newTestBalances(b, true)
-		client         = newClient(100000*x10, balances)
-		tp, exp  int64 = 0, int64(toSeconds(time.Hour))
+		ssc      = newTestStorageSC()
+		balances = newTestBalances(b, true)
+		client   = newClient(100000*x10, balances)
+		tp       = int64(0)
 
 		tx    *transaction.Transaction
 		blobs []*Client
@@ -196,7 +193,7 @@ func Benchmark_generateChallenges(b *testing.B) {
 	b.Log("add 1k blobbers")
 	tp += 1
 	balances.skipMerge = true // don't merge transactions for now
-	_, blobs = addAllocation(b, ssc, client, tp, exp, 1000, balances)
+	_, blobs = addAllocation(b, ssc, client, tp, 0, 0, 0, 0, 1000, balances, false, false, false)
 
 	// 2. and 1000 corresponding validators
 	b.Log("add 1k corresponding validators")
@@ -218,7 +215,6 @@ func Benchmark_generateChallenges(b *testing.B) {
 		var nar = new(newAllocationRequest)
 		nar.DataShards = 10
 		nar.ParityShards = 10
-		nar.Expiration = common.Timestamp(exp)
 		nar.Owner = client.id
 		nar.OwnerPublicKey = client.pk
 		nar.ReadPriceRange = PriceRange{1 * x10, 10 * x10}
@@ -232,21 +228,22 @@ func Benchmark_generateChallenges(b *testing.B) {
 		var deco StorageAllocation
 		require.NoError(b, deco.Decode([]byte(resp)))
 
-		allocs = append(allocs, deco.ID)
+		allocs = append(allocs, deco.mustBase().ID)
 	}
 
 	// 4. "write" 10 files for every one of the allocations
 	b.Log("write 10k files")
 	for _, allocID := range allocs {
-		var alloc *StorageAllocation
-		alloc, err = ssc.getAllocation(allocID, balances)
+		var sa *StorageAllocation
+		sa, err = ssc.getAllocation(allocID, balances)
 		require.NoError(b, err)
+		alloc := sa.mustBase()
 		alloc.Stats = new(StorageAllocationStats)
 		alloc.Stats.NumWrites += 10 // 10 files
 		for _, d := range alloc.BlobberAllocs {
 			d.AllocationRoot = "allocation-root"
 		}
-		_, err = balances.InsertTrieNode(alloc.GetKey(ssc.ID), alloc)
+		_, err = balances.InsertTrieNode(sa.GetKey(ssc.ID), sa)
 		require.NoError(b, err)
 	}
 
@@ -264,8 +261,7 @@ func Benchmark_generateChallenges(b *testing.B) {
 		5, 10, 15, 20, 30, 100,
 	} {
 
-		conf.MaxChallengesPerGeneration = mcpg
-		mustSave(b, scConfigKey(ssc.ID), conf, balances)
+		mustSave(b, scConfigKey(ADDRESS), conf, balances)
 
 		b.Run(fmt.Sprintf("max chall per gen %d", mcpg), func(b *testing.B) {
 
@@ -284,7 +280,7 @@ func Benchmark_generateChallenges(b *testing.B) {
 				}
 				b.StartTimer()
 
-				err = ssc.generateChallenge(tx, blk, nil, balances)
+				err = ssc.generateChallenge(tx, blk, nil, conf, balances)
 				require.NoError(b, err)
 			}
 			b.ReportAllocs()
@@ -304,10 +300,10 @@ func Benchmark_generateChallenges(b *testing.B) {
 func Benchmark_verifyChallenge(b *testing.B) {
 
 	var (
-		ssc            = newTestStorageSC()
-		balances       = newTestBalances(b, true)
-		client         = newClient(100000*x10, balances)
-		tp, exp  int64 = 0, int64(toSeconds(time.Hour))
+		ssc      = newTestStorageSC()
+		balances = newTestBalances(b, true)
+		client   = newClient(100000*x10, balances)
+		tp       = int64(0)
 
 		tx    *transaction.Transaction
 		blobs []*Client
@@ -324,7 +320,7 @@ func Benchmark_verifyChallenge(b *testing.B) {
 	b.Log("add 1k blobbers")
 	tp += 1
 	balances.skipMerge = true // don't merge transactions for now
-	_, blobs = addAllocation(b, ssc, client, tp, exp, 1000, balances)
+	_, blobs = addAllocation(b, ssc, client, tp, 0, 0, 0, 0, 1000, balances, false, false, false)
 
 	// 2. and 1000 corresponding validators
 	b.Log("add 1k corresponding validators")
@@ -352,7 +348,6 @@ func Benchmark_verifyChallenge(b *testing.B) {
 		var nar = new(newAllocationRequest)
 		nar.DataShards = 10
 		nar.ParityShards = 10
-		nar.Expiration = common.Timestamp(exp)
 		nar.Owner = client.id
 		nar.OwnerPublicKey = client.pk
 		nar.ReadPriceRange = PriceRange{1 * x10, 10 * x10}
@@ -366,21 +361,22 @@ func Benchmark_verifyChallenge(b *testing.B) {
 		var deco StorageAllocation
 		require.NoError(b, deco.Decode([]byte(resp)))
 
-		allocs = append(allocs, deco.ID)
+		allocs = append(allocs, deco.mustBase().ID)
 	}
 
 	// 4. "write" 10 files for every one of the allocations
 	b.Log("write 10k files")
 	for _, allocID := range allocs {
-		var alloc *StorageAllocation
-		alloc, err = ssc.getAllocation(allocID, balances)
+		var sa *StorageAllocation
+		sa, err = ssc.getAllocation(allocID, balances)
 		require.NoError(b, err)
+		alloc := sa.mustBase()
 		alloc.Stats = new(StorageAllocationStats)
 		alloc.Stats.NumWrites += 10 // 10 files
 		for _, d := range alloc.BlobberAllocs {
 			d.AllocationRoot = "allocation-root"
 		}
-		_, err = balances.InsertTrieNode(alloc.GetKey(ssc.ID), alloc)
+		_, err = balances.InsertTrieNode(sa.GetKey(ssc.ID), sa)
 		require.NoError(b, err)
 	}
 
@@ -421,7 +417,7 @@ func Benchmark_verifyChallenge(b *testing.B) {
 				require.NoError(b, err)
 
 				// 6.3 keep for the benchmark
-				blobberID = alloc.BlobberAllocs[rand.Intn(len(alloc.BlobberAllocs))].BlobberID
+				blobberID = alloc.mustBase().BlobberAllocs[rand.Intn(len(alloc.mustBase().BlobberAllocs))].BlobberID
 
 				var (
 					challID    = encryption.Hash(fmt.Sprintf("chall-%d", tp))
@@ -441,6 +437,7 @@ func Benchmark_verifyChallenge(b *testing.B) {
 					storageChall,
 					allocChall,
 					challInfo,
+					conf,
 					balances)
 
 				require.NoError(b, err)
@@ -466,7 +463,7 @@ func Benchmark_verifyChallenge(b *testing.B) {
 				}
 
 				// 6.3 keep for the benchmark
-				//blobberID = chall.BlobberID
+				//blobberID = chall.ID
 
 				// 6.4 prepare transaction
 				tp += 1

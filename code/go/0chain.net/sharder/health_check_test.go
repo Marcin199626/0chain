@@ -1,6 +1,7 @@
 package sharder
 
 import (
+	"0chain.net/chaincore/node"
 	"context"
 	"reflect"
 	"testing"
@@ -290,8 +291,19 @@ func Test_SetCycleBounds(t *testing.T) {
 
 	for _, tt := range tests {
 		tt := tt
-		tt.sc.SetLatestFinalizedBlock(tt.lfb)
 		t.Run(tt.name, func(t *testing.T) {
+
+			cl := initDBs(t)
+			defer cl()
+			tt.sc.Initialize()
+
+			mb := block.NewMagicBlock()
+			mb.Miners = node.NewPool(node.NodeTypeMiner)
+			mb.Sharders = node.NewPool(node.NodeTypeSharder)
+			ch.SetMagicBlock(mb)
+
+			tt.sc.SetLatestFinalizedBlock(tt.lfb)
+
 			tt.sc.setCycleBounds(context.Background(), tt.scanMode)
 			got := tt.sc.BlockSyncStats.cycle[tt.scanMode].bounds
 			if !reflect.DeepEqual(got, tt.wantCB) {

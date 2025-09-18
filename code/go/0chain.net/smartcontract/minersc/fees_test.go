@@ -4,7 +4,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"0chain.net/chaincore/currency"
+	"github.com/0chain/common/core/currency"
 
 	"0chain.net/chaincore/block"
 	cstate "0chain.net/chaincore/chain/state"
@@ -15,16 +15,23 @@ import (
 
 type miner struct {
 	miner    *Client
+	node     *MinerNode
 	delegate *Client
 	stakers  []*Client
 }
 
-// create and add miner, create stake holders, don't stake
-func newMiner(t *testing.T, msc *MinerSmartContract, now, ns int64,
-	val currency.Coin, balances cstate.StateContextI) (mn *miner) {
+func (m *miner) execAddMinerTxn(msc *MinerSmartContract, now int64, balances cstate.StateContextI) (string, error) {
+	return m.miner.callAddMiner(msc, now, m.node, balances)
+}
 
-	mn = new(miner)
-	mn.miner, mn.delegate = addMiner(t, msc, now, balances)
+// create and add miner, create stake holders, don't stake
+func newMinerWithStake(t *testing.T, msc *MinerSmartContract, now, ns int64,
+	val currency.Coin, saveToMB bool, balances cstate.StateContextI) (mn *miner, err error) {
+	mn, err = addMiner(t, msc, now, saveToMB, balances)
+	if err != nil {
+		return nil, err
+	}
+
 	for i := int64(0); i < ns; i++ {
 		mn.stakers = append(mn.stakers, newClient(val, balances))
 	}
@@ -32,11 +39,13 @@ func newMiner(t *testing.T, msc *MinerSmartContract, now, ns int64,
 }
 
 // create and add sharder, create stake holders, don't stake
-func newSharder(t *testing.T, msc *MinerSmartContract, now, ns int64,
-	val currency.Coin, balances cstate.StateContextI) (sh *sharder) {
+func newSharderWithStake(t *testing.T, msc *MinerSmartContract, now, ns int64,
+	val currency.Coin, saveToMB bool, balances cstate.StateContextI) (sh *sharder, err error) {
+	sh, err = addSharder(t, msc, now, saveToMB, balances)
+	if err != nil {
+		return nil, err
+	}
 
-	sh = new(sharder)
-	sh.sharder, sh.delegate = addSharder(t, msc, now, balances)
 	for i := int64(0); i < ns; i++ {
 		sh.stakers = append(sh.stakers, newClient(val, balances))
 	}
@@ -45,8 +54,13 @@ func newSharder(t *testing.T, msc *MinerSmartContract, now, ns int64,
 
 type sharder struct {
 	sharder  *Client
+	node     *MinerNode
 	delegate *Client
 	stakers  []*Client
+}
+
+func (s *sharder) execAddSharderTxn(msc *MinerSmartContract, now int64, balances cstate.StateContextI) (string, error) {
+	return s.sharder.callAddSharder(msc, now, s.node, balances)
 }
 
 func extractMiners(miners []*miner) (list []*Client) {
@@ -104,13 +118,16 @@ func (msc *MinerSmartContract) setDKGMinersTestHelper(t *testing.T,
 	var gn, err = getGlobalNode(balances)
 	require.NoError(t, err)
 
-	var dmn *DKGMinerNodes
+	var dmn *DKGMinerNodesV2
 	dmn, err = getDKGMinersList(balances)
 	require.NoError(t, err)
 
 	dmn.setConfigs(gn)
 	for _, mn := range miners {
-		dmn.SimpleNodes[mn.miner.id] = &SimpleNode{ID: mn.miner.id}
+		dmn.Nodes = append(dmn.Nodes, LightNode{
+			Key:       mn.miner.id,
+			PublicKey: mn.miner.id,
+		})
 		dmn.Waited[mn.miner.id] = true
 	}
 
@@ -128,7 +145,7 @@ func existInDelegatesOfNodes(id string, nodes []*MinerNode) bool {
 }
 
 func computeMinerPayments(gn *GlobalNode, msc *MinerSmartContract, b *block.Block) (currency.Coin, error) {
-	blockReward := gn.BlockReward
+	blockReward := gn.MustBase().BlockReward
 	minerR, _, err := gn.splitByShareRatio(blockReward)
 	if err != nil {
 		return 0, err
@@ -146,7 +163,7 @@ func computeMinerPayments(gn *GlobalNode, msc *MinerSmartContract, b *block.Bloc
 }
 
 func computeShardersPayments(gn *GlobalNode, msc *MinerSmartContract, b *block.Block) (currency.Coin, error) {
-	blockReward := gn.BlockReward
+	blockReward := gn.MustBase().BlockReward
 	_, sharderR, err := gn.splitByShareRatio(blockReward)
 	if err != nil {
 		return 0, err
@@ -179,14 +196,16 @@ func Test_payFees(t *testing.T) {
 	setConfig(t, balances)
 
 	for i := 0; i < 10; i++ {
-		miners = append(miners, newMiner(t, msc, now, stakeHolders,
-			stakeVal, balances))
+		mn, err := newMinerWithStake(t, msc, now, stakeHolders, stakeVal, true, balances)
+		require.NoError(t, err)
+		miners = append(miners, mn)
 		now += 10
 	}
 
 	for i := 0; i < 10; i++ {
-		sharders = append(sharders, newSharder(t, msc, now, stakeHolders,
-			stakeVal, balances))
+		sn, err := newSharderWithStake(t, msc, now, stakeHolders, stakeVal, true, balances)
+		require.NoError(t, err)
+		sharders = append(sharders, sn)
 		now += 10
 	}
 
@@ -289,13 +308,13 @@ func Test_payFees(t *testing.T) {
 			}
 		}
 
-		blockSharders, err := msc.getBlockSharders(b, balances)
-		require.NoError(t, err)
+		blockSharders, err := getAllShardersList(balances)
+		require.NoError(t, err, "getShardersList error")
 		for _, sh := range sharders {
-			if existInDelegatesOfNodes(sh.delegate.id, blockSharders) {
+			if existInDelegatesOfNodes(sh.delegate.id, blockSharders.Nodes) {
 				shP, err := computeShardersPayments(gn, msc, b)
 				require.NoError(t, err)
-				shP = shP / currency.Coin(len(blockSharders))
+				shP = shP / currency.Coin(len(blockSharders.Nodes))
 
 				assert.Equal(t,
 					balances.balances[sh.delegate.id],
@@ -315,8 +334,7 @@ func Test_payFees(t *testing.T) {
 
 		gn, err = getGlobalNode(balances)
 		require.NoError(t, err, "can't get global node")
-		assert.EqualValues(t, 251, gn.LastRound)
-		assert.EqualValues(t, gn.BlockReward, gn.Minted)
+		assert.EqualValues(t, 251, gn.MustBase().LastRound)
 	})
 
 	// add all the miners to DKG miners list
@@ -376,13 +394,13 @@ func Test_payFees(t *testing.T) {
 			}
 		}
 
-		blockSharders, err := msc.getBlockSharders(b, balances)
+		blockSharders, err := getAllShardersList(balances)
 		require.NoError(t, err)
 		sharderPayments, err := computeShardersPayments(gn, msc, b)
 		require.NoError(t, err)
-		sharderPayments = sharderPayments / currency.Coin(len(blockSharders))
+		sharderPayments = sharderPayments / currency.Coin(len(blockSharders.Nodes))
 		for _, sh := range sharders {
-			if existInDelegatesOfNodes(sh.delegate.id, blockSharders) {
+			if existInDelegatesOfNodes(sh.delegate.id, blockSharders.Nodes) {
 				assert.Equal(t,
 					balances.balances[sh.delegate.id],
 					sharderPayments,
@@ -456,13 +474,13 @@ func Test_payFees(t *testing.T) {
 			}
 		}
 
-		blockSharders, err := msc.getBlockSharders(b, balances)
+		blockSharders, err := getAllShardersList(balances)
 		require.NoError(t, err)
 		for _, sh := range sharders {
-			if existInDelegatesOfNodes(sh.delegate.id, blockSharders) {
+			if existInDelegatesOfNodes(sh.delegate.id, blockSharders.Nodes) {
 				shP, err := computeShardersPayments(gn, msc, b)
 				require.NoError(t, err)
-				shP = shP / currency.Coin(len(blockSharders))
+				shP = shP / currency.Coin(len(blockSharders.Nodes))
 				assert.Equal(t,
 					balances.balances[sh.delegate.id],
 					shP,
@@ -535,13 +553,13 @@ func Test_payFees(t *testing.T) {
 			}
 		}
 
-		blockSharders, err := msc.getBlockSharders(b, balances)
+		blockSharders, err := getAllShardersList(balances)
 		require.NoError(t, err)
 		for _, sh := range sharders {
-			if existInDelegatesOfNodes(sh.delegate.id, blockSharders) {
+			if existInDelegatesOfNodes(sh.delegate.id, blockSharders.Nodes) {
 				shP, err := computeShardersPayments(gn, msc, b)
 				require.NoError(t, err)
-				shP = shP / currency.Coin(len(blockSharders))
+				shP = shP / currency.Coin(len(blockSharders.Nodes))
 				assert.Equal(t,
 					balances.balances[sh.delegate.id],
 					shP,
@@ -565,9 +583,9 @@ func Test_payFees(t *testing.T) {
 	t.Run("epoch", func(t *testing.T) {
 		var gn, err = getGlobalNode(balances)
 		require.NoError(t, err)
-		var rr = gn.RewardRate
+		var rr = gn.MustBase().RewardRate
 		gn.epochDecline()
-		assert.True(t, gn.RewardRate < rr)
+		assert.True(t, gn.MustBase().RewardRate < rr)
 	})
 
 }

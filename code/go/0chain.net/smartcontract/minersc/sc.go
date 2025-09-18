@@ -2,9 +2,7 @@ package minersc
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"math"
 	"net/url"
 	"sync"
 
@@ -14,7 +12,7 @@ import (
 	sci "0chain.net/chaincore/smartcontractinterface"
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/common"
-	"0chain.net/core/util"
+	"github.com/0chain/common/core/util"
 
 	"github.com/rcrowley/go-metrics"
 )
@@ -44,7 +42,7 @@ var (
 	}
 )
 
-//MinerSmartContract Smartcontract that takes care of all miner related requests
+// MinerSmartContract Smartcontract that takes care of all miner related requests
 type MinerSmartContract struct {
 	*sci.SmartContract
 	bcContext sci.BCContextI
@@ -79,22 +77,19 @@ func (msc *MinerSmartContract) GetExecutionStats() map[string]interface{} {
 	return msc.SmartContractExecutionStats
 }
 
-func (msc *MinerSmartContract) GetCost(t *transaction.Transaction, funcName string, balances cstate.StateContextI) (int, error) {
-	n, err := getGlobalNode(balances)
+func (msc *MinerSmartContract) GetCostTable(balances cstate.StateContextI) (map[string]int, error) {
+	node, err := getGlobalNode(balances)
 	if err != nil {
-		return math.MaxInt32, err
+		return map[string]int{}, err
 	}
-	if n.Cost == nil {
-		return math.MaxInt32, errors.New("can't get cost")
+	nb := node.MustBase()
+	if nb.Cost == nil {
+		return map[string]int{}, err
 	}
-	cost, ok := n.Cost[funcName]
-	if !ok {
-		return math.MaxInt32, errors.New("no cost given for " + funcName)
-	}
-	return cost, nil
+	return nb.Cost, nil
 }
 
-//setSC setting up smartcontract. implementing the interface
+// setSC setting up smartcontract. implementing the interface
 func (msc *MinerSmartContract) setSC(sc *sci.SmartContract, bcContext sci.BCContextI) {
 	msc.SmartContract = sc
 
@@ -112,7 +107,7 @@ func (msc *MinerSmartContract) setSC(sc *sci.SmartContract, bcContext sci.BCCont
 	msc.SmartContractExecutionStats["mintedTokens"] = metrics.GetOrRegisterCounter("mintedTokens", nil)
 }
 
-//Execute implementing the interface
+// Execute implementing the interface
 func (msc *MinerSmartContract) Execute(t *transaction.Transaction,
 	funcName string, input []byte, balances cstate.StateContextI) (
 	string, error) {
@@ -125,6 +120,29 @@ func (msc *MinerSmartContract) Execute(t *transaction.Transaction,
 		lock.Lock()
 		defer lock.Unlock()
 	}
+
+	if actErr := cstate.WithActivation(balances, "hermes", func() error {
+		if funcName == "vc_add" {
+			return common.NewErrorf("failed execution", "no miner smart contract method with name: %v", funcName)
+		}
+		return nil
+	}, func() error {
+		return nil
+	}); actErr != nil {
+		return "", actErr
+	}
+
+	if actErr := cstate.WithActivation(balances, "odysseus", func() error {
+		if funcName == "refresh_remove_providers" {
+			return common.NewErrorf("failed execution", "no miner smart contract method with name: %v", funcName)
+		}
+		return nil
+	}, func() error {
+		return nil
+	}); actErr != nil {
+		return "", actErr
+	}
+
 	scFunc, found := msc.smartContractFunctions[funcName]
 	if !found {
 		return common.NewErrorf("failed execution", "no miner smart contract method with name: %v", funcName).Error(), nil
@@ -138,18 +156,37 @@ func getGlobalNode(
 	gn = new(GlobalNode)
 	err = balances.GetTrieNode(GlobalNodeKey, gn)
 	if err != nil {
-		if err != util.ErrValueNotPresent {
-			return nil, err
-		}
-		err = gn.readConfig()
-		if err != nil {
-			return nil, fmt.Errorf("error reading config: %v", err)
-		}
-		if err := gn.validate(); err != nil {
-			return nil, fmt.Errorf("validating global node: %v", err)
-		}
-		return gn, nil
+		return nil, err
 	}
 
 	return gn, nil
+}
+
+func InitConfig(balances cstate.StateContextI) error {
+	gn := new(GlobalNode)
+	if err := balances.GetTrieNode(GlobalNodeKey, gn); err != nil {
+		if err != util.ErrValueNotPresent {
+			return fmt.Errorf("failed to get global node: %w", err)
+		}
+		if err := gn.readConfig(balances); err != nil {
+			return fmt.Errorf("failed to read config: %w", err)
+		}
+		if err := gn.validate(); err != nil {
+			return fmt.Errorf("failed to validate global node: %w", err)
+		}
+		if _, err := balances.InsertTrieNode(GlobalNodeKey, gn); err != nil {
+			return fmt.Errorf("failed to insert global node: %w", err)
+		}
+	}
+
+	if err := initGlobalSettings(balances); err != nil {
+		return fmt.Errorf("failed to initialize global settings: %w", err)
+	}
+
+	return nil
+}
+
+// GetGlobalNode returns the global node config
+func GetGlobalNode(balances cstate.CommonStateContextI) (*GlobalNode, error) {
+	return getGlobalNode(balances)
 }

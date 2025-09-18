@@ -2,20 +2,21 @@ package cmd
 
 import (
 	"encoding/hex"
-	"fmt"
 	"os"
 	"path"
+	"runtime/debug"
 	"sync"
 	"time"
 
+	"0chain.net/core/config"
+	"0chain.net/smartcontract/dbs/goose"
+
 	"golang.org/x/net/context"
 
-	"0chain.net/chaincore/config"
-	"0chain.net/chaincore/currency"
+	"github.com/0chain/common/core/currency"
+	"github.com/0chain/common/core/statecache"
 
 	"0chain.net/core/common"
-	"0chain.net/smartcontract/stakepool/spenum"
-
 	"0chain.net/smartcontract/zcnsc"
 
 	"0chain.net/core/datastore"
@@ -39,9 +40,9 @@ import (
 	"0chain.net/chaincore/state"
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/encryption"
-	"0chain.net/core/util"
 	"0chain.net/smartcontract/minersc"
 	"0chain.net/smartcontract/storagesc"
+	"github.com/0chain/common/core/util"
 	"github.com/spf13/viper"
 )
 
@@ -56,13 +57,13 @@ func extractMpt(mpt *util.MerklePatriciaTrie, root util.Key) *util.MerklePatrici
 		pNode,
 		false,
 	)
-	return util.NewMerklePatriciaTrie(levelNode, 1, root)
+	return util.NewMerklePatriciaTrie(levelNode, 1, root, statecache.NewEmpty())
 }
 
 func getBalances(
 	txn *transaction.Transaction,
 	mpt *util.MerklePatriciaTrie,
-	data benchmark.BenchData,
+	data *benchmark.BenchData,
 ) (*util.MerklePatriciaTrie, cstate.StateContextI) {
 	bk := &block.Block{
 		MagicBlock: &block.MagicBlock{
@@ -70,29 +71,64 @@ func getBalances(
 		},
 		PrevBlock: &block.Block{},
 	}
-	bk.Round = 2
+	bk.Round = viper.GetInt64(benchmark.NumBlocks)
 	bk.CreationDate = common.Timestamp(viper.GetInt64(benchmark.MptCreationTime))
-	bk.MinerID = minersc.GetMockNodeId(0, spenum.Miner)
-	node.Self.Underlying().SetKey(minersc.GetMockNodeId(0, spenum.Miner))
-	magicBlock := &block.MagicBlock{}
-	signatureScheme := &encryption.BLS0ChainScheme{}
+	magicBlock := &block.MagicBlock{
+		Miners:   node.NewPool(node.NodeTypeMiner),
+		Sharders: node.NewPool(node.NodeTypeSharder),
+	}
+
+	// add miner and sharder that is in magic block but not active for add sharder and add miner
+	magicBlock.Miners.NodesMap = make(map[string]*node.Node)
+	magicBlock.Miners.NodesMap[encryption.Hash("magic_block_miner_1")] = &node.Node{}
+	magicBlockSharder := node.Node{}
+	magicBlockSharder.Type = magicBlock.Sharders.Type
+
+	var edb *event.EventDb
+	if data != nil {
+		bk.MinerID = data.Miners[0]
+		node.Self.Underlying().SetKey(data.Miners[0])
+		for i := range data.Sharders {
+			var n = node.Provider()
+			if err := n.SetID(data.Sharders[i]); err != nil {
+				log.Fatal(err)
+			}
+			n.PublicKey = data.SharderKeys[i]
+			n.Type = node.NodeTypeSharder
+			n.SetSignatureSchemeType(encryption.SignatureSchemeBls0chain)
+			if err := magicBlock.Sharders.AddNode(n); err != nil {
+				log.Fatal(err)
+			}
+		}
+		magicBlockSharder.ID = data.InactiveSharder
+		magicBlockSharder.PublicKey = data.InactiveSharderPK
+		if err := magicBlock.Sharders.AddNode(&magicBlockSharder); err != nil {
+			log.Fatal(err)
+		}
+		edb = data.EventDb
+	}
+
 	return mpt, cstate.NewStateContext(
 		bk,
 		mpt,
 		txn,
-		func(*block.Block) []string { return data.Sharders },
+		func(int64) *block.MagicBlock { return magicBlock },
+		func(int64) *block.MagicBlock { return magicBlock },
+		func(mb *block.MagicBlock) {
+			magicBlock = mb
+		},
 		func() *block.Block { return bk },
 		func() *block.MagicBlock { return magicBlock },
-		func() encryption.SignatureScheme { return signatureScheme },
+		func() encryption.SignatureScheme { return &encryption.BLS0ChainScheme{} },
 		func() *block.Block { return bk },
-		data.EventDb,
+		nil, nil, edb,
 	)
 }
 
-func getMpt(loadPath, configPath string, exec *common.WithContextFunc) (*util.MerklePatriciaTrie, util.Key, benchmark.BenchData) {
+func getMpt(loadPath, _ string, exec *common.WithContextFunc) (*util.MerklePatriciaTrie, util.Key, *benchmark.BenchData) {
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Println("Recovered in getMpt", r)
+			log.Println("Recovered in getMpt", r)
 		}
 	}()
 	var mptDir string
@@ -114,13 +150,15 @@ func getMpt(loadPath, configPath string, exec *common.WithContextFunc) (*util.Me
 	}
 
 	if len(loadPath) == 0 {
+		log.Println("no database to load, build new one in", mptDir)
 		return setUpMpt(mptDir)
 	}
 
+	log.Println("loading saved database", mptDir)
 	return openMpt(mptDir)
 }
 
-func openMpt(loadPath string) (*util.MerklePatriciaTrie, util.Key, benchmark.BenchData) {
+func openMpt(loadPath string) (*util.MerklePatriciaTrie, util.Key, *benchmark.BenchData) {
 	pNode, err := util.NewPNodeDB(
 		loadPath,
 		loadPath+"log",
@@ -128,7 +166,7 @@ func openMpt(loadPath string) (*util.MerklePatriciaTrie, util.Key, benchmark.Ben
 	if err != nil {
 		log.Fatal(err)
 	}
-	pMpt := util.NewMerklePatriciaTrie(pNode, 1, nil)
+	pMpt := util.NewMerklePatriciaTrie(pNode, 1, nil, statecache.NewEmpty())
 
 	root := viper.GetString(benchmark.MptRoot)
 	rootBytes, err := hex.DecodeString(root)
@@ -141,15 +179,16 @@ func openMpt(loadPath string) (*util.MerklePatriciaTrie, util.Key, benchmark.Ben
 	}
 
 	creationDate := common.Timestamp(viper.GetInt64(benchmark.MptCreationTime))
-	benchData := benchmark.BenchData{EventDb: eventDb}
+
 	_, balances := getBalances(
 		&transaction.Transaction{CreationDate: creationDate},
 		extractMpt(pMpt, rootBytes),
-		benchData,
+		nil,
 	)
+	benchData := &benchmark.BenchData{EventDb: eventDb}
 	benchData.Now = creationDate
 
-	err = balances.GetTrieNode(BenchDataKey, &benchData)
+	err = balances.GetTrieNode(BenchDataKey, benchData)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -159,10 +198,11 @@ func openMpt(loadPath string) (*util.MerklePatriciaTrie, util.Key, benchmark.Ben
 
 func setUpMpt(
 	dbPath string,
-) (*util.MerklePatriciaTrie, util.Key, benchmark.BenchData) {
+) (*util.MerklePatriciaTrie, util.Key, *benchmark.BenchData) {
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Println("Recovered in setUpMpt", r)
+			log.Println("Recovered in setUpMpt", r)
+			log.Println("Stack trace:", string(debug.Stack()))
 		}
 	}()
 
@@ -176,7 +216,7 @@ func setUpMpt(
 	if err != nil {
 		panic(err)
 	}
-	pMpt := util.NewMerklePatriciaTrie(pNode, 1, nil)
+	pMpt := util.NewMerklePatriciaTrie(pNode, 1, nil, statecache.NewEmpty())
 	log.Println("made empty blockchain")
 
 	timer := time.Now()
@@ -190,9 +230,10 @@ func setUpMpt(
 	timer = time.Now()
 
 	bk := &block.Block{}
+	bk.Round = viper.GetInt64(benchmark.NumBlocks)
 	magicBlock := &block.MagicBlock{}
 	signatureScheme := &encryption.BLS0ChainScheme{}
-
+	var benchmarkTime = common.Now()
 	balances := cstate.NewStateContext(
 		bk,
 		pMpt,
@@ -200,15 +241,26 @@ func setUpMpt(
 			HashIDField: datastore.HashIDField{
 				Hash: encryption.Hash("mock transaction hash"),
 			},
-			CreationDate: common.Now(),
+			CreationDate: benchmarkTime,
 		},
-		func(*block.Block) []string { return []string{} },
+		func(int64) *block.MagicBlock { return magicBlock },
+		func(int64) *block.MagicBlock { return magicBlock },
+		func(mb *block.MagicBlock) {
+			magicBlock = mb
+		},
 		func() *block.Block { return bk },
 		func() *block.MagicBlock { return magicBlock },
 		func() encryption.SignatureScheme { return signatureScheme },
 		nil,
-		nil,
+		nil, nil, nil,
 	)
+
+	initSCTokens := currency.Coin(viper.GetInt64(benchmark.StartTokens))
+	mustAddMockSCBalances(balances, storagesc.ADDRESS, initSCTokens)
+	mustAddMockSCBalances(balances, minersc.ADDRESS, initSCTokens)
+	mustAddMockSCBalances(balances, zcnsc.ADDRESS, initSCTokens)
+
+	mustAddMockSCBalances(balances, "1746b06bb09f55ee01b33b5e2e055d6cc7a900cb57c0a3a5eaabb8a0e7745802", initSCTokens)
 
 	log.Println("created balances\t", time.Since(timer))
 
@@ -219,8 +271,8 @@ func setUpMpt(
 
 	var wg sync.WaitGroup
 	var (
-		blobbers         []*storagesc.StorageNode
-		miners, sharders []string
+		blobbers                                                                             []*storagesc.StorageNode
+		miners, sharders, sharderKeys, validators, validatorPublicKeys, ValidatorPrivateKeys []string
 	)
 
 	wg.Add(1)
@@ -244,7 +296,8 @@ func setUpMpt(
 	go func() {
 		defer wg.Done()
 		timer := time.Now()
-		_ = storagesc.AddMockValidators(publicKeys, eventDb, balances)
+		validators, validatorPublicKeys, ValidatorPrivateKeys = createKeys(viper.GetInt(benchmark.NumValidators))
+		_ = storagesc.AddMockValidators(validators, validatorPublicKeys, eventDb, balances)
 		log.Println("added validators\t", time.Since(timer))
 	}()
 
@@ -252,7 +305,15 @@ func setUpMpt(
 	go func() {
 		defer wg.Done()
 		timer := time.Now()
-		miners = minersc.AddMockNodes(clients, spenum.Miner, eventDb, balances)
+		minersc.AddMockGlobalNode(balances)
+		log.Println("added minersc global node\t", time.Since(timer))
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		timer := time.Now()
+		miners, _ = minersc.AddMockMiners(clients, eventDb, balances, getMockIdKeyPair)
 		log.Println("added miners\t", time.Since(timer))
 	}()
 
@@ -260,7 +321,7 @@ func setUpMpt(
 	go func() {
 		defer wg.Done()
 		timer := time.Now()
-		sharders = minersc.AddMockNodes(clients, spenum.Sharder, eventDb, balances)
+		sharders, sharderKeys = minersc.AddMockSharders(clients, eventDb, balances, getMockIdKeyPair)
 		log.Println("added sharders\t", time.Since(timer))
 	}()
 
@@ -294,7 +355,7 @@ func setUpMpt(
 	go func() {
 		defer wg.Done()
 		timer := time.Now()
-		storagesc.GetMockValidatorStakePools(clients, balances)
+		storagesc.GetMockValidatorStakePools(validators, balances)
 		log.Println("added validator stake pools\t", time.Since(timer))
 	}()
 
@@ -302,7 +363,7 @@ func setUpMpt(
 	go func() {
 		defer wg.Done()
 		timer := time.Now()
-		storagesc.AddMockReadPools(clients, balances)
+		storagesc.AddMockReadPools(clients, eventDb, balances)
 		log.Println("added allocation read pools\t", time.Since(timer))
 	}()
 
@@ -310,7 +371,7 @@ func setUpMpt(
 	go func() {
 		defer wg.Done()
 		timer := time.Now()
-		storagesc.AddMockChallengePools(balances)
+		storagesc.AddMockChallengePools(eventDb, balances)
 		log.Println("added challenge pools\t", time.Since(timer))
 	}()
 
@@ -318,7 +379,7 @@ func setUpMpt(
 	go func() {
 		defer wg.Done()
 		timer := time.Now()
-		storagesc.AddMockChallenges(blobbers, eventDb, balances)
+		storagesc.AddMockChallenges(validators, blobbers, eventDb, balances)
 		log.Println("added challenges\t", time.Since(timer))
 	}()
 	wg.Add(1)
@@ -328,13 +389,16 @@ func setUpMpt(
 		storagesc.SaveMockStakePools(stakePools, balances)
 		log.Println("saved blobber stake pools\t", time.Since(timer))
 	}()
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		timer := time.Now()
-		minersc.AddNodeDelegates(clients, miners, sharders, balances)
-		log.Println("adding miners and sharders delegates\t", time.Since(timer))
-	}()
+	if viper.GetBool(benchmark.EventDbEnabled) &&
+		viper.GetBool(benchmark.EventDbDebug) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			timer := time.Now()
+			minersc.AddMockProviderRewards(miners, sharders, eventDb)
+			log.Println("adding mock rewards for miners and sharders\t", time.Since(timer))
+		}()
+	}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -346,7 +410,7 @@ func setUpMpt(
 	go func() {
 		defer wg.Done()
 		timer := time.Now()
-		minersc.SetUpNodes(miners, sharders)
+		minersc.SetUpNodes(miners, sharders, sharderKeys)
 		log.Println("registering miners and sharders\t", time.Since(timer))
 	}()
 
@@ -369,8 +433,15 @@ func setUpMpt(
 	go func() {
 		defer wg.Done()
 		timer := time.Now()
-		storagesc.AddMockWriteRedeems(clients, publicKeys, eventDb, balances)
-		log.Println("added read redeems\t", time.Since(timer))
+		storagesc.AddMockReadMarkers(clients, publicKeys, eventDb, balances)
+		log.Println("added read markers\t", time.Since(timer))
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		timer := time.Now()
+		storagesc.AddMockWriteMarkers(clients, eventDb)
+		log.Println("added write redeems\t", time.Since(timer))
 	}()
 	wg.Add(1)
 	go func() {
@@ -446,12 +517,61 @@ func setUpMpt(
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		listLength := viper.GetInt(benchmark.BenchDataListLength)
+
 		benchData.EventDb = eventDb
-		benchData.Clients = clients
-		benchData.PublicKeys = publicKeys
-		benchData.PrivateKeys = privateKeys
-		benchData.Sharders = sharders
-		benchData.Now = common.Now()
+		if len(clients) < listLength {
+			benchData.Clients = clients
+		} else {
+			benchData.Clients = clients[:listLength]
+		}
+		if len(publicKeys) < listLength {
+			benchData.PublicKeys = publicKeys
+		} else {
+			benchData.PublicKeys = publicKeys[:listLength]
+		}
+		if len(privateKeys) < listLength {
+			benchData.PrivateKeys = privateKeys
+		} else {
+			benchData.PrivateKeys = privateKeys[:listLength]
+		}
+		if len(miners) < listLength {
+			benchData.Miners = miners
+		} else {
+			benchData.Miners = miners[:listLength]
+		}
+		if len(sharders) < listLength {
+			benchData.Sharders = sharders
+		} else {
+			benchData.Sharders = sharders[:listLength]
+		}
+		if len(sharderKeys) < listLength {
+			benchData.SharderKeys = sharderKeys
+		} else {
+			benchData.SharderKeys = sharderKeys[:listLength]
+		}
+		if len(validators) < listLength {
+			benchData.ValidatorIds = validators
+		} else {
+			benchData.ValidatorIds = validators[:listLength]
+		}
+		if len(validatorPublicKeys) < listLength {
+			benchData.ValidatorPublicKeys = validatorPublicKeys
+		} else {
+			benchData.ValidatorPublicKeys = validatorPublicKeys[:listLength]
+		}
+		if len(ValidatorPrivateKeys) < listLength {
+			benchData.ValidatorPrivateKeys = ValidatorPrivateKeys
+		} else {
+			benchData.ValidatorPrivateKeys = ValidatorPrivateKeys[:listLength]
+		}
+
+		benchData.InactiveSharder, benchData.InactiveSharderPK, err = getMockIdKeyPair()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		benchData.Now = benchmarkTime
 
 		if _, err := balances.InsertTrieNode(BenchDataKey, &benchData); err != nil {
 			log.Fatal(err)
@@ -468,7 +588,24 @@ func setUpMpt(
 	log.Println("saved simulation parameters\t", time.Since(timer))
 	log.Println("mpt generation took:", time.Since(mptGenTime))
 
-	return pMpt, balances.GetState().GetRoot(), benchData
+	return pMpt, balances.GetState().GetRoot(), &benchData
+}
+
+func mustAddMockSCBalances(balances cstate.StateContextI, scAddress string, amount currency.Coin) {
+	s, err := balances.GetClientState(scAddress)
+	if err != nil && err != util.ErrValueNotPresent {
+		panic(err)
+	}
+	s.Balance = amount
+	_, err = balances.SetClientState(scAddress, s)
+	if err != nil {
+		panic(err)
+	}
+}
+
+func getMockIdKeyPair() (string, string, error) {
+	id, pbk, _, err := createKey()
+	return id, pbk, err
 }
 
 func openEventsDb() *event.EventDb {
@@ -485,10 +622,12 @@ func createEventsDb() *event.EventDb {
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	if err := eventDb.AutoMigrate(); err != nil {
+	sqldb, err := eventDb.Store.Get().DB()
+	if err != nil {
 		log.Fatal(err)
 	}
+	goose.Migrate(sqldb)
+	ebk.AddAggregatePartitions(eventDb)
 	log.Println("created event database\t", time.Since(timer))
 	return eventDb
 }
@@ -497,7 +636,7 @@ func newEventsDb() *event.EventDb {
 	timer := time.Now()
 	var eventDb *event.EventDb
 	tick := func() (*event.EventDb, error) {
-		return event.NewEventDb(config.DbAccess{
+		dbAccessConfig := config.DbAccess{
 			Enabled:         viper.GetBool(benchmark.EventDbEnabled),
 			Name:            viper.GetString(benchmark.EventDbName),
 			User:            viper.GetString(benchmark.EventDbUser),
@@ -507,8 +646,18 @@ func newEventsDb() *event.EventDb {
 			MaxIdleConns:    viper.GetInt(benchmark.EventDbMaxIdleConns),
 			MaxOpenConns:    viper.GetInt(benchmark.EventDbOpenConns),
 			ConnMaxLifetime: viper.GetDuration(benchmark.EventDbConnMaxLifetime),
-		})
-
+			Slowtablespace:  viper.GetString(benchmark.EventDbSlowTableSpace),
+		}
+		dbSettingsConfig := config.DbSettings{
+			Debug:                          viper.GetBool(benchmark.EventDbDebug),
+			AggregatePeriod:                viper.GetInt64(benchmark.EventDbAggregatePeriod),
+			PartitionChangePeriod:          viper.GetInt64(benchmark.EventDbPartitionChangePeriod),
+			PartitionKeepCount:             viper.GetInt64(benchmark.EventDbPartitionKeepCount),
+			PermanentPartitionChangePeriod: viper.GetInt64(benchmark.EventDbPermanentPartitionChangePeriod),
+			PermanentPartitionKeepCount:    viper.GetInt64(benchmark.EventDbPermanentPartitionKeepCount),
+			PageLimit:                      viper.GetInt64(benchmark.EventDbPageLimit),
+		}
+		return event.NewEventDbWithoutWorker(dbAccessConfig, dbSettingsConfig)
 	}
 
 	t := time.NewTicker(time.Second)
@@ -526,11 +675,35 @@ func newEventsDb() *event.EventDb {
 		}
 
 	}
-	if err != nil {
-		log.Fatal(err)
-	}
+
 	log.Println("created event database\t", time.Since(timer))
 	return eventDb
+}
+
+func createKeys(number int) ([]string, []string, []string) {
+	var ids, publicKeys, privateKeys []string
+	for i := 0; i < number; i++ {
+		id, public, private, err := createKey()
+		if err != nil {
+			log.Fatal("error creating key" + err.Error())
+		}
+		ids = append(ids, id)
+		publicKeys = append(publicKeys, public)
+		privateKeys = append(privateKeys, private)
+	}
+	return ids, publicKeys, privateKeys
+}
+
+func createKey() (id string, public string, private string, err error) {
+	blsScheme := BLS0ChainScheme{}
+	if err := blsScheme.GenerateKeys(); err != nil {
+		return "", "", "", err
+	}
+	publicKeyBytes, err := hex.DecodeString(blsScheme.GetPublicKey())
+	if err != nil {
+		return "", "", "", err
+	}
+	return encryption.Hash(publicKeyBytes), blsScheme.GetPublicKey(), blsScheme.GetPrivateKey(), nil
 }
 
 func addMockClients(ctx context.Context,
@@ -541,21 +714,15 @@ func addMockClients(ctx context.Context,
 	for i := 0; i < viper.GetInt(benchmark.NumClients); i++ {
 		err := executor.Run(ctx, func(i int) func() error {
 			return func() error {
-				blsScheme := BLS0ChainScheme{}
-				err := blsScheme.GenerateKeys()
+				clientID, publicKey, privateKey, err := createKey()
 				if err != nil {
 					return err
 				}
-				publicKeyBytes, err := hex.DecodeString(blsScheme.GetPublicKey())
-				if err != nil {
-					return err
-				}
-				clientID := encryption.Hash(publicKeyBytes)
 
 				if i < activeClients {
 					clientIds = append(clientIds, clientID)
-					publicKeys = append(publicKeys, blsScheme.GetPublicKey())
-					privateKeys = append(privateKeys, blsScheme.GetPrivateKey())
+					publicKeys = append(publicKeys, publicKey)
+					privateKeys = append(privateKeys, privateKey)
 				}
 				is := &state.State{}
 				_ = is.SetTxnHash("0000000000000000000000000000000000000000000000000000000000000000")

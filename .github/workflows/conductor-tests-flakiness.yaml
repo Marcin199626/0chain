@@ -1,0 +1,524 @@
+name: CONDUCTOR TESTS FLAKINESS
+
+on:
+  workflow_dispatch:
+    inputs:
+        test_name:
+          description: 'Input name of the conductor test you need to test for flakiness'
+          required: false
+        number_of_times:
+          description: 'How many times should the test run'
+          default: '10'
+        when_to_stop:
+          description: 'Choose one of the following options to stop the test: (on_failure) if you want it to stop on the first failure, (on_success) if you want it to stop on the first success or (never) if you want it to run all the times. Default is on_failure'
+          default: 'on_failure'
+        chain_branch:
+          description: 'Input branch for 0chain repo'
+          default: ''
+          required: false
+        blobber_branch:
+          description: 'Input branch for blobber repo'
+          default: ''
+          required: false          
+        auth_branch:
+          description: 'Input branch for authorizer repo'
+          default: ''
+          required: false
+        zbox_branch:
+          description: 'Input branch for 0box repo'
+          default: ''
+          required: false
+        zboxcli_branch:
+          description: 'Input branch for zboxcli repo'
+          default: ''
+          required: false
+        zwalletcli_branch:
+          description: 'Input branch for zwalletcli repo'
+          default: ''
+          required: false
+  workflow_call:
+    inputs:
+        test_name:
+          description: 'Input name of the conductor test you need to test for flakiness'
+          type: string
+          required: false
+        number_of_times:
+          description: 'How many times should the test run'
+          type: number
+          default: 10
+        when_to_stop:
+          description: 'Choose one of the following options to stop the test: (on_failure) if you want it to stop on the first failure, (on_success) if you want it to stop on the first success or (never) if you want it to run all the times. Default is on_failure'
+          type: string
+          default: 'on_failure'
+        chain_branch:
+          description: 'Input branch for 0chain repo'
+          type: string
+          default: ''
+          required: false
+        blobber_branch:
+          description: 'Input branch for blobber repo'
+          type: string
+          default: ''
+          required: false          
+        auth_branch:
+          description: 'Input branch for authorizer repo'
+          type: string
+          default: ''
+          required: false
+        zbox_branch:
+          description: 'Input branch for 0box repo'
+          type: string
+          default: ''
+          required: false
+        zboxcli_branch:
+          description: 'Input branch for zboxcli repo'
+          type: string
+          default: ''
+          required: false
+        zwalletcli_branch:
+          description: 'Input branch for zwalletcli repo'
+          type: string
+          default: ''
+          required: false
+
+env:
+  ZDNS_URL: http://198.18.0.98:9091
+
+jobs:
+  CONDUCTOR_TESTS_FLAKINESS:
+    name: CONDUCTOR_TESTS_FLAKINESS (${{ inputs.test_name }})
+    runs-on: [self-hosted, conductor-test]
+
+    steps:
+    - name: Install zip
+      run: |
+        apt-get update
+        apt-get install -y zip
+  
+    - name: Setup Environment Variables
+      run: |
+        export HOME="/root"
+        go env -w GO111MODULE=auto
+        go env GOROOT
+        go env GOPATH
+        echo "HOME=$HOME" >> $GITHUB_ENV
+        echo "PATH=$PATH:$(go env GOROOT)/bin:$(go env GOPATH)/bin" >> $GITHUB_ENV
+        echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib" >> $GITHUB_ENV
+
+    - name: Cleanup before restarting conductor tests.
+      run: |
+        [ "$(docker ps -a -q)" ] && docker rm -f $(docker ps -a -q) || true
+        rm -rf *
+        rm -rf /mnt/hdd/*
+        rm -rf /mnt/ssd/*
+
+    - name: Login to Docker Hub
+      uses: docker/login-action@v2
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+    - name: Git clone 0chain
+      run: |
+        git clone https://github.com/0chain/0chain.git
+        cd 0chain
+        git branch -r | grep -v '\->' | sed "s,\x1B\[[0-9;]*[a-zA-Z],,g" | while read remote; do git branch --track "${remote#origin/}" "$remote"; done || true
+        CHAIN_BRANCH="${{ inputs.chain_branch }}"
+        if [[ -z $CHAIN_BRANCH ]]; then
+            echo "Checking for latest sprint branch"
+            git branch --sort=-committerdate | grep "sprint-*" | head -1
+            CHAIN_BRANCH=$(git branch --sort=-committerdate | grep "sprint-*" | head -1)
+            echo ::set-output name=CHAIN_BRANCH::${CHAIN_BRANCH}
+        fi
+        echo "Branch name is ${CHAIN_BRANCH}"
+        git checkout ${CHAIN_BRANCH}
+
+    - name: Docker Init Setup.
+      run: |
+        export HOME="/root"
+        cd 0chain
+        make build-mocks
+        bash ./docker.local/bin/init.setup.sh
+
+    - name: Docker Network Setup.
+      run: |
+        cd 0chain
+        bash ./docker.local/bin/setup.network.sh || true
+
+    - name: Building Base Images
+      run: |
+        cd 0chain
+        bash ./docker.local/bin/build.base.sh
+
+    - name: Build Miner Docker Image For Integration Test.
+      run: |
+        cd 0chain
+        bash ./docker.local/bin/build.miners-integration-tests.sh
+
+    - name: Build Sharder Docker Image For Integration Test.
+      run: |
+        cd 0chain
+        bash ./docker.local/bin/build.sharders-integration-tests.sh
+
+    - name: Update max faucet limit
+      run: |
+        cd 0chain
+        bash -c 'sed -i "s/max_pour_amount: [0-9]*/max_pour_amount: 1000/g" docker.local/config/sc.yaml'
+        bash -c 'grep max_pour_amount ./docker.local/config/sc.yaml'
+
+    - name: View Change Rounds
+      run: |
+        awk 'NR >= 30 && NR <= 34' ./0chain/docker.local/config/sc.yaml
+        awk 'NR >= 9 && NR <= 14' ./0chain/docker.local/config/0chain.yaml
+
+    - name: Git clone blobber
+      run: |
+        git clone https://github.com/0chain/blobber.git
+        cd blobber
+        git branch -r | grep -v '\->' | sed "s,\x1B\[[0-9;]*[a-zA-Z],,g" | while read remote; do git branch --track "${remote#origin/}" "$remote"; done || true
+        BLOBBER_BRANCH="${{ inputs.blobber_branch }}"
+        if [[ -z $BLOBBER_BRANCH ]]; then
+            echo "Checking for latest sprint branch"
+            git branch --sort=-committerdate | grep "sprint-*" | head -1
+            BLOBBER_BRANCH=$(git branch --sort=-committerdate | grep "sprint-*" | head -1)
+        fi
+        echo "BRANCH_OUT=$BLOBBER_BRANCH" >>$GITHUB_OUTPUT
+        echo "Branch name is ${BLOBBER_BRANCH}"
+        git checkout ${BLOBBER_BRANCH}
+
+    - name: Git clone authorizer
+      run: |
+        git clone https://${{ secrets.SVC_ACCOUNT_USER }}:${{ secrets.SVC_ACCOUNT_SECRET }}@github.com/0chain/token_bridge_authserver.git
+        cd token_bridge_authserver
+        git branch -r | grep -v '\->' | sed "s,\x1B\[[0-9;]*[a-zA-Z],,g" | while read remote; do git branch --track "${remote#origin/}" "$remote"; done || true
+        AUTH_BRANCH="${{ inputs.auth_branch }}"
+        if [[ -z $AUTH_BRANCH ]]; then
+          echo "Checking for latest sprint branch"
+          git branch --sort=-committerdate | grep "sprint-*" | head -1
+          AUTH_BRANCH=$(git branch --sort=-committerdate | grep "sprint-*" | head -1)
+          echo ::set-output name=AUTH_BRANCH::${AUTH_BRANCH}
+        fi
+        echo "Branch name is ${AUTH_BRANCH}"
+        git checkout ${AUTH_BRANCH}
+
+    - name: Git clone zboxcli
+      run: |
+        export HOME="/root"
+        git clone https://github.com/0chain/zboxcli.git
+        cd zboxcli
+        git branch -r | grep -v '\->' | sed "s,\x1B\[[0-9;]*[a-zA-Z],,g" | while read remote; do git branch --track "${remote#origin/}" "$remote"; done || true
+        ZBOXCLI_BRANCH="${{ inputs.zboxcli_branch }}"
+        if [[ -z $ZBOXCLI_BRANCH ]]; then
+            echo "Checking for latest sprint branch"
+            git branch --sort=-committerdate | grep "sprint-*" | head -1
+            ZBOXCLI_BRANCH=$(git branch --sort=-committerdate | grep "sprint-*" | head -1)
+            echo ::set-output name=ZBOXCLI_BRANCH::${ZBOXCLI_BRANCH}
+        fi
+        echo "Branch name is ${ZBOXCLI_BRANCH}"
+        git checkout ${ZBOXCLI_BRANCH}
+
+    - name: Git clone zwalletcli
+      run: |
+        export HOME="/root"
+        git clone https://github.com/0chain/zwalletcli.git
+        cd zwalletcli
+        git branch -r | grep -v '\->' | sed "s,\x1B\[[0-9;]*[a-zA-Z],,g" | while read remote; do git branch --track "${remote#origin/}" "$remote"; done || true
+        ZWALLETCLI_BRANCH="${{ inputs.zwalletcli_branch }}"
+        if [[ -z $ZWALLETCLI_BRANCH ]]; then
+            echo "Checking for latest sprint branch"
+            git branch --sort=-committerdate | grep "sprint-*" | head -1
+            ZWALLETCLI_BRANCH=$(git branch --sort=-committerdate | grep "sprint-*" | head -1)
+            echo ::set-output name=ZWALLETCLI_BRANCH::${ZWALLETCLI_BRANCH}
+        fi
+        echo "Branch name is ${ZWALLETCLI_BRANCH}"
+        git checkout ${ZWALLETCLI_BRANCH}
+
+    - name: Git clone 0dns
+      run: |
+        git clone https://github.com/0chain/0dns.git
+
+    - name: Git clone 0box
+      run: |
+        export HOME="/root"
+        git clone https://${{ secrets.SVC_ACCOUNT_USER }}:${{ secrets.SVC_ACCOUNT_SECRET }}@github.com/0chain/0box.git
+        cd 0box
+        git branch -r | grep -v '\->' | sed "s,\x1B\[[0-9;]*[a-zA-Z],,g" | while read remote; do git branch --track "${remote#origin/}" "$remote"; done || true
+        ZBOX_BRANCH="${{ inputs.zbox_branch }}"
+        if [[ -z $ZBOX_BRANCH ]]; then
+            echo "Checking for latest sprint branch"
+            git branch --sort=-committerdate | grep "sprint-*" | head -1
+            ZBOX_BRANCH=$(git branch --sort=-committerdate | grep "sprint-*" | head -1)
+            echo ::set-output name=ZBOX_BRANCH::${ZBOX_BRANCH}
+        fi
+        echo "Branch name is ${ZBOX_BRANCH}"
+        git checkout ${ZBOX_BRANCH}
+
+    - name: list pwd
+      run: |
+        ls -lha
+        cd 0chain && git status
+        cd ../0dns && git status
+        pwd
+
+    - name: Install zboxcli
+      run: |
+        export HOME="/root"
+        cd zboxcli && make install
+
+    - name: Install zwalletcli
+      run: |
+        export HOME="/root"
+        cd zwalletcli && make install
+
+    - name: 0dns Patching
+      run: |
+        cd 0dns && ../0chain/docker.local/bin/conductor/patch-0dns-tests.sh
+    
+    - name: Blobbers Patching
+      run: |
+        cd blobber && ../0chain/docker.local/bin/conductor/patch-blobber-tests.sh
+
+    - name: 'Setup jq'
+      uses: dcarbone/install-jq-action@v2.1.0
+      with:
+        version: '1.7'
+        force: 'false'
+              
+    - name: "Create Tenderly virtual testnet"
+      run: |
+        echo "TENDERLY_CREATION_INFO=$(curl -X POST \
+         -H "x-access-key: ${{ secrets.TENDERLY_SECRET }}" \
+         -H "Content-Type: application/json" \
+         -d '{"slug":"mainnet-node-recovery-3-ct-${{ env.RUNNER_NUMBER }}-${{ github.run_id }}","displayName":"mainnet-node-recovery-3-ct-${{ env.RUNNER_NUMBER }}-${{ github.run_id }}","description":"","visibility":"TEAM","tags":{"purpose":"development"},"networkConfig":{"networkId":"1","blockNumber":"18512782","chainConfig":{"chainId":"1"},"baseFeePerGas":"1"},"explorerConfig":{"enabled":false,"verificationVisibility":"bytecode"},"syncState":false}' \
+         https://api.tenderly.co/api/v1/account/zus_network/project/project/testnet/container)" >> $GITHUB_ENV
+
+    - name: "Parse Tenderly virtual testnet creation transaction result"
+      run: |
+        echo "TENDERLY_VIRTUAL_TESTNET_ID=$(echo '${{ env.TENDERLY_CREATION_INFO }}' | jq -r '.container.id')" >> $GITHUB_ENV
+        echo "TENDERLY_VIRTUAL_TESTNET_RPC_ID=$(echo '${{ env.TENDERLY_CREATION_INFO }}' | jq -r '.container.connectivityConfig.endpoints[0].id')" >> $GITHUB_ENV
+
+    - name: Initialize Ethereum wallet balance
+      run: |
+        curl -X POST \
+            -H "x-access-key: ${{ secrets.TENDERLY_SECRET }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "method": "tenderly_addBalance",
+              "params": [
+                  [
+                      "0x8E25cfd9bd6c0ca67a5522cd920b3c66D39d6E97"
+                  ],
+                  "0x21e19e0c9bab2400000"
+              ],
+              "id": 42,
+              "jsonrpc": "2.0"
+          }' \
+            https://virtual.mainnet.rpc.tenderly.co/${{ env.TENDERLY_VIRTUAL_TESTNET_RPC_ID }}
+    
+    - name: Authorizer patching
+      run: |
+        cd token_bridge_authserver
+        chmod +x ../0chain/docker.local/bin/conductor/patch-authorizer-tests.sh
+        ../0chain/docker.local/bin/conductor/patch-authorizer-tests.sh https://virtual.mainnet.rpc.tenderly.co/${{ env.TENDERLY_VIRTUAL_TESTNET_RPC_ID }}
+
+    - name: 0box Patching
+      run: |
+        cd 0box
+        chmod +x ../0chain/docker.local/bin/conductor/patch-0box-tests.sh
+        ../0chain/docker.local/bin/conductor/patch-0box-tests.sh ${{ secrets.R53_ACCESS_KEY_ID }} ${{ secrets.R53_SECRET_KEY_ID }} $ZDNS_URL
+  
+    - name: Build 0dns
+      run: |
+        cd 0dns
+        ./docker.local/bin/init.sh
+        ./docker.local/bin/build.sh
+
+    - name: Build 0box
+      run: |
+        cd 0box
+        ./docker.local/bin/init.sh
+        ./docker.local/bin/build.base.sh
+        ./docker.local/bin/build.zbox-integration-tests.sh
+    
+    - name: Init setup for blobbers
+      run: |
+        chmod +x blobber/docker.local/bin/blobber.init.setup.sh
+        cd blobber && ./docker.local/bin/blobber.init.setup.sh
+
+    - name: Build blobber base
+      run: |
+        cd blobber
+        ./docker.local/bin/build.base.sh
+
+    - name: Build blobber
+      run: |
+        cd blobber
+        chmod +x ./docker.local/bin/build.blobber-integration-tests.sh
+        ./docker.local/bin/build.blobber-integration-tests.sh
+
+    - name: Init setup for authorizers
+      run: |
+        cd token_bridge_authserver && ./docker.local/bin/authorizer.init.setup.sh
+
+    - name: Build authorizer
+      run: |
+        cd token_bridge_authserver
+        chmod +x ./docker.local/bin/build.authorizer-integration-tests.sh
+        ./docker.local/bin/build.authorizer-integration-tests.sh
+
+    - name: Changing Authorizer Network
+      run: |
+        cd token_bridge_authserver
+        sed -i 's/^block_worker:\ .*/block_worker:\ http:\/\/198\.18\.0\.98\:9091/' config/config.yaml
+
+    - name: Add ZCN config
+      run: |
+        rm -rf ~/.zcn || true
+        mkdir ~/.zcn
+        cat <<\EOF > ~/.zcn/config.yaml
+        block_worker: http://127.0.0.1:9091
+        signature_scheme: bls0chain
+        min_submit: 50
+        min_confirmation: 50
+        confirmation_chain_length: 3
+        max_txn_query: 5
+        query_sleep_time: 5
+        ethereum_node_url: https://virtual.mainnet.rpc.tenderly.co/${{ env.TENDERLY_VIRTUAL_TESTNET_RPC_ID }}
+        bridge:
+          bridge_address: 0x7700D773022b19622095118Fadf46f7B9448Be9b
+          token_address: 0xb9EF770B6A5e12E45983C5D80545258aA38F3B78
+          authorizers_address: 0x481daB4407b9880DE0A68dc62E6aF611c4949E42
+          uniswap_address: 0x4c12C2FeEDD86267d17dB64BaB2cFD12cD8611f5
+          ethereum_address: 0x8E25cfd9bd6c0ca67a5522cd920b3c66D39d6E97
+          password: "12345678"
+        EOF
+  
+    - name: List pwd zcn
+      run: |
+        pwd
+        ls -lha ./
+        ls -lha ~/.zcn
+        cat ~/.zcn/config.yaml
+  
+    - name: Add Address
+      run: |
+        cd ~/.zcn
+        mkdir wallets
+        cd wallets
+        cat <<\EOF > UTC--2023-10-26T00-34-42.327566000Z--8e25cfd9bd6c0ca67a5522cd920b3c66d39d6e97
+        {"address":"8e25cfd9bd6c0ca67a5522cd920b3c66d39d6e97","crypto":{"cipher":"aes-128-ctr","ciphertext":"3e6a7c7fc1875e9437fb1b19d8195b707d2143f5aa40615b02efce3ef0422619","cipherparams":{"iv":"ab9d87b14b8593112338abc7da502866"},"kdf":"scrypt","kdfparams":{"dklen":32,"n":262144,"p":1,"r":8,"salt":"94cdd599dd1c4a9eb24f837ca0dbd02d30a33b890bd43eca936c0ca25fd2e983"},"mac":"f07cf9a0c324e8449a1f7c17f5d7f6d3a942ec47b1ee73e157dfc3f325cbb9d3"},"id":"db1bba38-3573-4d53-905f-f075458da3d4","version":3}
+        EOF
+  
+    - name: Cat Address
+      run: |
+        cat ~/.zcn/wallets/UTC--2023-10-26T00-34-42.327566000Z--8e25cfd9bd6c0ca67a5522cd920b3c66d39d6e97
+  
+    - name: Make logs directory
+      run: |
+        mkdir -p ./0chain/conductor-flakiness-logs
+    
+    - name: Initialize stats vars
+      run: |
+        echo SUCCESSFUL_ATTEMPTS=0 >> "$GITHUB_ENV"
+        echo FAILED_ATTEMPTS=0 >> "$GITHUB_ENV"
+       
+    - name: Start Flakiness Test
+      run: |
+        export HOME="/root"
+        cd 0chain
+        success=0
+        failure=0
+        
+        for i in {1..${{ inputs.number_of_times }}}; do
+          echo "[CT-FLAKY-LOG] Starting Attempt $i"
+          
+          if ./docker.local/bin/start.conductor.sh ${{ inputs.test_name }}; then
+            echo "[CT-FLAKY-LOG] ✅ Conductor test attempt $i succeeded"
+            zip -r -q "./conductor-flakiness-logs/attempt-$i-success.zip" ./conductor-full-logs
+            success=$((success + 1)) 
+            if [ ${{inputs.when_to_stop}} == 'on_success' ]; then
+              echo "👋🏻 Exiting flakiness test"
+              break
+            fi
+          else
+            echo "[CT-FLAKY-LOG] ❌ Conductor test attempt $i failed"
+            zip -r -q "./conductor-flakiness-logs/attempt-$i-failure.zip" ./conductor-full-logs
+            failure=$((failure + 1))
+            if [ ${{inputs.when_to_stop}} == 'on_failure' ]; then
+              echo "👋🏻 Exiting flakiness test"
+              break
+            fi
+          fi
+        done
+
+        echo "SUCCESSFUL_ATTEMPTS=$success" >> "$GITHUB_ENV"
+        echo "FAILED_ATTEMPTS=$failure" >> "$GITHUB_ENV"
+
+    - name: "Compute result"
+      run: |
+        echo "✅ SUCCESSFUL_ATTEMPTS = $SUCCESSFUL_ATTEMPTS / ${{ inputs.number_of_times }}"
+        echo "❌ FAILED_ATTEMPTS = $FAILED_ATTEMPTS / ${{ inputs.number_of_times }}"
+
+        case ${{ inputs.when_to_stop }} in
+          on_success)
+            if [ $SUCCESSFUL_ATTEMPTS -ge 1 ]; then
+              echo "🎉🎉🎉🎉🎉🎉🎉🎉🎉"
+              echo "🎉 Conductor test succeeded"
+              echo "🎉🎉🎉🎉🎉🎉🎉🎉🎉"
+              exit 0
+            else
+              echo "👋🏻 Conductor test failed"
+              exit 1
+            fi
+            ;;
+
+          never)
+            success_rate=80
+
+            if [ $SUCCESSFUL_ATTEMPTS -ge $((${{ inputs.number_of_times }} * success_rate / 100)) ]; then
+              echo "🎉🎉🎉🎉🎉🎉🎉🎉🎉"
+              echo "🎉 Conductor test succeeded"
+              echo "🎉🎉🎉🎉🎉🎉🎉🎉🎉"
+              exit 0
+            else
+              echo "👋🏻 Conductor test failed"
+              exit 1
+            fi
+            ;;
+
+          *)
+            if [ $FAILED_ATTEMPTS -ge 1 ]; then
+              echo "👋🏻 Conductor test failed"
+              exit 1
+            else
+              echo "🎉🎉🎉🎉🎉🎉🎉🎉🎉"
+              echo "🎉 Conductor test succeeded"
+              echo "🎉🎉🎉🎉🎉🎉🎉🎉🎉"
+              exit 0
+            fi
+            ;;
+        esac
+      
+    - name: "Remove Tenderly virtual testnet"
+      if: always()
+      run: |
+        curl -X DELETE \
+          -H "x-access-key: ${{ secrets.TENDERLY_SECRET }}" \
+          -H "Content-Type: application/json" \
+          https://api.tenderly.co/api/v1/account/zus_network/project/project/testnet/container/${{ env.TENDERLY_VIRTUAL_TESTNET_ID }}
+
+    - uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: conductor-flakiness-logs
+        path: |
+          0chain/conductor-flakiness-logs
+
+    - name: Cleanup.
+      if: always()
+      run: |
+        [ "$(docker ps -a -q)" ] && docker rm -f $(docker ps -a -q) || true
+        rm -rf ./0chain/conductor-flakiness-logs
+        cd /tmp
+        rm -rf ./*
+        echo -y | docker system prune

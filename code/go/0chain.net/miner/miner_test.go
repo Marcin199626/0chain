@@ -4,33 +4,34 @@ import (
 	"bytes"
 	"context"
 	"flag"
-	"fmt"
 	"log"
 	"os"
-	"os/user"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
 
+	"0chain.net/core/config"
+	"github.com/alicebob/miniredis/v2"
+
 	"0chain.net/chaincore/state"
+	"0chain.net/smartcontract/setupsc"
 
 	"0chain.net/chaincore/block"
 	"0chain.net/chaincore/chain"
 	"0chain.net/chaincore/client"
-	"0chain.net/chaincore/config"
 	"0chain.net/chaincore/node"
 	"0chain.net/chaincore/round"
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
 	"0chain.net/core/encryption"
-	"0chain.net/core/logging"
 	"0chain.net/core/memorystore"
+	"0chain.net/core/viper"
 	"0chain.net/sharder/blockstore"
+	"github.com/0chain/common/core/logging"
 	"github.com/gomodule/redigo/redis"
 	"github.com/stretchr/testify/require"
-
-	"github.com/alicebob/miniredis/v2"
 )
 
 var numOfTransactions int
@@ -64,18 +65,6 @@ func generateSingleBlock(ctx context.Context, mc *Chain, prevBlock *block.Block,
 		mc.ChainConfig = chain.NewConfigImpl(data)
 	}
 
-	usr, err := user.Current()
-	if err != nil {
-		panic(err)
-	}
-
-	mClient, err := makeTestMinioClient()
-	if err != nil {
-		return nil, err
-	}
-	blockstore.SetupStore(blockstore.NewFSBlockStore(fmt.Sprintf("%v%s.0chain.net",
-		usr.HomeDir, string(os.PathSeparator)), mClient))
-
 	var rd *Round
 	switch rr := r.(type) {
 	case *MockRound:
@@ -86,7 +75,7 @@ func generateSingleBlock(ctx context.Context, mc *Chain, prevBlock *block.Block,
 		log.Fatalf("unknow round type:%v", rr)
 	}
 
-	b, err = mc.GenerateRoundBlock(ctx, rd)
+	b, err := mc.GenerateRoundBlock(ctx, rd)
 	if err != nil {
 		return nil, err
 	}
@@ -127,26 +116,13 @@ func CreateMockRound(number int64) *MockRound {
 	return mr
 }
 
-func makeTestMinioClient() (blockstore.MinioClient, error) {
-	//todo: replace play.min.io with local service
-	mConf := blockstore.MinioConfiguration{
-		StorageServiceURL: "play.min.io",
-		AccessKeyID:       "Q3AM3UQ867SPQQA43P2F",
-		SecretAccessKey:   "zuf+tfteSlswRu7BJ86wekitnifILbZam1KYY3TG",
-		BucketName:        "mytestbucket",
-		BucketLocation:    "us-east-1",
-		DeleteLocal:       false,
-		Secure:            false,
-	}
-
-	return blockstore.CreateMinioClientFromConfig(mConf)
-}
-
 func setupMinerChain() (*Chain, func()) {
 	mc := GetMinerChain()
 	if mc.Chain == nil {
 		mc.Chain = chain.Provider().(*chain.Chain)
 	}
+
+	mc.SetupStateCache()
 
 	mc.ChainConfig = chain.NewConfigImpl(&chain.ConfigData{GeneratorsPercent: 33, MinGenerators: 1})
 	doneC := make(chan struct{})
@@ -164,6 +140,7 @@ func setupMinerChain() (*Chain, func()) {
 func TestBlockGeneration(t *testing.T) {
 	clean := SetUpSingleSelf()
 	defer clean()
+
 	ctx := common.GetRootContext()
 	ctx = memorystore.WithConnection(ctx)
 	defer memorystore.Close(ctx)
@@ -171,22 +148,19 @@ func TestBlockGeneration(t *testing.T) {
 	mc, stopAndClean := setupMinerChain()
 	defer stopAndClean()
 
+	config.SetupSmartContractConfig("testdata")
+
 	gb := SetupGenesisBlock()
 	mc.AddGenesisBlock(gb)
 
 	b := block.Provider().(*block.Block)
 	b.ChainID = datastore.ToKey(config.GetServerChainID())
-	usr, err := user.Current()
-	if err != nil {
-		panic(err)
-	}
 
-	mClient, err := makeTestMinioClient()
-	if err != nil {
-		t.Fatal(err)
-	}
-	blockstore.SetupStore(blockstore.NewFSBlockStore(fmt.Sprintf("%v%s.0chain.net",
-		usr.HomeDir, string(os.PathSeparator)), mClient))
+	bStore, cleanUp, err := getMockStore()
+	require.NoError(t, err)
+	defer cleanUp()
+
+	blockstore.SetupStore(bStore)
 
 	r := CreateRound(1)
 	r.RandomSeed = time.Now().UnixNano()
@@ -197,10 +171,10 @@ func TestBlockGeneration(t *testing.T) {
 		return
 	}
 
-	err = blockstore.Store.Write(b)
+	err = blockstore.GetStore().Write(b)
 	require.NoError(t, err)
 
-	_, err = blockstore.Store.Read(b.Hash, r.Number)
+	_, err = blockstore.GetStore().Read(b.Hash)
 	require.NoError(t, err)
 
 	common.Done()
@@ -219,6 +193,12 @@ func TestBlockVerification(t *testing.T) {
 	nano := int64(16408760407010)
 	mr.SetRandomSeed(nano, len(mb.Miners.Nodes))
 
+	bStore, cleanUp, err := getMockStore()
+	require.NoError(t, err)
+	defer cleanUp()
+
+	blockstore.SetupStore(bStore)
+
 	b, err := generateSingleBlock(ctx, mc, nil, mr)
 	if err != nil {
 		t.Errorf("Block generation failed")
@@ -236,11 +216,20 @@ func TestBlockVerification(t *testing.T) {
 func TestTwoCorrectBlocks(t *testing.T) {
 	cleanSS := SetUpSingleSelf()
 	defer cleanSS()
+
+	config.SetupSmartContractConfig("testdata")
 	ctx := context.Background()
 	mr := CreateMockRound(1)
 	mr.RandomSeed = time.Now().UnixNano()
 	mc, stopAndClean := setupMinerChain()
 	defer stopAndClean()
+
+	bStore, cleanUp, err := getMockStore()
+	require.NoError(t, err)
+	defer cleanUp()
+
+	blockstore.SetupStore(bStore)
+
 	b0, err := generateSingleBlock(ctx, mc, nil, mr)
 	require.NoError(t, err)
 
@@ -270,6 +259,13 @@ func TestTwoBlocksWrongRound(t *testing.T) {
 	mr.RandomSeed = time.Now().UnixNano()
 	mc, stopAndClean := setupMinerChain()
 	defer stopAndClean()
+
+	bStore, cleanUp, err := getMockStore()
+	require.NoError(t, err)
+	defer cleanUp()
+
+	blockstore.SetupStore(bStore)
+
 	b0, err := generateSingleBlock(ctx, mc, nil, mr)
 	//mc := GetMinerChain()
 	if b0 != nil {
@@ -294,6 +290,12 @@ func TestBlockVerificationBadHash(t *testing.T) {
 	mc, stopAndClean := setupMinerChain()
 	defer stopAndClean()
 
+	bStore, cleanUp, err := getMockStore()
+	require.NoError(t, err)
+	defer cleanUp()
+
+	blockstore.SetupStore(bStore)
+
 	b, err := generateSingleBlock(ctx, mc, nil, mr)
 	if b != nil {
 		b.Hash = "bad hash"
@@ -316,6 +318,11 @@ func BenchmarkGenerateALotTransactions(b *testing.B) {
 	mr.RandomSeed = time.Now().UnixNano()
 	mc, stopAndClean := setupMinerChain()
 	defer stopAndClean()
+	bStore, cleanUp, _ := getMockStore()
+	defer cleanUp()
+
+	blockstore.SetupStore(bStore)
+
 	block, _ := generateSingleBlock(ctx, mc, nil, mr)
 	if block != nil {
 		b.Logf("Created block with %v transactions", len(block.Txns))
@@ -332,6 +339,11 @@ func BenchmarkGenerateAndVerifyALotTransactions(b *testing.B) {
 	mr := CreateRound(1)
 	mc, stopAndClean := setupMinerChain()
 	defer stopAndClean()
+
+	bStore, cleanUp, _ := getMockStore()
+	defer cleanUp()
+	blockstore.SetupStore(bStore)
+
 	block, err := generateSingleBlock(ctx, mc, nil, mr)
 	if block != nil && err == nil {
 		_, err = mc.VerifyRoundBlock(ctx, mr, block)
@@ -388,7 +400,16 @@ func SetupGenesisBlock() *block.Block {
 		mc.SetMagicBlock(mb)
 	}
 
-	gr, gb := mc.GenerateGenesisBlock("ed79cae70d439c11258236da1dfa6fc550f7cc569768304623e8fbd7d70efae4", mb, state.NewInitStates())
+	states := state.NewInitStates()
+	states.States = append(states.States, state.InitState{
+		ID:     "6dba10422e368813802877a85039d3985d96760ed844092319743fb3a76712d9",
+		Tokens: config.MaxTokenSupply,
+		State: []state.IDTokens{{
+			ID:     "6dba10422e368813802877a85039d3985d96760ed844092319743fb3a76712d9",
+			Tokens: config.MaxTokenSupply,
+		}},
+	})
+	gr, gb := mc.GenerateGenesisBlock("ed79cae70d439c11258236da1dfa6fc550f7cc569768304623e8fbd7d70efae4", mb, states)
 	mr := mc.CreateRound(gr.(*round.Round))
 	mc.AddRoundBlock(gr, gb)
 	mc.AddRound(mr)
@@ -396,6 +417,14 @@ func SetupGenesisBlock() *block.Block {
 }
 
 func SetUpSingleSelf() func() {
+	viper.Set("server_chain.smart_contract.faucet", true)
+	viper.Set("server_chain.smart_contract.storage", true)
+	viper.Set("server_chain.smart_contract.zcn", true)
+	viper.Set("server_chain.smart_contract.multisig", true)
+	viper.Set("server_chain.smart_contract.miner", true)
+	viper.Set("server_chain.smart_contract.vesting", true)
+	setupsc.SetupSmartContracts()
+
 	// create rocksdb state dir
 	clean := setupTempRocksDBDir()
 	s, err := miniredis.Run()
@@ -409,6 +438,18 @@ func SetUpSingleSelf() func() {
 	memorystore.InitDefaultPool(s.Host(), p)
 
 	memorystore.AddPool("txndb", &redis.Pool{
+		MaxIdle:   80,
+		MaxActive: 1000, // max number of connections
+		Dial: func() (redis.Conn, error) {
+			c, err := redis.Dial("tcp", s.Addr())
+			if err != nil {
+				panic(err.Error())
+			}
+			return c, err
+		},
+	})
+
+	memorystore.AddPool("clientdb", &redis.Pool{
 		MaxIdle:   80,
 		MaxActive: 1000, // max number of connections
 		Dial: func() (redis.Conn, error) {
@@ -473,9 +514,8 @@ func SetUpSingleSelf() func() {
 	c := chain.Provider().(*chain.Chain)
 	c.ID = datastore.ToKey(config.GetServerChainID())
 	c.SetMagicBlock(mb)
-	data := &chain.ConfigData{BlockSize: 1024}
+	data := &chain.ConfigData{}
 	c.ChainConfig = chain.NewConfigImpl(data)
-	data.BlockSize = int32(numOfTransactions)
 
 	data.MinGenerators = 1
 	data.RoundRange = 10000000
@@ -562,4 +602,52 @@ func setupSelf() func() { //nolint
 		clean()
 		s.Close()
 	}
+}
+
+type MockBlockStore struct {
+	rootDir               string
+	blockMetadataProvider datastore.EntityMetadata
+}
+
+func (m *MockBlockStore) Write(b *block.Block) error {
+	f, err := os.Create(filepath.Join(m.rootDir, b.Hash))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	return datastore.WriteMsgpack(f, b)
+}
+
+func (m *MockBlockStore) Read(hash string) (*block.Block, error) {
+	f, err := os.Open(filepath.Join(m.rootDir, hash))
+	if err != nil {
+		return nil, err
+	}
+
+	b := m.blockMetadataProvider.Instance().(*block.Block)
+	err = datastore.ReadMsgpack(f, b)
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+func (m *MockBlockStore) ReadWithBlockSummary(bs *block.BlockSummary) (*block.Block, error) {
+	return m.Read(bs.Hash)
+}
+
+func getMockStore() (blockstore.BlockStoreI, func(), error) {
+	rootDir := "root_dir"
+	err := os.Mkdir(rootDir, 0700)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	mBStore := &MockBlockStore{
+		rootDir:               rootDir,
+		blockMetadataProvider: datastore.GetEntityMetadata("block"),
+	}
+
+	return mBStore, func() { os.RemoveAll(rootDir) }, nil
 }

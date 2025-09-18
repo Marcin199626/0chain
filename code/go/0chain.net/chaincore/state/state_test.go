@@ -7,12 +7,12 @@ import (
 	"reflect"
 	"testing"
 
-	"0chain.net/chaincore/currency"
+	"github.com/0chain/common/core/currency"
 
 	"github.com/stretchr/testify/assert"
 
 	"0chain.net/core/encryption"
-	"0chain.net/core/util"
+	"github.com/0chain/common/core/util"
 )
 
 func makeTestState() *State {

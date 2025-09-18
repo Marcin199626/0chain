@@ -9,7 +9,7 @@ import (
 
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
-	. "0chain.net/core/logging"
+	. "github.com/0chain/common/core/logging"
 	"github.com/gomodule/redigo/redis"
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
@@ -46,7 +46,7 @@ func GetInfo() {
 			panic("invalid setup")
 		}
 		if re.MatchString(info) {
-			Logger.Info("Redis is not ready to take connections", zap.Any("retry", tries))
+			Logger.Info("Redis is not ready to take connections", zap.Int("retry", tries))
 			time.Sleep(delay)
 		} else {
 			break

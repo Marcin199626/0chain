@@ -1,34 +1,35 @@
 package miner
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"math"
 	"sort"
-	"strconv"
+	"sync"
 	"time"
 
+	cstate "0chain.net/chaincore/chain/state"
+	"0chain.net/core/config"
 	"github.com/rcrowley/go-metrics"
 	"go.uber.org/zap"
 
 	"0chain.net/chaincore/block"
 	"0chain.net/chaincore/chain"
 	"0chain.net/chaincore/client"
-	"0chain.net/chaincore/config"
 	"0chain.net/chaincore/node"
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
 	"0chain.net/core/encryption"
-	"0chain.net/core/logging"
-	"0chain.net/core/util"
 	"0chain.net/smartcontract/minersc"
 	"0chain.net/smartcontract/storagesc"
+	"github.com/0chain/common/core/logging"
+	"github.com/0chain/common/core/statecache"
+	"github.com/0chain/common/core/util"
 )
 
-//InsufficientTxns - to indicate an error when the transactions are not sufficient to make a block
+// InsufficientTxns - to indicate an error when the transactions are not sufficient to make a block
 const InsufficientTxns = "insufficient_txns"
 
 // ErrLFBClientStateNil is returned when client state of latest finalized block is nil
@@ -53,119 +54,103 @@ func init() {
 	bsHistogram = metrics.GetOrRegisterHistogram("bs_histogram", nil, metrics.NewUniformSample(1024))
 }
 
-func (mc *Chain) processTxn(ctx context.Context, txn *transaction.Transaction, b *block.Block, bState util.MerklePatriciaTrieI, clients map[string]*client.Client) error {
+func (mc *Chain) processTxn(ctx context.Context,
+	txn *transaction.Transaction,
+	b *block.Block,
+	bState util.MerklePatriciaTrieI,
+	clients map[string]*client.Client,
+	blockStateCache *statecache.BlockCache,
+) error {
 	clients[txn.ClientID] = nil
-	events, err := mc.UpdateState(ctx, b, bState, txn)
-	b.Events = append(b.Events, events...)
+	events, err := mc.UpdateState(ctx, b, bState, txn, blockStateCache)
 	if err != nil {
 		logging.Logger.Error("processTxn", zap.String("txn", txn.Hash),
 			zap.String("txn_object", datastore.ToJSON(txn).String()),
 			zap.Error(err))
 		return err
 	}
+	b.Events = append(b.Events, events...)
 	b.Txns = append(b.Txns, txn)
 	b.AddTransaction(txn)
 	return nil
 }
 
-func (mc *Chain) createFeeTxn(b *block.Block, bState util.MerklePatriciaTrieI) *transaction.Transaction {
+func (mc *Chain) createFeeTxn(b *block.Block) (*transaction.Transaction, error) {
 	feeTxn := transaction.Provider().(*transaction.Transaction)
-	feeTxn.ClientID = b.MinerID
-	feeTxn.Nonce = mc.getCurrentSelfNonce(b.MinerID, bState)
+	feeTxn.ClientID = node.Self.ID
+	feeTxn.PublicKey = node.Self.PublicKey
 	feeTxn.ToClientID = minersc.ADDRESS
 	feeTxn.CreationDate = b.CreationDate
 	feeTxn.TransactionType = transaction.TxnTypeSmartContract
 	feeTxn.TransactionData = fmt.Sprintf(`{"name":"payFees","input":{"round":%v}}`, b.Round)
 	feeTxn.Fee = 0 //TODO: fee needs to be set to governance minimum fee
-	if _, err := feeTxn.Sign(node.Self.GetSignatureScheme()); err != nil {
-		panic(err)
+	if err := feeTxn.ComputeProperties(); err != nil {
+		return nil, err
 	}
-	return feeTxn
+	return feeTxn, nil
 }
 
-func (mc *Chain) getCurrentSelfNonce(minerId datastore.Key, bState util.MerklePatriciaTrieI) int64 {
-	s, err := mc.GetStateById(bState, minerId)
-	if err != nil {
-		logging.Logger.Error("can't get nonce", zap.Error(err))
-		return 1
-	}
-	node.Self.SetNonce(s.Nonce)
-	return node.Self.GetNextNonce()
-}
-
-func (mc *Chain) storageScCommitSettingChangesTx(b *block.Block, bState util.MerklePatriciaTrieI) *transaction.Transaction {
+func (mc *Chain) storageScCommitSettingChangesTx(b *block.Block) (*transaction.Transaction, error) {
 	scTxn := transaction.Provider().(*transaction.Transaction)
-	scTxn.ClientID = b.MinerID
-	scTxn.Nonce = mc.getCurrentSelfNonce(b.MinerID, bState)
+	scTxn.ClientID = node.Self.ID
+	scTxn.PublicKey = node.Self.PublicKey
 	scTxn.ToClientID = storagesc.ADDRESS
 	scTxn.CreationDate = b.CreationDate
 	scTxn.TransactionType = transaction.TxnTypeSmartContract
 	scTxn.TransactionData = fmt.Sprintf(`{"name":"commit_settings_changes","input":{"round":%v}}`, b.Round)
 	scTxn.Fee = 0
-	if _, err := scTxn.Sign(node.Self.GetSignatureScheme()); err != nil {
-		panic(err)
+	if err := scTxn.ComputeProperties(); err != nil {
+		return nil, err
 	}
-	return scTxn
+	return scTxn, nil
 }
 
-func (mc *Chain) createBlockRewardTxn(b *block.Block, bState util.MerklePatriciaTrieI) *transaction.Transaction {
+func (mc *Chain) createBlockRewardTxn(b *block.Block) (*transaction.Transaction, error) {
 	brTxn := transaction.Provider().(*transaction.Transaction)
-	brTxn.ClientID = b.MinerID
-	brTxn.Nonce = mc.getCurrentSelfNonce(b.MinerID, bState)
+	brTxn.ClientID = node.Self.ID
+	brTxn.PublicKey = node.Self.PublicKey
 	brTxn.ToClientID = storagesc.ADDRESS
 	brTxn.CreationDate = b.CreationDate
 	brTxn.TransactionType = transaction.TxnTypeSmartContract
 	brTxn.TransactionData = fmt.Sprintf(`{"name":"blobber_block_rewards","input":{"round":%v}}`, b.Round)
 	brTxn.Fee = 0
-	if _, err := brTxn.Sign(node.Self.GetSignatureScheme()); err != nil {
-		panic(err)
+	if err := brTxn.ComputeProperties(); err != nil {
+		return nil, err
 	}
-	return brTxn
+	return brTxn, nil
 }
 
-func (mc *Chain) createGenerateChallengeTxn(b *block.Block, bState util.MerklePatriciaTrieI) *transaction.Transaction {
-	brTxn := transaction.Provider().(*transaction.Transaction)
-	brTxn.ClientID = b.MinerID
-	brTxn.Nonce = mc.getCurrentSelfNonce(b.MinerID, bState)
-	brTxn.ToClientID = storagesc.ADDRESS
-	brTxn.CreationDate = b.CreationDate
-	brTxn.TransactionType = transaction.TxnTypeSmartContract
-	brTxn.TransactionData = fmt.Sprintf(`{"name":"generate_challenge","input":{"round":%d}}`, b.Round)
-	brTxn.Fee = 0
-	if _, err := brTxn.Sign(node.Self.GetSignatureScheme()); err != nil {
-		panic(err)
-	}
-	return brTxn
-}
-
-func (mc *Chain) validateTransaction(b *block.Block, bState util.MerklePatriciaTrieI, txn *transaction.Transaction) error {
+func (mc *Chain) validateTransaction(b *block.Block,
+	bState util.MerklePatriciaTrieI, txn *transaction.Transaction, waitC chan struct{}) (int64, error) {
 	if !common.WithinTime(int64(b.CreationDate), int64(txn.CreationDate), transaction.TXN_TIME_TOLERANCE) {
-		return ErrNotTimeTolerant
+		return 0, ErrNotTimeTolerant
 	}
-	state, err := mc.GetStateById(bState, txn.ClientID)
-
+	state, err := chain.GetStateById(bState, txn.ClientID)
 	if err != nil {
 		if err == util.ErrValueNotPresent {
 			if txn.Nonce > 1 {
-				return FutureTransaction
+				return 0, FutureTransaction
 			}
 			if txn.Nonce < 1 {
-				return PastTransaction
+				return 0, PastTransaction
 			}
-			return nil
+			return 0, nil
 		}
-		return err
+		if cstate.ErrInvalidState(err) {
+			mc.SyncMissingNodes(b.Round, bState.GetMissingNodeKeys(), waitC)
+		}
+		return 0, err
 	}
 
 	if txn.Nonce-state.Nonce > 1 {
-		return FutureTransaction
+		return state.Nonce, FutureTransaction
 	}
 
 	if txn.Nonce-state.Nonce < 1 {
-		return PastTransaction
+		return state.Nonce, PastTransaction
 	}
 
-	return nil
+	return state.Nonce, nil
 }
 
 // UpdatePendingBlock - updates the block that is generated and pending
@@ -190,7 +175,7 @@ func (mc *Chain) verifySmartContracts(ctx context.Context, b *block.Block) error
 		if txn.TransactionType == transaction.TxnTypeSmartContract {
 			err := txn.VerifyOutputHash(ctx)
 			if err != nil {
-				logging.Logger.Error("Smart contract output verification failed", zap.Any("error", err), zap.Any("output", txn.TransactionOutput))
+				logging.Logger.Error("Smart contract output verification failed", zap.Error(err), zap.String("output", txn.TransactionOutput))
 				return common.NewError("txn_output_verification_failed", "Transaction output hash verification failed")
 			}
 		}
@@ -285,24 +270,6 @@ func (mc *Chain) VerifyBlockMagicBlock(ctx context.Context, b *block.Block) (
 			mb.StartingRound, nvc)
 	}
 
-	// check out the MB if this miner is member of it
-	var (
-		id  = strconv.FormatInt(mb.MagicBlockNumber, 10)
-		lmb *block.MagicBlock
-	)
-
-	// get stored MB
-	if lmb, err = LoadMagicBlock(ctx, id); err != nil {
-		return common.NewErrorf("verify_block_mb",
-			"can't load related MB from store: %v", err)
-	}
-
-	// compare given MB and the stored one (should be equal)
-	if !bytes.Equal(mb.Encode(), lmb.Encode()) {
-		return common.NewError("verify_block_mb",
-			"MB given doesn't match the stored one")
-	}
-
 	return
 }
 
@@ -350,12 +317,18 @@ func (mc *Chain) VerifyBlock(ctx context.Context, b *block.Block) (
 
 	var costs []int
 	for _, txn := range b.Txns {
-		c, err := mc.EstimateTransactionCost(ctx, b, lfb.ClientState, txn)
-		if err != nil {
+		if err := mc.syncAndRetry(ctx, b, "estimate cost", func(ctx context.Context, waitC chan struct{}) error {
+			c, err := mc.EstimateTransactionCost(ctx, lfb, txn, chain.WithSync(), chain.WithNotifyC(waitC))
+			if err != nil {
+				return err
+			}
+
+			cost += c
+			costs = append(costs, c)
+			return nil
+		}); err != nil {
 			return nil, err
 		}
-		cost += c
-		costs = append(costs, c)
 	}
 	if cost > mc.ChainConfig.MaxBlockCost() {
 		logging.Logger.Error("cost limit exceeded", zap.Int("calculated_cost", cost),
@@ -369,22 +342,16 @@ func (mc *Chain) VerifyBlock(ctx context.Context, b *block.Block) (
 		zap.Int("calculated cost", cost))
 
 	cur = time.Now()
-	if err = mc.ComputeState(ctx, b); err != nil {
-		if err == context.Canceled {
-			logging.Logger.Warn("verify block - compute state canceled",
-				zap.Int64("round", b.Round),
-				zap.String("block", b.Hash))
-			return
-		}
-
-		logging.Logger.Error("verify block - error computing state",
-			zap.Int64("round", b.Round), zap.String("block", b.Hash),
-			zap.String("prev_block", b.PrevHash),
-			zap.String("state_hash", util.ToHex(b.ClientStateHash)),
-			zap.Error(err))
-		return // TODO (sfxdx): to return here or not to return (keep error)?
+	if err := mc.syncAndRetry(ctx, b, "verify block", func(ctx context.Context, waitC chan struct{}) error {
+		return mc.ComputeState(ctx, b, waitC)
+	}); err != nil {
+		return nil, err
 	}
-	logging.Logger.Debug("ComputeState finished", zap.String("block", b.Hash), zap.Duration("spent", time.Since(cur)))
+
+	logging.Logger.Debug("verify block - ComputeState finished",
+		zap.Int64("round", b.Round),
+		zap.String("block", b.Hash),
+		zap.Duration("spent", time.Since(cur)))
 
 	cur = time.Now()
 	if err = mc.verifySmartContracts(ctx, b); err != nil {
@@ -393,6 +360,7 @@ func (mc *Chain) VerifyBlock(ctx context.Context, b *block.Block) (
 	logging.Logger.Debug("verifySmartContracts finished", zap.String("block", b.Hash), zap.Duration("spent", time.Since(cur)))
 
 	cur = time.Now()
+	// TODO: verify magic block in MPT
 	if err = mc.VerifyBlockMagicBlock(ctx, b); err != nil {
 		return
 	}
@@ -405,13 +373,66 @@ func (mc *Chain) VerifyBlock(ctx context.Context, b *block.Block) (
 	bpTimer.UpdateSince(start)
 	logging.Logger.Debug("SignBlock finished", zap.String("block", b.Hash), zap.Duration("spent", time.Since(cur)))
 
-	logging.Logger.Info("verify block successful", zap.Any("round", b.Round),
-		zap.Int("block_size", len(b.Txns)), zap.Any("time", time.Since(start)),
-		zap.Any("block", b.Hash), zap.String("prev_block", b.PrevHash),
+	logging.Logger.Info("verify block successful", zap.Int64("round", b.Round),
+		zap.Int("block_size", len(b.Txns)), zap.Duration("time", time.Since(start)),
+		zap.String("block", b.Hash), zap.String("prev_block", b.PrevHash),
 		zap.String("state_hash", util.ToHex(b.ClientStateHash)),
 		zap.Int8("state_status", b.GetStateStatus()))
 
 	return
+}
+
+func (mc *Chain) syncAndRetry(ctx context.Context, b *block.Block, desc string, f func(ctx context.Context, ch chan struct{}) error) error {
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	for {
+		retry, err := func() (retry bool, err error) {
+			wc := make(chan struct{}, 1)
+			err = f(cctx, wc)
+			if err == nil {
+				return false, nil
+			}
+
+			if !cstate.ErrInvalidState(err) {
+				logging.Logger.Warn("sync and retry - none invalid state error",
+					zap.String("desc", desc),
+					zap.Int64("round", b.Round),
+					zap.String("block", b.Hash),
+					zap.Error(err))
+				return false, err
+			}
+
+			select {
+			case <-cctx.Done():
+				return false, cctx.Err()
+			case _, ok := <-wc:
+				if !ok {
+					logging.Logger.Error("sync and retry - sync failed",
+						zap.String("desc", desc),
+						zap.Int64("round", b.Round),
+						zap.String("block", b.Hash),
+						zap.Error(err))
+					return false, err
+				}
+
+				logging.Logger.Debug("sync and retry - retry",
+					zap.String("desc", desc),
+					zap.Int64("round", b.Round),
+					zap.String("block", b.Hash),
+					zap.String("prev_block", b.PrevHash),
+					zap.String("state_hash", util.ToHex(b.ClientStateHash)))
+				return true, nil
+			}
+		}()
+
+		if err != nil {
+			return err
+		}
+
+		if !retry {
+			return nil
+		}
+	}
 }
 
 func (mc *Chain) ValidateTransactions(ctx context.Context, b *block.Block) error {
@@ -427,15 +448,30 @@ func (mc *Chain) ValidateTransactions(ctx context.Context, b *block.Block) error
 		if numWorkers*mc.ValidationBatchSize() < len(b.Txns) {
 			numWorkers++
 		}
-		aggregate := true
-		var aggregateSignatureScheme encryption.AggregateSignatureScheme
-		if aggregate {
-			aggregateSignatureScheme = encryption.GetAggregateSignatureScheme(mc.ClientSignatureScheme(), len(b.Txns), mc.ValidationBatchSize())
+		var aggregate bool
+		aggregateSignatureScheme := encryption.GetAggregateSignatureScheme(mc.ClientSignatureScheme(), len(b.Txns), mc.ValidationBatchSize())
+		if aggregateSignatureScheme != nil {
+			aggregate = true
 		}
-		if aggregateSignatureScheme == nil {
-			aggregate = false
+
+		var (
+			validChannel   = make(chan bool, numWorkers)
+			buildInTxnsMap = make(map[string]struct{})
+			bicLock        = &sync.Mutex{}
+		)
+
+		hasDuplicateBuildInTxns := func(txn *transaction.Transaction) bool {
+			bicLock.Lock()
+			defer bicLock.Unlock()
+			if mc.isBuildInTxn(txn) {
+				if _, ok := buildInTxnsMap[txn.FunctionName]; ok {
+					return true
+				}
+				buildInTxnsMap[txn.FunctionName] = struct{}{}
+			}
+			return false
 		}
-		validChannel := make(chan bool, numWorkers)
+
 		validate := func(ctx context.Context, txns []*transaction.Transaction, start int) {
 			result := false
 			defer func() {
@@ -457,13 +493,23 @@ func (mc *Chain) ValidateTransactions(ctx context.Context, b *block.Block) error
 				}
 				if txn.OutputHash == "" {
 					cancel = true
-					logging.Logger.Error("validate transactions - no output hash", zap.Any("round", b.Round), zap.Any("block", b.Hash), zap.String("txn", datastore.ToJSON(txn).String()))
+					logging.Logger.Error("validate transactions - no output hash", zap.Int64("round", b.Round), zap.String("block", b.Hash), zap.String("txn", datastore.ToJSON(txn).String()))
 					return
 				}
 				err := txn.ValidateWrtTimeForBlock(ctx, b.CreationDate, !aggregate)
 				if err != nil {
 					cancel = true
-					logging.Logger.Error("validate transactions", zap.Any("round", b.Round), zap.Any("block", b.Hash), zap.String("txn", datastore.ToJSON(txn).String()), zap.Error(err))
+					logging.Logger.Error("validate transactions", zap.Int64("round", b.Round), zap.String("block", b.Hash), zap.String("txn", datastore.ToJSON(txn).String()), zap.Error(err))
+					return
+				}
+
+				if hasDuplicateBuildInTxns(txn) {
+					logging.Logger.Error("validate transactions - duplicated build-in transaction",
+						zap.Int64("round", b.Round),
+						zap.String("block", b.Hash),
+						zap.String("txn", txn.Hash),
+						zap.String("function_name", txn.FunctionName))
+					cancel = true
 					return
 				}
 
@@ -506,7 +552,7 @@ func (mc *Chain) ValidateTransactions(ctx context.Context, b *block.Block) error
 				return ctx.Err()
 			case result := <-validChannel:
 				if roundMismatch {
-					logging.Logger.Info("validate transactions (round mismatch)", zap.Any("round", b.Round), zap.Any("block", b.Hash), zap.Any("current_round", mc.GetCurrentRound()))
+					logging.Logger.Info("validate transactions (round mismatch)", zap.Int64("round", b.Round), zap.String("block", b.Hash), zap.Int64("current_round", mc.GetCurrentRound()))
 					return ErrRoundMismatch
 				}
 				if !result {
@@ -563,7 +609,7 @@ func (mc *Chain) signBlock(ctx context.Context, b *block.Block) (*block.BlockVer
 }
 
 /*UpdateFinalizedBlock - update the latest finalized block */
-func (mc *Chain) updateFinalizedBlock(ctx context.Context, b *block.Block) {
+func (mc *Chain) updateFinalizedBlock(ctx context.Context, b *block.Block) error {
 	logging.Logger.Info("update finalized block", zap.Int64("round", b.Round), zap.String("block", b.Hash), zap.Int64("lf_round", mc.GetLatestFinalizedBlock().Round), zap.Int64("current_round", mc.GetCurrentRound()), zap.Float64("weight", b.Weight()))
 	if config.Development() {
 		for _, t := range b.Txns {
@@ -581,10 +627,6 @@ func (mc *Chain) updateFinalizedBlock(ctx context.Context, b *block.Block) {
 	}
 
 	go mc.SendFinalizedBlock(context.Background(), b)
-	fr := mc.GetRound(b.Round)
-	if fr != nil {
-		fr.Finalize(b)
-	}
 	mc.DeleteRoundsBelow(b.Round)
 
 	var txns []datastore.Entity
@@ -592,30 +634,47 @@ func (mc *Chain) updateFinalizedBlock(ctx context.Context, b *block.Block) {
 		txns = append(txns, txn)
 	}
 
-	tii := newTxnIterInfo(mc.BlockSize())
-	invalidTxns := tii.checkForInvalidTxns(b.Txns)
+	cleanPoolCtx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+	defer cancel()
+	transaction.RemoveFromPool(cleanPoolCtx, txns)
 
-	transaction.RemoveFromPool(ctx, txns)
-
-	if len(invalidTxns) > 0 {
-		transaction.RemoveFromPool(ctx, invalidTxns)
-	}
-}
-
-func (tii *TxnIterInfo) checkForInvalidTxns(txns []*transaction.Transaction) []datastore.Entity {
-	invalidTxns := []datastore.Entity{}
-	pastTxns := tii.pastTxns
-
-	for _, txn := range txns {
-		for i := 0; i < len(pastTxns); i++ {
-			pastTxn := pastTxns[i].(*transaction.Transaction)
-			if txn.ClientID == pastTxn.ClientID && txn.Nonce >= pastTxn.Nonce {
-
-				invalidTxns = append(invalidTxns, pastTxns[i])
+	selfID := node.Self.Underlying().GetKey()
+	cs, err := chain.GetStateById(b.ClientState, selfID)
+	if err != nil {
+		logging.Logger.Error("[mvc] clean txns, could not find node state", zap.Error(err),
+			zap.String("miner", selfID), zap.String("block", b.Hash))
+	} else {
+		otxns, err := transaction.GetOldNonceTxns(common.GetRootContext(), selfID, cs.Nonce)
+		if err != nil {
+			logging.Logger.Error("[mvc] clean txns, could not remove old nonce txns", zap.Error(err))
+		} else {
+			if len(otxns) > 0 {
+				if err := mc.deleteTxns(otxns); err != nil {
+					logging.Logger.Error("[mvc] clean txns, delete old nonce txns failed", zap.Error(err))
+				}
 			}
 		}
 	}
-	return invalidTxns
+
+	br := mc.GetRound(b.Round)
+	if br == nil {
+		return nil
+	}
+
+	proposedBlocks := br.GetProposedBlocks()
+	for _, sb := range proposedBlocks {
+		if sb.MinerID == selfID && sb.Hash != b.Hash {
+			_, err := transaction.CollectInvalidFutureTxns(common.GetRootContext(), sb.CreationDate, cs.Nonce, selfID)
+			if err != nil {
+				logging.Logger.Error("[mvc] clean txns, get invalid future txns failed", zap.Error(err),
+					zap.String("miner", selfID), zap.String("block", b.Hash))
+			}
+
+			break
+		}
+	}
+
+	return nil
 }
 
 /*FinalizeBlock - finalize the transactions in the block */
@@ -627,65 +686,82 @@ func (mc *Chain) FinalizeBlock(ctx context.Context, b *block.Block) error {
 	return mc.deleteTxns(modifiedTxns)
 }
 
-func getLatestBlockFromSharders(ctx context.Context) *block.Block {
-	mc := GetMinerChain()
-	mb := mc.GetCurrentMagicBlock()
-	mb.Sharders.OneTimeStatusMonitor(ctx, mb.StartingRound)
-	lfBlocks := mc.GetLatestFinalizedBlockFromSharder(ctx)
-	if len(lfBlocks) > 0 {
-		logging.Logger.Info("bc-1 latest finalized Block",
-			zap.Int64("lfb_round", lfBlocks[0].Round))
-		return lfBlocks[0].Block
-	}
-	logging.Logger.Info("bc-1 sharders returned no lfb.")
-	return nil
-}
-
-//NotarizedBlockFetched - handler to process fetched notarized block
+// NotarizedBlockFetched - handler to process fetched notarized block
 func (mc *Chain) NotarizedBlockFetched(ctx context.Context, b *block.Block) {
 	// mc.SendNotarization(ctx, b)
 }
 
-type txnProcessorHandler func(context.Context, util.MerklePatriciaTrieI, *transaction.Transaction, *TxnIterInfo) bool
+// txnProcessorHandler process transaction and return bool and error to indicate
+// whether processed successfully, or error if any
+type txnProcessorHandler func(context.Context,
+	util.MerklePatriciaTrieI,
+	*transaction.Transaction,
+	*TxnIterInfo,
+	*statecache.BlockCache,
+	chan struct{}) (bool, error)
 
 func txnProcessorHandlerFunc(mc *Chain, b *block.Block) txnProcessorHandler {
-	return func(ctx context.Context, bState util.MerklePatriciaTrieI, txn *transaction.Transaction, tii *TxnIterInfo) bool {
-		if _, ok := tii.txnMap[txn.GetKey()]; ok {
-			return false
-		}
-		var debugTxn = txn.DebugTxn()
+	return func(ctx context.Context,
+		bState util.MerklePatriciaTrieI,
+		txn *transaction.Transaction,
+		tii *TxnIterInfo,
+		blockStateCache *statecache.BlockCache,
+		waitC chan struct{}) (bool, error) {
 
-		err := mc.validateTransaction(b, bState, txn)
+		if _, ok := tii.txnMap[txn.GetKey()]; ok {
+			return false, nil
+		}
+		var debugTxn = true
+
+		nonce, err := mc.validateTransaction(b, bState, txn, waitC)
 		switch err {
 		case PastTransaction:
 			tii.pastTxns = append(tii.pastTxns, txn)
 			if debugTxn {
-				logging.Logger.Info("generate block (debug transaction) error, transaction hash old nonce",
-					zap.String("txn", txn.Hash), zap.Int32("idx", tii.idx),
-					zap.Any("now", common.Now()), zap.Int64("nonce", txn.Nonce))
+				logging.Logger.Debug("generate block (debug transaction) error, transaction hash old nonce",
+					zap.Any("txn", txn),
+					zap.Int32("iterate count", tii.count),
+					zap.Any("now", common.Now()),
+					zap.Int64("nonce", txn.Nonce))
 			}
-			return false
+			return false, nil
 		case FutureTransaction:
-			list := tii.futureTxns[txn.ClientID]
-			list = append(list, txn)
-			sort.SliceStable(list, func(i, j int) bool {
-				if list[i].Nonce == list[j].Nonce {
+			list, ok := tii.futureTxns[txn.ClientID]
+			if !ok {
+				list = &clientNonceTxns{}
+			}
+
+			if list.nonce < nonce {
+				list.nonce = nonce
+			}
+			list.txns = append(list.txns, txn)
+			sort.SliceStable(list.txns, func(i, j int) bool {
+				if list.txns[i].Nonce == list.txns[j].Nonce {
 					//if the same nonce order by fee
-					return list[i].Fee > list[j].Fee
+					return list.txns[i].Fee > list.txns[j].Fee
 				}
-				return list[i].Nonce < list[j].Nonce
+				return list.txns[i].Nonce < list.txns[j].Nonce
 			})
 			tii.futureTxns[txn.ClientID] = list
-			return false
+			if debugTxn {
+				logging.Logger.Debug("generate block - future transaction",
+					zap.String("txn", txn.Hash),
+					zap.Int64("round", b.Round),
+					zap.Int32("iterate count", tii.count))
+			}
+			return false, nil
 		case ErrNotTimeTolerant:
 			tii.invalidTxns = append(tii.invalidTxns, txn)
 			if debugTxn {
-				logging.Logger.Info("generate block (debug transaction) error - "+
-					"txn creation not within tolerance",
+				logging.Logger.Info("generate block (debug transaction) error - txn creation not within tolerance",
 					zap.String("txn", txn.Hash), zap.Int32("idx", tii.idx),
 					zap.Any("now", common.Now()))
 			}
-			return false
+			return false, nil
+		default:
+			if err != nil && cstate.ErrInvalidState(err) {
+				return false, err // return err to break the txns pool iteration
+			}
 		}
 
 		if debugTxn {
@@ -693,8 +769,8 @@ func txnProcessorHandlerFunc(mc *Chain, b *block.Block) txnProcessorHandler {
 				zap.String("txn", txn.Hash), zap.Int32("idx", tii.idx),
 				zap.String("txn_object", datastore.ToJSON(txn).String()))
 		}
-		events, err := mc.UpdateState(ctx, b, bState, txn)
-		b.Events = append(b.Events, events...)
+
+		events, err := mc.UpdateState(ctx, b, bState, txn, blockStateCache, waitC)
 		if err != nil {
 			if debugTxn {
 				logging.Logger.Error("generate block (debug transaction) update state",
@@ -703,8 +779,13 @@ func txnProcessorHandlerFunc(mc *Chain, b *block.Block) txnProcessorHandler {
 					zap.Error(err))
 			}
 			tii.failedStateCount++
-			return false
+			if cstate.ErrInvalidState(err) {
+				return false, err // return err to break the txns pool iteration
+			}
+			return false, nil
 		}
+
+		b.Events = append(b.Events, events...)
 
 		// Setting the score lower so the next time blocks are generated
 		// these transactions don't show up at the top.
@@ -722,8 +803,13 @@ func txnProcessorHandlerFunc(mc *Chain, b *block.Block) txnProcessorHandler {
 		tii.idx++
 		tii.checkForCurrent(txn)
 
-		return true
+		return true, nil
 	}
+}
+
+type clientNonceTxns struct {
+	nonce int64
+	txns  []*transaction.Transaction
 }
 
 type TxnIterInfo struct {
@@ -731,7 +817,7 @@ type TxnIterInfo struct {
 	eTxns       []datastore.Entity
 	invalidTxns []datastore.Entity
 	pastTxns    []datastore.Entity
-	futureTxns  map[datastore.Key][]*transaction.Transaction
+	futureTxns  map[datastore.Key]*clientNonceTxns
 	currentTxns []*transaction.Transaction
 
 	txnMap map[datastore.Key]struct{}
@@ -750,7 +836,8 @@ type TxnIterInfo struct {
 	// included transaction data size
 	byteSize int64
 	// accumulated transaction cost
-	cost int
+	cost         int
+	exemptTxnNum int
 }
 
 func (tii *TxnIterInfo) checkForCurrent(txn *transaction.Transaction) {
@@ -758,7 +845,11 @@ func (tii *TxnIterInfo) checkForCurrent(txn *transaction.Transaction) {
 		return
 	}
 	//check whether we can execute future transactions
-	futures := tii.futureTxns[txn.ClientID]
+	nonceTxns, ok := tii.futureTxns[txn.ClientID]
+	if !ok {
+		return
+	}
+	futures := nonceTxns.txns
 	if len(futures) == 0 {
 		return
 	}
@@ -782,7 +873,15 @@ func (tii *TxnIterInfo) checkForCurrent(txn *transaction.Transaction) {
 	sort.SliceStable(tii.currentTxns, func(i, j int) bool { return tii.currentTxns[i].Nonce < tii.currentTxns[j].Nonce })
 
 	if i > -1 {
-		tii.futureTxns[txn.ClientID] = futures[i:]
+		tii.futureTxns[txn.ClientID].txns = futures[i:]
+		tii.futureTxns[txn.ClientID].nonce = currentNonce
+		futureNonces := make([]int64, len(futures[i:]))
+		for j, t := range futures[i:] {
+			futureNonces[j] = t.Nonce
+		}
+		logging.Logger.Debug("generate block - debug future transactions",
+			zap.Int64("current nonce", currentNonce),
+			zap.Int64s("future nonces", futureNonces))
 	}
 }
 
@@ -790,34 +889,40 @@ func newTxnIterInfo(blockSize int32) *TxnIterInfo {
 	return &TxnIterInfo{
 		clients:    make(map[string]*client.Client),
 		eTxns:      make([]datastore.Entity, 0, blockSize),
-		futureTxns: make(map[datastore.Key][]*transaction.Transaction),
+		futureTxns: make(map[datastore.Key]*clientNonceTxns),
 		txnMap:     make(map[datastore.Key]struct{}, blockSize),
 	}
 }
 
-func txnIterHandlerFunc(mc *Chain,
+// txns iterate handler, the function will return bool and error to indicate
+// whether the iteration should continue or not, or error if any to stop the iteration
+func txnIterHandlerFunc(
+	mc *Chain,
 	b *block.Block,
 	lfb *block.Block,
 	bState util.MerklePatriciaTrieI,
 	txnProcessor txnProcessorHandler,
-	tii *TxnIterInfo) func(context.Context, datastore.CollectionEntity) bool {
-	return func(ctx context.Context, qe datastore.CollectionEntity) bool {
+	tii *TxnIterInfo,
+	blockStateCache *statecache.BlockCache,
+	waitC chan struct{}) func(context.Context, datastore.CollectionEntity) (bool, error) {
+	return func(ctx context.Context, qe datastore.CollectionEntity) (bool, error) {
 		tii.count++
 		if ctx.Err() != nil {
-			return false
+			return false, ctx.Err()
 		}
 		if mc.GetCurrentRound() > b.Round {
 			tii.roundMismatch = true
-			return false
+			return false, nil
 		}
 		if tii.roundTimeoutCount != mc.GetRoundTimeoutCount() {
 			tii.roundTimeout = true
-			return false
+			return false, nil
 		}
 		txn, ok := qe.(*transaction.Transaction)
 		if !ok {
 			logging.Logger.Error("generate block (invalid entity)", zap.Any("entity", qe))
-			return true
+			// continue iteration to process next transaction
+			return true, nil
 		}
 
 		if lfb.ClientState == nil {
@@ -825,35 +930,99 @@ func txnIterHandlerFunc(mc *Chain,
 				zap.Int64("round", b.Round),
 				zap.String("hash", b.Hash),
 				zap.Error(ErrLFBClientStateNil))
-			return false
+			return false, nil
 		}
 
-		cost, err := mc.EstimateTransactionCost(ctx, lfb, lfb.ClientState, txn)
+		if txn.Value > config.MaxTokenSupply {
+			logging.Logger.Error("generate block, invalid transaction value",
+				zap.String("hash", txn.Hash),
+				zap.Uint64("value", uint64(txn.Value)))
+			tii.invalidTxns = append(tii.invalidTxns, txn)
+			return false, errors.New("invalid transaction value, exceeds max token supply")
+		}
+
+		cost, fee, err := mc.EstimateTransactionCostFee(ctx, lfb, txn, chain.WithSync(), chain.WithNotifyC(waitC))
 		if err != nil {
-			logging.Logger.Debug("Bad transaction cost", zap.Error(err))
-			return true
-		}
-		if tii.cost+cost >= mc.ChainConfig.MaxBlockCost() {
-			logging.Logger.Debug("generate block (too big cost, skipping)")
-			return true
+			logging.Logger.Debug("generate block - bad transaction cost fee",
+				zap.Error(err),
+				zap.String("txn_hash", txn.Hash))
+
+			// return error to break iteration due to the invalid state error
+			if cstate.ErrInvalidState(err) {
+				return false, err
+			}
+
+			// skipping and continue
+			return true, nil
 		}
 
-		if txnProcessor(ctx, bState, txn, tii) {
-			tii.cost += cost
-			if tii.idx >= mc.ChainConfig.BlockSize() || tii.byteSize >= mc.MaxByteSize() {
-				logging.Logger.Debug("generate block (too big block size)",
-					zap.Bool("idx >= block size", tii.idx >= mc.ChainConfig.BlockSize()),
-					zap.Bool("byteSize >= mc.NMaxByteSize", tii.byteSize >= mc.ChainConfig.MaxByteSize()),
-					zap.Int32("idx", tii.idx),
-					zap.Int32("block size", mc.ChainConfig.BlockSize()),
-					zap.Int64("byte size", tii.byteSize),
-					zap.Int64("max byte size", mc.ChainConfig.MaxByteSize()),
-					zap.Int32("count", tii.count),
-					zap.Int("txns", len(b.Txns)))
-				return false
+		isExemptTxn := fee == 0
+		if isExemptTxn && tii.exemptTxnNum > 0 {
+			// only allow 1 exempt transaction per block
+			return true, nil
+		}
+
+		if mc.IsFeeEnabled() {
+			confMinFee := mc.ChainConfig.MinTxnFee()
+			if confMinFee > fee {
+				fee = confMinFee
+			}
+
+			if err := txn.ValidateFee(mc.ChainConfig.TxnExempt(), fee); err != nil {
+				logging.Logger.Error("generate block - invalid transaction fee",
+					zap.Any("txn", txn),
+					zap.Any("estimated fee", fee),
+					zap.Error(err))
+				tii.invalidTxns = append(tii.invalidTxns, txn)
+				return true, nil // skipping and continue
 			}
 		}
-		return true
+
+		if tii.cost+cost >= mc.ChainConfig.MaxBlockCost() {
+			logging.Logger.Debug("generate block (too big cost, skipping)")
+			return true, nil
+		}
+
+		success, err := txnProcessor(ctx, bState, txn, tii, blockStateCache, waitC)
+		if err != nil {
+			logging.Logger.Debug("generate block txn processor failed",
+				zap.Error(err),
+				zap.Int64("round", b.Round),
+				zap.Int32("iterate count", tii.count),
+				zap.Int("current block size", len(b.Txns)))
+			return false, err
+		}
+
+		if !success {
+			// skipping and continue to check the next transaction
+			logging.Logger.Debug("generate block txn processor failed",
+				zap.Int64("round", b.Round),
+				zap.Int32("iterate count", tii.count),
+				zap.Int("current block size", len(b.Txns)))
+			return true, nil
+		}
+
+		logging.Logger.Debug("generate block - process txn success",
+			zap.Int64("round", b.Round),
+			zap.String("txn", txn.Hash))
+
+		tii.cost += cost
+
+		if isExemptTxn { // exempt transaction
+			tii.exemptTxnNum++
+		}
+
+		if tii.byteSize >= mc.MaxByteSize() {
+			logging.Logger.Debug("generate block (too big block size)",
+				zap.Bool("byteSize >= mc.NMaxByteSize", tii.byteSize >= mc.ChainConfig.MaxByteSize()),
+				zap.Int32("idx", tii.idx),
+				zap.Int64("byte size", tii.byteSize),
+				zap.Int64("max byte size", mc.ChainConfig.MaxByteSize()),
+				zap.Int32("count", tii.count),
+				zap.Int("txns", len(b.Txns)))
+			return false, nil
+		}
+		return true, nil
 	}
 }
 
@@ -862,7 +1031,7 @@ func txnIterHandlerFunc(mc *Chain,
 * block published while working on this
  */
 func (mc *Chain) generateBlock(ctx context.Context, b *block.Block,
-	bsh chain.BlockStateHandler, waitOver bool) error {
+	bsh chain.BlockStateHandler, waitOver bool, waitC chan struct{}) (err error) {
 
 	lfb := mc.GetLatestFinalizedBlock()
 	if lfb.ClientState == nil {
@@ -872,14 +1041,15 @@ func (mc *Chain) generateBlock(ctx context.Context, b *block.Block,
 		return ErrLFBClientStateNil
 	}
 
-	b.Txns = make([]*transaction.Transaction, 0, mc.BlockSize())
+	b.Txns = make([]*transaction.Transaction, 0, 100)
 
 	var (
-		iterInfo       = newTxnIterInfo(mc.BlockSize())
-		txnProcessor   = txnProcessorHandlerFunc(mc, b)
-		blockState     = block.CreateStateWithPreviousBlock(b.PrevBlock, mc.GetStateDB(), b.Round)
-		beginState     = blockState.GetRoot()
-		txnIterHandler = txnIterHandlerFunc(mc, b, lfb, blockState, txnProcessor, iterInfo)
+		iterInfo        = newTxnIterInfo(int32(cap(b.Txns)))
+		txnProcessor    = txnProcessorHandlerFunc(mc, b)
+		blockState      = block.CreateStateWithPreviousBlock(b.PrevBlock, mc.GetStateDB(), b.Round)
+		blockStateCache = statecache.NewBlockCache(mc.GetStateCache(), statecache.Block{Round: b.Round, Hash: b.Hash, PrevHash: b.PrevHash})
+		beginState      = blockState.GetRoot()
+		txnIterHandler  = txnIterHandlerFunc(mc, b, lfb, blockState, txnProcessor, iterInfo, blockStateCache, waitC)
 	)
 
 	iterInfo.roundTimeoutCount = mc.GetRoundTimeoutCount()
@@ -894,21 +1064,70 @@ func (mc *Chain) generateBlock(ctx context.Context, b *block.Block,
 	cctx, cancel := context.WithTimeout(ctx, mc.ChainConfig.BlockProposalMaxWaitTime())
 	defer cancel()
 
+	buildInTxns, cost, err := mc.buildInTxns(ctx, lfb, b)
+	if err != nil {
+		return fmt.Errorf("get build-in txns failed: %v", err)
+	}
+
+	iterInfo.cost += cost
+	futureNonceAllowed := int64(mc.ChainConfig.TxnFutureNonce())
+
+	defer func() {
+		var (
+			deleteTxns = make([]datastore.Entity, 0, len(iterInfo.futureTxns)+len(iterInfo.pastTxns))
+			txnHashes  = make([]string, 0, len(iterInfo.futureTxns)+len(iterInfo.pastTxns))
+		)
+
+		// removes future transactions with nonce is too far away
+		if len(iterInfo.futureTxns) > 0 {
+			for _, nonceTxns := range iterInfo.futureTxns {
+				txns := nonceTxns.txns
+				if len(txns) > 0 {
+					if txns[0].Nonce-nonceTxns.nonce > futureNonceAllowed {
+						// remove all following future txns
+						for _, ft := range txns {
+							deleteTxns = append(deleteTxns, ft)
+							txnHashes = append(txnHashes, ft.Hash)
+						}
+					}
+				}
+			}
+
+			logging.Logger.Debug("remove future txns",
+				zap.Int("count", len(deleteTxns)),
+				zap.Strings("txns", txnHashes),
+				zap.Int64("future transaction limit", futureNonceAllowed))
+		}
+
+		if len(deleteTxns) > 0 {
+			if err := mc.deleteTxns(deleteTxns); err != nil {
+				logging.Logger.Warn("generate block - remove future txns failed", zap.Error(err))
+			}
+		}
+	}()
+
 	transactionEntityMetadata := datastore.GetEntityMetadata("txn")
 	txn := transactionEntityMetadata.Instance().(*transaction.Transaction)
 	collectionName := txn.GetCollectionName()
 	logging.Logger.Info("generate block starting iteration", zap.Int64("round", b.Round), zap.String("prev_block", b.PrevHash), zap.String("prev_state_hash", util.ToHex(b.PrevBlock.ClientStateHash)))
-	err := transactionEntityMetadata.GetStore().IterateCollection(cctx, transactionEntityMetadata, collectionName, txnIterHandler)
+	err = transactionEntityMetadata.GetStore().IterateCollection(cctx, transactionEntityMetadata, collectionName, txnIterHandler)
+	if cstate.ErrInvalidState(err) {
+		logging.Logger.Error("generate block - process txn failed",
+			zap.Error(err),
+			zap.Int64("round", b.Round))
+		return err
+	}
+
 	if len(iterInfo.invalidTxns) > 0 {
 		var keys []string
-		for _, txn := range iterInfo.pastTxns {
+		for _, txn := range iterInfo.invalidTxns {
 			keys = append(keys, txn.GetKey())
 		}
-		logging.Logger.Info("generate block (found txns very old)", zap.Any("round", b.Round),
+		logging.Logger.Info("generate block (found txns very old)", zap.Int64("round", b.Round),
 			zap.Int("num_invalid_txns", len(iterInfo.invalidTxns)), zap.Strings("txn_hashes", keys))
 		go func() {
 			if err := mc.deleteTxns(iterInfo.invalidTxns); err != nil {
-				logging.Logger.Warn("generate block - delete txns failed", zap.Error(err))
+				logging.Logger.Warn("generate block - delete invalid txns failed", zap.Error(err))
 			}
 		}()
 	}
@@ -917,26 +1136,31 @@ func (mc *Chain) generateBlock(ctx context.Context, b *block.Block,
 		for _, txn := range iterInfo.pastTxns {
 			keys = append(keys, txn.GetKey())
 		}
-		logging.Logger.Info("generate block (found pastTxns transactions)", zap.Any("round", b.Round), zap.Int("txn num", len(keys)))
+		logging.Logger.Info("generate block (found pastTxns transactions)", zap.Int64("round", b.Round), zap.Int("txn num", len(keys)))
+		go func() {
+			if err := mc.deleteTxns(iterInfo.pastTxns); err != nil {
+				logging.Logger.Warn("generate block - delete past txns failed", zap.Error(err))
+			}
+		}()
 	}
 	if iterInfo.roundMismatch {
-		logging.Logger.Debug("generate block (round mismatch)", zap.Any("round", b.Round), zap.Any("current_round", mc.GetCurrentRound()))
+		logging.Logger.Debug("generate block (round mismatch)", zap.Int64("round", b.Round), zap.Int64("current_round", mc.GetCurrentRound()))
 		return ErrRoundMismatch
 	}
 	if iterInfo.roundTimeout {
-		logging.Logger.Debug("generate block (round timeout)", zap.Any("round", b.Round), zap.Any("current_round", mc.GetCurrentRound()))
+		logging.Logger.Debug("generate block (round timeout)", zap.Int64("round", b.Round), zap.Int64("current_round", mc.GetCurrentRound()))
 		return ErrRoundTimeout
 	}
 	if iterInfo.reInclusionErr != nil {
 		logging.Logger.Error("generate block (txn reinclusion check)",
-			zap.Any("round", b.Round), zap.Error(iterInfo.reInclusionErr))
+			zap.Int64("round", b.Round), zap.Error(iterInfo.reInclusionErr))
 	}
 
 	switch err {
 	case context.DeadlineExceeded:
-		logging.Logger.Debug("Slow block generation, stopping transaction collection and finishing the block")
+		logging.Logger.Debug("generate block - slow block generation, stopping transaction collection and finishing the block")
 	case context.Canceled:
-		logging.Logger.Debug("Context cancelled, rejecting current block")
+		logging.Logger.Debug("generate block - context cancelled, rejecting current block")
 		return err
 	default:
 		if err != nil {
@@ -949,21 +1173,33 @@ func (mc *Chain) generateBlock(ctx context.Context, b *block.Block,
 
 	rcount := 0
 	for i := 0; i < len(iterInfo.currentTxns) && iterInfo.cost < mc.ChainConfig.MaxBlockCost() &&
-		blockSize < mc.BlockSize() && iterInfo.byteSize < mc.MaxByteSize() && err != context.DeadlineExceeded; i++ {
+		iterInfo.byteSize < mc.MaxByteSize() && err != context.DeadlineExceeded; i++ {
 		txn := iterInfo.currentTxns[i]
-		cost, err := mc.EstimateTransactionCost(ctx, lfb, lfb.ClientState, txn)
+		cost, err := mc.EstimateTransactionCost(ctx, lfb, txn, chain.WithSync())
 		if err != nil {
-			logging.Logger.Debug("Bad transaction cost", zap.Error(err))
+			// Note: optimistic block generation
+			// we would just skip the error so that the work on txns collection and state computation above
+			// would not be wasted. Therefore, we will pack the block anyway.
+			logging.Logger.Debug("Bad transaction cost", zap.Error(err), zap.String("txn_hash", txn.Hash))
 			break
 		}
 		if iterInfo.cost+cost >= mc.ChainConfig.MaxBlockCost() {
 			logging.Logger.Debug("generate block (too big cost, skipping)")
 			break
 		}
-		if txnProcessor(ctx, blockState, txn, iterInfo) {
+
+		success, err := txnProcessor(ctx, blockState, txn, iterInfo, blockStateCache, waitC)
+		if err != nil {
+			// optimistic block generation. Same as EstimateTransactionCost above
+			logging.Logger.Debug("generate block - process failed and ignored", zap.Error(err))
+			break
+		}
+
+		if success {
+			logging.Logger.Debug("txnProcessor not successful", zap.Any("txn", txn))
 			rcount++
 			iterInfo.cost += cost
-			if iterInfo.idx == mc.BlockSize() || iterInfo.byteSize >= mc.MaxByteSize() {
+			if iterInfo.byteSize >= mc.MaxByteSize() {
 				break
 			}
 		}
@@ -972,58 +1208,70 @@ func (mc *Chain) generateBlock(ctx context.Context, b *block.Block,
 		blockSize += int32(rcount)
 		logging.Logger.Debug("Processed current transactions", zap.Int("count", rcount))
 	}
-	if blockSize != mc.BlockSize() && iterInfo.byteSize < mc.MaxByteSize() {
-		if !waitOver && blockSize < mc.MinBlockSize() {
-			b.Txns = nil
-			logging.Logger.Debug("generate block (insufficient txns)",
-				zap.Int64("round", b.Round),
-				zap.Int32("iteration_count", iterInfo.count),
-				zap.Int32("block_size", blockSize))
-			return common.NewError(InsufficientTxns,
-				fmt.Sprintf("not sufficient txns to make a block yet for round %v (iterated %v,block_size %v,state failure %v, invalid %v,reused %v)",
-					b.Round, iterInfo.count, blockSize, iterInfo.failedStateCount, len(iterInfo.invalidTxns), 0))
-		}
+
+	if iterInfo.byteSize < mc.MaxByteSize() {
 		b.Txns = b.Txns[:blockSize]
 		iterInfo.eTxns = iterInfo.eTxns[:blockSize]
 	}
 
-	if mc.ChainConfig.IsFeeEnabled() {
-		err = mc.processTxn(ctx, mc.createFeeTxn(b, blockState), b, blockState, iterInfo.clients)
+l:
+	for _, biTxn := range buildInTxns {
+		biTxn.Nonce, err = mc.GetCurrentMinerNonce(b, blockState)
 		if err != nil {
-			logging.Logger.Error("generate block (payFees)", zap.Int64("round", b.Round), zap.Error(err))
+			logging.Logger.Error("generate block - could not get miner nonce",
+				zap.Error(err),
+				zap.String("miner", b.MinerID))
+			return fmt.Errorf("could not get miner nonce of %v: %v", b.MinerID, err)
 		}
-	}
 
-	challengesEnabled := config.SmartContractConfig.GetBool(
-		"smart_contracts.storagesc.challenge_enabled")
-	if challengesEnabled {
-		err = mc.processTxn(ctx, mc.createGenerateChallengeTxn(b, blockState), b, blockState, iterInfo.clients)
+		_, err := biTxn.Sign(node.Self.GetSignatureScheme())
 		if err != nil {
-			logging.Logger.Error("generate block (generate_challenge)",
-				zap.Int64("round", b.Round), zap.Error(err))
+			panic(err)
 		}
-	}
 
-	if mc.ChainConfig.IsBlockRewardsEnabled() &&
-		b.Round%config.SmartContractConfig.GetInt64("smart_contracts.storagesc.block_reward.trigger_period") == 0 {
-		logging.Logger.Info("start_block_rewards", zap.Int64("round", b.Round))
-		err = mc.processTxn(ctx, mc.createBlockRewardTxn(b, blockState), b, blockState, iterInfo.clients)
+		err = mc.processTxn(ctx, biTxn, b, blockState, iterInfo.clients, blockStateCache)
 		if err != nil {
-			logging.Logger.Error("generate block (blockRewards)", zap.Int64("round", b.Round), zap.Error(err))
+			logging.Logger.Warn("generate block - process build-in txn failed",
+				zap.String("txn", txn.Hash),
+				zap.String("SC", txn.TransactionData),
+				zap.Int64("round", b.Round),
+				zap.Error(err))
+			if cstate.ErrInvalidState(err) {
+				return err
+			}
+
+			switch err {
+			case context.Canceled, context.DeadlineExceeded:
+				break l
+			}
 		}
-	}
+		blockSize++
 
-	if mc.SmartContractSettingUpdatePeriod() != 0 &&
-		b.Round%mc.SmartContractSettingUpdatePeriod() == 0 {
-		err = mc.processTxn(ctx, mc.storageScCommitSettingChangesTx(b, blockState), b, blockState, iterInfo.clients)
-		if err != nil {
-			logging.Logger.Error("generate block (commit settings)", zap.Int64("round", b.Round), zap.Error(err))
+		if !waitOver && blockSize < mc.MinBlockSize() {
+			b.Txns = nil
+			var futureTxnsCount int
+			for _, ftxns := range iterInfo.futureTxns {
+				futureTxnsCount += len(ftxns.txns)
+			}
+			logging.Logger.Debug("generate block (insufficient txns)",
+				zap.Int64("round", b.Round),
+				zap.Int32("iteration_count", iterInfo.count),
+				zap.Int32("block_size", blockSize),
+				zap.Int32("state failure", iterInfo.failedStateCount),
+				zap.Int("invalid txns", len(iterInfo.invalidTxns)),
+				zap.Int("future txns", futureTxnsCount))
+
+			return common.NewError(InsufficientTxns,
+				fmt.Sprintf("not sufficient txns to make a block yet for round %v (iterated %v,block_size %v,state failure %v, invalid %v, future %v, reused %v)",
+					b.Round, iterInfo.count, blockSize, iterInfo.failedStateCount, len(iterInfo.invalidTxns), len(iterInfo.futureTxns), 0))
 		}
 	}
 
 	b.RunningTxnCount = b.PrevBlock.RunningTxnCount + int64(len(b.Txns))
-	if iterInfo.count > 10*mc.BlockSize() {
-		logging.Logger.Info("generate block (too much iteration)", zap.Int64("round", b.Round), zap.Int32("iteration_count", iterInfo.count))
+	if iterInfo.byteSize > 10*mc.MaxByteSize() {
+		logging.Logger.Info("generate block (too much byte size)",
+			zap.Int64("round", b.Round),
+			zap.Int64("iteration byte size", iterInfo.byteSize))
 	}
 
 	if err = client.GetClients(ctx, iterInfo.clients); err != nil {
@@ -1063,22 +1311,6 @@ func (mc *Chain) generateBlock(ctx context.Context, b *block.Block,
 		return err
 	}
 
-	//TODO delete it when cost don't need further debugging
-	if config.Development() {
-		var costs []int
-		cost := 0
-		for _, txn := range b.Txns {
-			c, err := mc.EstimateTransactionCost(ctx, lfb, lfb.ClientState, txn)
-			if err != nil {
-				logging.Logger.Debug("Bad transaction cost", zap.Error(err))
-				break
-			}
-			costs = append(costs, c)
-			cost += c
-		}
-		logging.Logger.Debug("calculated cost", zap.Int("cost", cost), zap.Ints("costs", costs), zap.String("block_hash", b.Hash))
-	}
-
 	b.SetBlockState(block.StateGenerated)
 	b.SetStateStatus(block.StateSuccessful)
 	logging.Logger.Info("generate block (assemble+update+sign)",
@@ -1099,5 +1331,79 @@ func (mc *Chain) generateBlock(ctx context.Context, b *block.Block,
 	b.ComputeTxnMap()
 	bsHistogram.Update(int64(len(b.Txns)))
 	node.Self.Underlying().Info.AvgBlockTxns = int(math.Round(bsHistogram.Mean()))
+
+	blockStateCache.SetBlockHash(b.Hash)
+	blockStateCache.Commit()
 	return nil
+}
+
+func (mc *Chain) buildInTxns(ctx context.Context, lfb, b *block.Block) ([]*transaction.Transaction, int, error) {
+	txns := make([]*transaction.Transaction, 0, 4)
+
+	if mc.ChainConfig.IsFeeEnabled() {
+		feeTxn, err := mc.createFeeTxn(b)
+		if err != nil {
+			return nil, 0, err
+		}
+		txns = append(txns, feeTxn)
+	}
+
+	globalNode, err := storagesc.GetConfig(mc.GetQueryStateContext())
+	if err != nil {
+		return nil, 0, err
+	}
+	if globalNode.ChallengeEnabled && b.Round%globalNode.ChallengeGenerationGap == 0 {
+		gcTxn, err := mc.createGenerateChallengeTxn(b)
+		if err != nil {
+			return nil, 0, err
+		}
+		if gcTxn != nil {
+			txns = append(txns, gcTxn)
+		}
+	}
+	if mc.ChainConfig.IsBlockRewardsEnabled() &&
+		b.Round%globalNode.BlockReward.TriggerPeriod == 0 {
+		logging.Logger.Info("start_block_rewards", zap.Int64("round", b.Round))
+		brTxn, err := mc.createBlockRewardTxn(b)
+		if err != nil {
+			return nil, 0, err
+		}
+		txns = append(txns, brTxn)
+	}
+
+	if mc.SmartContractSettingUpdatePeriod() != 0 &&
+		b.Round%mc.SmartContractSettingUpdatePeriod() == 0 {
+		cscTxn, err := mc.storageScCommitSettingChangesTx(b)
+		if err != nil {
+			return nil, 0, err
+		}
+		txns = append(txns, cscTxn)
+	}
+
+	var cost int
+	for _, txn := range txns {
+		c, err := mc.EstimateTransactionCost(ctx, lfb, txn, chain.WithSync())
+		if err != nil {
+			logging.Logger.Debug("Bad transaction cost", zap.Error(err))
+			return nil, 0, err
+		}
+		cost += c
+	}
+
+	return txns, cost, nil
+}
+
+func (mc *Chain) createGenChalTxn(b *block.Block) (*transaction.Transaction, error) {
+	brTxn := transaction.Provider().(*transaction.Transaction)
+	brTxn.ClientID = node.Self.ID
+	brTxn.PublicKey = node.Self.PublicKey
+	brTxn.ToClientID = storagesc.ADDRESS
+	brTxn.CreationDate = b.CreationDate
+	brTxn.TransactionType = transaction.TxnTypeSmartContract
+	brTxn.TransactionData = fmt.Sprintf(`{"name":"generate_challenge","input":{"round":%d}}`, b.Round)
+	brTxn.Fee = 0
+	if err := brTxn.ComputeProperties(); err != nil {
+		return nil, err
+	}
+	return brTxn, nil
 }

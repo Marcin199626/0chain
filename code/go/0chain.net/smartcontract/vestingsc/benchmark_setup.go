@@ -4,7 +4,7 @@ import (
 	"log"
 	"strconv"
 
-	"0chain.net/chaincore/currency"
+	"github.com/0chain/common/core/currency"
 
 	cstate "0chain.net/chaincore/chain/state"
 	"0chain.net/core/common"
@@ -55,11 +55,12 @@ func AddMockVestingPools(
 	clients []string,
 	balances cstate.StateContextI,
 ) {
+	now := balances.GetTransaction().CreationDate
 	for i := 0; i < len(clients); i++ {
 		var vestingPool = vestingPool{
 			Description: "mock description",
 			StartTime:   0,
-			ExpireAt:    common.Timestamp(viper.GetDuration(benchmark.VestingMaxDuration).Seconds()),
+			ExpireAt:    now + common.Timestamp(viper.GetDuration(benchmark.VestingMaxDuration).Seconds()),
 			ClientID:    clients[i],
 		}
 		for j := 0; j < viper.GetInt(benchmark.NumVestingDestinationsClient); j++ {

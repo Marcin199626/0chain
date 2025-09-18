@@ -1,17 +1,17 @@
 package minersc_test
 
 import (
-	"fmt"
+	"0chain.net/chaincore/block"
+	"encoding/hex"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"0chain.net/chaincore/currency"
+	"0chain.net/core/config"
+	"github.com/0chain/common/core/currency"
 
 	chainstate "0chain.net/chaincore/chain/state"
-
-	"0chain.net/smartcontract"
 
 	"0chain.net/chaincore/chain/state/mocks"
 	sci "0chain.net/chaincore/smartcontractinterface"
@@ -31,7 +31,19 @@ func TestSettings(t *testing.T) {
 	require.Len(t, Settings, int(NumberOfSettings))
 
 	for _, name := range SettingName {
-		require.EqualValues(t, name, SettingName[Settings[strings.ToLower(name)].Setting])
+		require.EqualValues(t, name, SettingName[Settings[name].Setting])
+	}
+}
+
+func enableHardForks(t *testing.T, tb *mocks.StateContextI) {
+	hardForks := []string{"apollo", "ares", "artemis", "athena", "demeter", "electra", "hercules", "hermes"}
+
+	for _, name := range hardForks {
+		h := chainstate.NewHardFork(name, 0)
+		tb.On("InsertTrieNode", h.GetKey(), h).Return("", nil).Once()
+		if _, err := tb.InsertTrieNode(h.GetKey(), h); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -58,20 +70,16 @@ func TestUpdateSettings(t *testing.T) {
 			ClientID: p.client,
 		}
 
+		balances.On("GetBlock", mock.Anything, mock.Anything).Return(&block.Block{}, nil)
+
 		balances.On(
 			"InsertTrieNode",
 			GlobalNodeKey,
 			mock.MatchedBy(func(gn *GlobalNode) bool {
 				for key, value := range p.inputMap {
-					//if gn.Get(Settings[key].Setting) != value {
-					//	return false
-					//}
-
-					//var setting interface{} = getConfField(*conf, key)
 					setting, _ := gn.Get(Settings[key].Setting)
-					fmt.Println("setting", setting, "value", value)
 					switch Settings[key].ConfigType {
-					case smartcontract.Int:
+					case config.Int:
 						{
 							expected, err := strconv.Atoi(value)
 							require.NoError(t, err)
@@ -81,7 +89,7 @@ func TestUpdateSettings(t *testing.T) {
 								return false
 							}
 						}
-					case smartcontract.Int64:
+					case config.Int64:
 						{
 							expected, err := strconv.ParseInt(value, 10, 64)
 							require.NoError(t, err)
@@ -91,7 +99,7 @@ func TestUpdateSettings(t *testing.T) {
 								return false
 							}
 						}
-					case smartcontract.Float64:
+					case config.Float64:
 						{
 							expected, err := strconv.ParseFloat(value, 64)
 							require.NoError(t, err)
@@ -101,7 +109,7 @@ func TestUpdateSettings(t *testing.T) {
 								return false
 							}
 						}
-					case smartcontract.Boolean:
+					case config.Boolean:
 						{
 							expected, err := strconv.ParseBool(value)
 							require.NoError(t, err)
@@ -111,7 +119,7 @@ func TestUpdateSettings(t *testing.T) {
 								return false
 							}
 						}
-					case smartcontract.Duration:
+					case config.Duration:
 						{
 							expected, err := time.ParseDuration(value)
 							require.NoError(t, err)
@@ -121,7 +129,7 @@ func TestUpdateSettings(t *testing.T) {
 								return false
 							}
 						}
-					case smartcontract.CurrencyCoin:
+					case config.CurrencyCoin:
 						{
 							expected, err := strconv.ParseFloat(value, 64)
 							expected = x10 * expected
@@ -132,17 +140,48 @@ func TestUpdateSettings(t *testing.T) {
 								return false
 							}
 						}
+					case config.Cost:
+						{
+							expected, err := strconv.Atoi(value)
+							require.NoError(t, err)
+							actual, ok := setting.(int)
+							require.True(t, ok)
+							if expected != actual {
+								return false
+							}
+						}
+					case config.Key:
+						{
+							_, err := hex.DecodeString(value)
+							require.NoError(t, err)
+							actual, ok := setting.(string)
+							require.True(t, ok)
+							if value != actual {
+								return false
+							}
+						}
+					default:
+						return false
 					}
+
 				}
 				return true
 			}),
 		).Return("", nil).Once()
 
+		balances.On(
+			"GetTrieNode",
+			mock.AnythingOfType("string"),
+			mock.AnythingOfType("*state.HardFork"),
+		).Return(nil, nil).Maybe()
+
+		enableHardForks(t, balances)
+
 		return args{
 			msc:      msc,
 			txn:      txn,
-			input:    (&smartcontract.StringMap{p.inputMap}).Encode(),
-			gn:       &GlobalNode{OwnerId: owner},
+			input:    (&config.StringMap{p.inputMap}).Encode(),
+			gn:       NewGlobalNode(owner, make(map[string]int)),
 			balances: balances,
 		}
 	}
@@ -162,25 +201,44 @@ func TestUpdateSettings(t *testing.T) {
 			parameters: parameters{
 				client: owner,
 				inputMap: map[string]string{
-					"min_stake":              "0.0",
-					"max_stake":              "100",
-					"max_n":                  "7",
-					"min_n":                  "3",
-					"t_percent":              "0.66",
-					"k_percent":              "0.75",
-					"x_percent":              "0.70",
-					"max_s":                  "2",
-					"min_s":                  "1",
-					"max_delegates":          "200",
-					"reward_round_frequency": "64250",
-					"reward_rate":            "1.0",
-					"share_ratio":            "50",
-					"block_reward":           "021",
-					"max_charge":             "0.5",
-					"epoch":                  "6415000000",
-					"reward_decline_rate":    "0.1",
-					"max_mint":               "1500000.0",
-					"owner_id":               owner,
+					"min_stake":                           "0.0",
+					"max_stake":                           "100",
+					"max_n":                               "7",
+					"min_n":                               "3",
+					"t_percent":                           "0.66",
+					"k_percent":                           "0.75",
+					"x_percent":                           "0.70",
+					"max_s":                               "2",
+					"min_s":                               "1",
+					"max_delegates":                       "200",
+					"reward_round_frequency":              "64250",
+					"reward_rate":                         "1.0",
+					"share_ratio":                         "50",
+					"block_reward":                        "021",
+					"max_charge":                          "0.5",
+					"epoch":                               "6415000000",
+					"reward_decline_rate":                 "0.1",
+					"owner_id":                            owner,
+					"cost.add_miner":                      "111",
+					"cost.add_sharder":                    "111",
+					"cost.delete_miner":                   "111",
+					"cost.miner_health_check":             "111",
+					"cost.sharder_health_check":           "111",
+					strings.ToLower("cost.contributeMpk"): "111",
+					strings.ToLower("cost.shareSignsOrShares"): "111",
+					"cost.wait":                                    "111",
+					"cost.update_globals":                          "111",
+					"cost.update_settings":                         "111",
+					"cost.update_miner_settings":                   "111",
+					"cost.update_sharder_settings":                 "111",
+					strings.ToLower("cost.payFees"):                "111",
+					strings.ToLower("cost.feesPaid"):               "111",
+					strings.ToLower("cost.mintedTokens"):           "111",
+					strings.ToLower("cost.addToDelegatePool"):      "111",
+					strings.ToLower("cost.deleteFromDelegatePool"): "111",
+					"cost.sharder_keep":                            "111",
+					"cost.kill_miner":                              "111",
+					"cost.kill_sharder":                            "111",
 				},
 			},
 		},

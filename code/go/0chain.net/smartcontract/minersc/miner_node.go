@@ -1,12 +1,16 @@
 package minersc
 
 import (
+	"encoding/json"
+	"fmt"
+
+	"0chain.net/smartcontract/provider"
+
 	cstate "0chain.net/chaincore/chain/state"
 	"0chain.net/core/datastore"
 	"0chain.net/smartcontract/stakepool"
 	"0chain.net/smartcontract/stakepool/spenum"
-	"encoding/json"
-	"fmt"
+	"github.com/0chain/common/core/statecache"
 )
 
 //go:generate msgp -io=false -tests=false -unexported -v
@@ -20,25 +24,71 @@ type MinerNode struct {
 
 func NewMinerNode() *MinerNode {
 	mn := &MinerNode{
-		SimpleNode: &SimpleNode{},
-		StakePool:  stakepool.NewStakePool(),
+		SimpleNode: &SimpleNode{
+			Provider: provider.Provider{},
+		},
+		StakePool: stakepool.NewStakePool(),
 	}
+
+	mn.Minter = cstate.MinterMiner
 	return mn
 }
 
+//nolint:unused
+func (m *MinerNode) clone() *MinerNode {
+	clone := &MinerNode{
+		SimpleNode: &SimpleNode{},
+		StakePool:  &stakepool.StakePool{},
+	}
+	*clone.SimpleNode = *m.SimpleNode
+	*clone.StakePool = *m.StakePool
+	clone.StakePool.Pools = make(map[string]*stakepool.DelegatePool)
+	for k, v := range m.StakePool.Pools {
+		dp := *v
+		clone.StakePool.Pools[k] = &dp
+	}
+	return clone
+}
+
+func (m *MinerNode) Clone() statecache.Value {
+	v, err := m.MarshalMsg(nil)
+	if err != nil {
+		panic(fmt.Sprintf("could not marshal miner node: %v", err))
+	}
+
+	newMn := NewMinerNode()
+	_, err = newMn.UnmarshalMsg(v)
+	if err != nil {
+		panic(fmt.Sprintf("could not unmarshal miner node: %v", err))
+	}
+
+	return newMn
+}
+
+func (m *MinerNode) CopyFrom(v interface{}) bool {
+	if mn, ok := v.(*MinerNode); ok {
+		cmn := mn.Clone().(*MinerNode)
+		*m = *cmn
+		return true
+	}
+	return false
+}
+
+// swagger:model NodePool
 type NodePool struct {
 	PoolID string `json:"pool_id"`
 	*stakepool.DelegatePool
 }
 
 func GetSharderKey(sid string) datastore.Key {
-	return ADDRESS + sid
+	return provider.GetKey(sid)
 }
 
 func (mn *MinerNode) GetKey() datastore.Key {
-	return ADDRESS + mn.ID
+	return provider.GetKey(mn.ID)
 }
 
+//nolint:unused
 func (mn *MinerNode) numDelegates() int {
 	var count int
 	for _, pool := range mn.Pools {
@@ -47,6 +97,10 @@ func (mn *MinerNode) numDelegates() int {
 		}
 	}
 	return count
+}
+
+func (mn *MinerNode) Save(p spenum.Provider, id string, balances cstate.StateContextI) error {
+	return mn.save(balances)
 }
 
 func (mn *MinerNode) save(balances cstate.StateContextI) error {
@@ -72,7 +126,9 @@ func (mn *MinerNode) Decode(p []byte) error {
 
 func (mn *MinerNode) GetNodePools(status string) []*NodePool {
 	nodePools := make([]*NodePool, 0)
-	for id, pool := range mn.Pools {
+	orderedPoolIds := mn.OrderedPoolIds()
+	for _, id := range orderedPoolIds {
+		pool := mn.Pools[id]
 		nodePool := NodePool{id, pool}
 		if len(status) == 0 || pool.Status.String() == status {
 			nodePools = append(nodePools, &nodePool)

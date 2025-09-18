@@ -4,11 +4,11 @@ import (
 	"sync"
 	"time"
 
-	"0chain.net/chaincore/config"
-	"0chain.net/chaincore/currency"
+	config2 "0chain.net/core/config"
+	"github.com/0chain/common/core/currency"
 
-	"0chain.net/core/logging"
 	"0chain.net/core/viper"
+	"github.com/0chain/common/core/logging"
 	"go.uber.org/zap"
 
 	"0chain.net/smartcontract/minersc"
@@ -21,6 +21,9 @@ const (
 	BlockProposalWaitStatic = 0
 	//BlockProposalWaitDynamic Dyanamic wait time for block proposals
 	BlockProposalWaitDynamic = iota
+
+	// DefaultMaxTxnFee represents the default max transaction fee
+	DefaultMaxTxnFee = 1e9
 )
 
 // HealthCheckScan - Set in 0chain.yaml
@@ -43,12 +46,11 @@ type ConfigImpl struct {
 	guard sync.RWMutex
 }
 
-//FOR TEST PURPOSE ONLY
+// FOR TEST PURPOSE ONLY
 func (c *ConfigImpl) ConfDataForTest() *ConfigData {
 	return c.conf
 }
 
-//TODO: for test usage only, extend with more fields
 func UpdateConfigImpl(conf *ConfigImpl, data *ConfigData) {
 	if data.BlockSize != 0 {
 		conf.conf.BlockSize = data.BlockSize
@@ -237,7 +239,7 @@ func (c *ConfigImpl) HealthShowCounters() bool {
 	return c.conf.HealthShowCounters
 }
 
-func (c *ConfigImpl) HCCycleScan() [2]config.HealthCheckCycleScan {
+func (c *ConfigImpl) HCCycleScan() [2]config2.HealthCheckCycleScan {
 	c.guard.RLock()
 	defer c.guard.RUnlock()
 
@@ -321,11 +323,18 @@ func (c *ConfigImpl) RoundRestartMult() int {
 	return c.conf.RoundRestartMult
 }
 
-func (c *ConfigImpl) DbsEvents() config.DbAccess {
+func (c *ConfigImpl) DbsEvents() config2.DbAccess {
 	c.guard.RLock()
 	defer c.guard.RUnlock()
 
 	return c.conf.DbsEvents
+}
+
+func (c *ConfigImpl) DbSettings() config2.DbSettings {
+	c.guard.RLock()
+	defer c.guard.RUnlock()
+
+	return c.conf.DbsSettings
 }
 
 func (c *ConfigImpl) MaxBlockCost() int {
@@ -349,7 +358,43 @@ func (c *ConfigImpl) MinTxnFee() currency.Coin {
 	return c.conf.MinTxnFee
 }
 
-//ConfigData - chain Configuration
+func (c *ConfigImpl) MaxTxnFee() currency.Coin {
+	c.guard.RLock()
+	defer c.guard.RUnlock()
+
+	return c.conf.MaxTxnFee
+}
+
+func (c *ConfigImpl) TxnTransferCost() int {
+	c.guard.RLock()
+	defer c.guard.RUnlock()
+
+	return c.conf.TxnTransferCost
+}
+
+func (c *ConfigImpl) TxnCostFeeCoeff() int {
+	c.guard.RLock()
+	coeff := c.conf.TxnCostFeeCoeff
+	c.guard.RUnlock()
+
+	return coeff
+}
+
+func (c *ConfigImpl) TxnFutureNonce() int {
+	c.guard.RLock()
+	fn := c.conf.TxnFutureNonce
+	c.guard.RUnlock()
+	return fn
+}
+
+func (c *ConfigImpl) BlockFinalizationTimeout() time.Duration {
+	c.guard.RLock()
+	t := c.conf.BlockFinalizationTimeout
+	c.guard.RUnlock()
+	return t
+}
+
+// ConfigData - chain Configuration
 type ConfigData struct {
 	version               int64         `json:"-"` //version of config to track updates
 	IsStateEnabled        bool          `json:"state"`
@@ -363,21 +408,25 @@ type ConfigData struct {
 	IsMultisigEnabled     bool          `json:"multisig"`
 	IsVestingEnabled      bool          `json:"vesting"`
 	IsZcnEnabled          bool          `json:"zcn"`
-	OwnerID               datastore.Key `json:"owner_id"`                // Client who created this chain
-	BlockSize             int32         `json:"block_size"`              // Number of transactions in a block
-	MinBlockSize          int32         `json:"min_block_size"`          // Number of transactions a block needs to have
-	MaxBlockCost          int           `json:"max_block_cost"`          // multiplier of soft timeouts to restart a round
-	MaxByteSize           int64         `json:"max_byte_size"`           // Max number of bytes a block can have
-	MinGenerators         int           `json:"min_generators"`          // Min number of block generators.
-	GeneratorsPercent     float64       `json:"generators_percent"`      // Percentage of all miners
-	NumReplicators        int           `json:"num_replicators"`         // Number of sharders that can store the block
-	ThresholdByCount      int           `json:"threshold_by_count"`      // Threshold count for a block to be notarized
-	ThresholdByStake      int           `json:"threshold_by_stake"`      // Stake threshold for a block to be notarized
-	ValidationBatchSize   int           `json:"validation_size"`         // Batch size of txns for crypto verification
-	TxnMaxPayload         int           `json:"transaction_max_payload"` // Max payload allowed in the transaction
-	MinTxnFee             currency.Coin `json:"min_txn_fee"`             // Minimum txn fee allowed
-	PruneStateBelowCount  int           `json:"prune_state_below_count"` // Prune state below these many rounds
-	RoundRange            int64         `json:"round_range"`             // blocks are stored in separate directory for each range of rounds
+	OwnerID               datastore.Key `json:"owner_id"`                  // Client who created this chain
+	BlockSize             int32         `json:"block_size"`                // Number of transactions in a block
+	MinBlockSize          int32         `json:"min_block_size"`            // Number of transactions a block needs to have
+	MaxBlockCost          int           `json:"max_block_cost"`            // multiplier of soft timeouts to restart a round
+	MaxByteSize           int64         `json:"max_byte_size"`             // Max number of bytes a block can have
+	MinGenerators         int           `json:"min_generators"`            // Min number of block generators.
+	GeneratorsPercent     float64       `json:"generators_percent"`        // Percentage of all miners
+	NumReplicators        int           `json:"num_replicators"`           // Number of sharders that can store the block
+	ThresholdByCount      int           `json:"threshold_by_count"`        // Threshold count for a block to be notarized
+	ThresholdByStake      int           `json:"threshold_by_stake"`        // Stake threshold for a block to be notarized
+	ValidationBatchSize   int           `json:"validation_size"`           // Batch size of txns for crypto verification
+	TxnMaxPayload         int           `json:"transaction_max_payload"`   // Max payload allowed in the transaction
+	TxnTransferCost       int           `json:"transaction_transfer_cost"` // Transaction transfer cost
+	TxnCostFeeCoeff       int           `json:"txn_cost_fee_coeff"`        // Transaction cost fee coefficient
+	TxnFutureNonce        int           `json:"future_nonce"`              // Future transaction nonce allowed
+	MinTxnFee             currency.Coin `json:"min_txn_fee"`               // Minimum txn fee allowed
+	MaxTxnFee             currency.Coin `json:"max_txn_fee"`               // Maximum txn fee allowed
+	PruneStateBelowCount  int           `json:"prune_state_below_count"`   // Prune state below these many rounds
+	RoundRange            int64         `json:"round_range"`               // blocks are stored in separate directory for each range of rounds
 
 	// todo move BlocksToSharder out of ConfigData
 	BlocksToSharder       int `json:"blocks_to_sharder"`       // send finalized or notarized blocks to sharder
@@ -385,12 +434,13 @@ type ConfigData struct {
 
 	HealthShowCounters bool `json:"health_show_counters"` // display detail counters
 	// Health Check switches
-	HCCycleScan [2]config.HealthCheckCycleScan
+	HCCycleScan [2]config2.HealthCheckCycleScan
 
 	BlockProposalMaxWaitTime time.Duration `json:"block_proposal_max_wait_time"` // max time to wait to receive a block proposal
 	BlockProposalWaitMode    int8          `json:"block_proposal_wait_mode"`     // wait time for the block proposal is static (0) or dynamic (1)
 
-	ReuseTransactions bool `json:"reuse_txns"` // indicates if transactions from unrelated blocks can be reused
+	ReuseTransactions        bool          `json:"reuse_txns"`                 // indicates if transactions from unrelated blocks can be reused
+	BlockFinalizationTimeout time.Duration `json:"block_finalization_timeout"` // time after which the block finalization will timeout
 
 	ClientSignatureScheme string `json:"client_signature_scheme"` // indicates which signature scheme is being used
 
@@ -404,8 +454,9 @@ type ConfigData struct {
 	RoundTimeoutSofttoMult int `json:"softto_mult"`        // multiplier of mean network time for soft timeout
 	RoundRestartMult       int `json:"round_restart_mult"` // multiplier of soft timeouts to restart a round
 
-	DbsEvents config.DbAccess `json:"dbs_event"`
-	TxnExempt map[string]bool `json:"txn_exempt"`
+	DbsEvents   config2.DbAccess   `json:"dbs_event"`
+	DbsSettings config2.DbSettings `json:"dbs_settings"`
+	TxnExempt   map[string]bool    `json:"txn_exempt"`
 }
 
 func (c *ConfigImpl) FromViper() error {
@@ -416,6 +467,16 @@ func (c *ConfigImpl) FromViper() error {
 		logging.Logger.Error("error during BindEnv", zap.Error(err))
 	}
 	if err := viper.BindEnv("server_chain.dbs.events.port", "POSTGRES_PORT"); err != nil {
+		logging.Logger.Error("error during BindEnv", zap.Error(err))
+	}
+
+	if err := viper.BindEnv("server_chain.kafka.host", "KAFKA_HOSTNAME"); err != nil {
+		logging.Logger.Error("error during BindEnv", zap.Error(err))
+	}
+	if err := viper.BindEnv("server_chain.kafka.username", "KAFKA_USERNAME"); err != nil {
+		logging.Logger.Error("error during BindEnv", zap.Error(err))
+	}
+	if err := viper.BindEnv("server_chain.kafka.password", "KAFKA_PASSWORD"); err != nil {
 		logging.Logger.Error("error during BindEnv", zap.Error(err))
 	}
 
@@ -445,10 +506,21 @@ func (c *ConfigImpl) FromViper() error {
 	conf.RoundRange = viper.GetInt64("server_chain.round_range")
 	conf.TxnMaxPayload = viper.GetInt("server_chain.transaction.payload.max_size")
 	var err error
-	conf.MinTxnFee, err = currency.Int64ToCoin(viper.GetInt64("server_chain.transaction.min_fee"))
+	conf.MinTxnFee, err = currency.ParseZCN(viper.GetFloat64("server_chain.transaction.min_fee"))
 	if err != nil {
 		return err
 	}
+	conf.MaxTxnFee, err = currency.ParseZCN(viper.GetFloat64("server_chain.transaction.max_fee"))
+	if err != nil {
+		return err
+	}
+	if conf.MaxTxnFee == 0 {
+		conf.MaxTxnFee = DefaultMaxTxnFee
+	}
+
+	conf.TxnTransferCost = viper.GetInt("server_chain.transaction.transfer_cost")
+	conf.TxnCostFeeCoeff = viper.GetInt("server_chain.transaction.cost_fee_coeff")
+	conf.TxnFutureNonce = viper.GetInt("server_chain.transaction.future_nonce")
 	txnExp := viper.GetStringSlice("server_chain.transaction.exempt")
 	conf.TxnExempt = make(map[string]bool)
 	for i := range txnExp {
@@ -496,6 +568,7 @@ func (c *ConfigImpl) FromViper() error {
 		conf.BlockProposalWaitMode = BlockProposalWaitDynamic
 	}
 	conf.ReuseTransactions = viper.GetBool("server_chain.block.reuse_txns")
+	conf.BlockFinalizationTimeout = viper.GetDuration("server_chain.block.finalization.timeout")
 
 	conf.MinActiveSharders = viper.GetInt("server_chain.block.sharding.min_active_sharders")
 	conf.MinActiveReplicators = viper.GetInt("server_chain.block.sharding.min_active_replicators")
@@ -518,11 +591,29 @@ func (c *ConfigImpl) FromViper() error {
 	conf.DbsEvents.MaxIdleConns = viper.GetInt("server_chain.dbs.events.max_idle_conns")
 	conf.DbsEvents.MaxOpenConns = viper.GetInt("server_chain.dbs.events.max_open_conns")
 	conf.DbsEvents.ConnMaxLifetime = viper.GetDuration("server_chain.dbs.events.conn_max_lifetime")
-
+	conf.DbsEvents.Slowtablespace = viper.GetString("server_chain.dbs.events.slowtablespace")
+	if conf.DbsEvents.Slowtablespace == "" {
+		conf.DbsEvents.Slowtablespace = "hddtablespace"
+	}
+	conf.DbsEvents.KafkaEnabled = viper.GetBool("kafka.enabled")
+	conf.DbsEvents.KafkaHost = viper.GetString("server_chain.kafka.host")
+	conf.DbsEvents.KafkaTopic = viper.GetString("kafka.topic")
+	conf.DbsEvents.KafkaTopicPartition = viper.GetInt("kafka.partition")
+	conf.DbsEvents.KafkaUsername = viper.GetString("server_chain.kafka.username")
+	conf.DbsEvents.KafkaPassword = viper.GetString("server_chain.kafka.password")
+	conf.DbsEvents.KafkaWriteTimeout = viper.GetDuration("kafka.write_timeout")
+	conf.DbsEvents.KafkaTriggerRound = viper.GetInt64("kafka.trigger_round")
+	conf.DbsSettings.Debug = viper.GetBool("server_chain.dbs.settings.debug")
+	conf.DbsSettings.AggregatePeriod = viper.GetInt64("server_chain.dbs.settings.aggregate_period")
+	conf.DbsSettings.PartitionChangePeriod = viper.GetInt64("server_chain.dbs.settings.partition_change_period")
+	conf.DbsSettings.PartitionKeepCount = viper.GetInt64("server_chain.dbs.settings.partition_keep_count")
+	conf.DbsSettings.PermanentPartitionChangePeriod = viper.GetInt64("server_chain.dbs.settings.permanent_partition_change_period")
+	conf.DbsSettings.PermanentPartitionKeepCount = viper.GetInt64("server_chain.dbs.settings.permanent_partition_keep_count")
+	conf.DbsSettings.PageLimit = viper.GetInt64("server_chain.dbs.settings.page_limit")
 	return nil
 }
 
-//Updates the config fields from GlobalSettings fields
+// Updates the config fields from GlobalSettings fields
 func (c *ConfigImpl) Update(fields map[string]string, version int64) error {
 	c.guard.Lock()
 	defer c.guard.Unlock()
@@ -539,71 +630,71 @@ func (c *ConfigImpl) Update(fields map[string]string, version int64) error {
 	logging.Logger.Debug("Updating config", zap.Int64("old version", old), zap.Int64("new version", conf.version))
 
 	var err error
-	conf.IsStateEnabled, err = cf.GetBool(minersc.State)
+	conf.IsStateEnabled, err = cf.GetBool(config2.State)
 	if err != nil {
 		return err
 	}
-	conf.IsDkgEnabled, err = cf.GetBool(minersc.Dkg)
+	conf.IsDkgEnabled, err = cf.GetBool(config2.Dkg)
 	if err != nil {
 		return err
 	}
-	conf.IsViewChangeEnabled, err = cf.GetBool(minersc.ViewChange)
+	conf.IsViewChangeEnabled, err = cf.GetBool(config2.ViewChange)
 	if err != nil {
 		return err
 	}
-	conf.IsBlockRewardsEnabled, err = cf.GetBool(minersc.BlockRewards)
+	conf.IsBlockRewardsEnabled, err = cf.GetBool(config2.BlockRewards)
 	if err != nil {
 		return err
 	}
-	conf.IsStorageEnabled, err = cf.GetBool(minersc.Storage)
+	conf.IsStorageEnabled, err = cf.GetBool(config2.Storage)
 	if err != nil {
 		return err
 	}
-	conf.IsFaucetEnabled, err = cf.GetBool(minersc.Faucet)
+	conf.IsFaucetEnabled, err = cf.GetBool(config2.Faucet)
 	if err != nil {
 		return err
 	}
-	conf.IsFeeEnabled, err = cf.GetBool(minersc.Miner)
+	conf.IsFeeEnabled, err = cf.GetBool(config2.Miner)
 	if err != nil {
 		return err
 	}
-	conf.IsMultisigEnabled, err = cf.GetBool(minersc.Multisig)
+	conf.IsMultisigEnabled, err = cf.GetBool(config2.Multisig)
 	if err != nil {
 		return err
 	}
-	conf.IsVestingEnabled, err = cf.GetBool(minersc.Vesting)
+	conf.IsVestingEnabled, err = cf.GetBool(config2.Vesting)
 	if err != nil {
 		return err
 	}
-	conf.IsZcnEnabled, err = cf.GetBool(minersc.Zcn)
+	conf.IsZcnEnabled, err = cf.GetBool(config2.Zcn)
 	if err != nil {
 		return err
 	}
-	conf.MinBlockSize, err = cf.GetInt32(minersc.BlockMinSize)
+	conf.MinBlockSize, err = cf.GetInt32(config2.BlockMinSize)
 	if err != nil {
 		return err
 	}
-	conf.BlockSize, err = cf.GetInt32(minersc.BlockMaxSize)
+	conf.BlockSize, err = cf.GetInt32(config2.BlockMaxSize)
 	if err != nil {
 		return err
 	}
-	conf.MaxBlockCost, err = cf.GetInt(minersc.BlockMaxCost)
+	conf.MaxBlockCost, err = cf.GetInt(config2.BlockMaxCost)
 	if err != nil {
 		return err
 	}
-	conf.MaxByteSize, err = cf.GetInt64(minersc.BlockMaxByteSize)
+	conf.MaxByteSize, err = cf.GetInt64(config2.BlockMaxByteSize)
 	if err != nil {
 		return err
 	}
-	conf.NumReplicators, err = cf.GetInt(minersc.BlockReplicators)
+	conf.NumReplicators, err = cf.GetInt(config2.BlockReplicators)
 	if err != nil {
 		return err
 	}
-	conf.BlockProposalMaxWaitTime, err = cf.GetDuration(minersc.BlockProposalMaxWaitTime)
+	conf.BlockProposalMaxWaitTime, err = cf.GetDuration(config2.BlockProposalMaxWaitTime)
 	if err != nil {
 		return err
 	}
-	waitMode, err := cf.GetString(minersc.BlockProposalWaitMode)
+	waitMode, err := cf.GetString(config2.BlockProposalWaitMode)
 	if err != nil {
 		return err
 	}
@@ -612,67 +703,96 @@ func (c *ConfigImpl) Update(fields map[string]string, version int64) error {
 	} else if waitMode == "dynamic" {
 		conf.BlockProposalWaitMode = BlockProposalWaitDynamic
 	}
-	conf.ThresholdByCount, err = cf.GetInt(minersc.BlockConsensusThresholdByCount)
+	conf.ThresholdByCount, err = cf.GetInt(config2.BlockConsensusThresholdByCount)
 	if err != nil {
 		return err
 	}
-	conf.ThresholdByStake, err = cf.GetInt(minersc.BlockConsensusThresholdByStake)
+	conf.ThresholdByStake, err = cf.GetInt(config2.BlockConsensusThresholdByStake)
 	if err != nil {
 		return err
 	}
-	conf.MinActiveSharders, err = cf.GetInt(minersc.BlockShardingMinActiveSharders)
+	conf.MinActiveSharders, err = cf.GetInt(config2.BlockShardingMinActiveSharders)
 	if err != nil {
 		return err
 	}
-	conf.MinActiveReplicators, err = cf.GetInt(minersc.BlockShardingMinActiveReplicators)
+	conf.MinActiveReplicators, err = cf.GetInt(config2.BlockShardingMinActiveReplicators)
 	if err != nil {
 		return err
 	}
-	conf.ValidationBatchSize, err = cf.GetInt(minersc.BlockValidationBatchSize)
+	conf.ValidationBatchSize, err = cf.GetInt(config2.BlockValidationBatchSize)
 	if err != nil {
 		return err
 	}
-	conf.ReuseTransactions, err = cf.GetBool(minersc.BlockReuseTransactions)
+	conf.ReuseTransactions, err = cf.GetBool(config2.BlockReuseTransactions)
 	if err != nil {
 		return err
 	}
-	conf.MinGenerators, err = cf.GetInt(minersc.BlockMinGenerators)
+	conf.BlockFinalizationTimeout, err = cf.GetDuration(config2.BlockFinalizationTimeout)
 	if err != nil {
 		return err
 	}
-	conf.GeneratorsPercent, err = cf.GetFloat64(minersc.BlockGeneratorsPercent)
+	conf.MinGenerators, err = cf.GetInt(config2.BlockMinGenerators)
 	if err != nil {
 		return err
 	}
-	conf.RoundRange, err = cf.GetInt64(minersc.RoundRange)
+	conf.GeneratorsPercent, err = cf.GetFloat64(config2.BlockGeneratorsPercent)
 	if err != nil {
 		return err
 	}
-	conf.RoundTimeoutSofttoMin, err = cf.GetInt(minersc.RoundTimeoutsSofttoMin)
+	conf.RoundRange, err = cf.GetInt64(config2.RoundRange)
 	if err != nil {
 		return err
 	}
-	conf.RoundTimeoutSofttoMult, err = cf.GetInt(minersc.RoundTimeoutsSofttoMult)
+	conf.RoundTimeoutSofttoMin, err = cf.GetInt(config2.RoundTimeoutsSofttoMin)
 	if err != nil {
 		return err
 	}
-	conf.RoundRestartMult, err = cf.GetInt(minersc.RoundTimeoutsRoundRestartMult)
+	conf.RoundTimeoutSofttoMult, err = cf.GetInt(config2.RoundTimeoutsSofttoMult)
 	if err != nil {
 		return err
 	}
-	conf.TxnMaxPayload, err = cf.GetInt(minersc.TransactionPayloadMaxSize)
+	conf.RoundRestartMult, err = cf.GetInt(config2.RoundTimeoutsRoundRestartMult)
 	if err != nil {
 		return err
 	}
-	conf.MinTxnFee, err = cf.GetCoin(minersc.TransactionMinFee)
+	conf.TxnMaxPayload, err = cf.GetInt(config2.TransactionPayloadMaxSize)
 	if err != nil {
 		return err
 	}
-	conf.ClientSignatureScheme, err = cf.GetString(minersc.ClientSignatureScheme)
+
+	minTxnFeeF, err := cf.GetFloat64(config2.TransactionMinFee)
 	if err != nil {
 		return err
 	}
-	verificationTicketsTo, err := cf.GetString(minersc.MessagesVerificationTicketsTo)
+
+	minTxnFee, err := currency.ParseZCN(minTxnFeeF)
+	if err != nil {
+		return err
+	}
+	conf.MinTxnFee = minTxnFee
+
+	// get max txn fee from cf and parse it to currency.Coin
+	maxTxnFeeF, err := cf.GetFloat64(config2.TransactionMaxFee)
+	if err != nil {
+		return err
+	}
+
+	maxTxnFee, err := currency.ParseZCN(maxTxnFeeF)
+	if err != nil {
+		return err
+	}
+
+	if maxTxnFee == 0 {
+		maxTxnFee, _ = currency.ParseZCN(DefaultMaxTxnFee)
+	}
+
+	conf.MaxTxnFee = maxTxnFee
+
+	conf.ClientSignatureScheme, err = cf.GetString(config2.ClientSignatureScheme)
+	if err != nil {
+		return err
+	}
+	verificationTicketsTo, err := cf.GetString(config2.MessagesVerificationTicketsTo)
 	if err != nil {
 		return err
 	}
@@ -681,22 +801,22 @@ func (c *ConfigImpl) Update(fields map[string]string, version int64) error {
 	} else {
 		conf.VerificationTicketsTo = Generator
 	}
-	conf.PruneStateBelowCount, err = cf.GetInt(minersc.StatePruneBelowCount)
+	conf.PruneStateBelowCount, err = cf.GetInt(config2.StatePruneBelowCount)
 	if err != nil {
 		return err
 	}
-	conf.SmartContractTimeout, err = cf.GetDuration(minersc.SmartContractTimeout)
+	conf.SmartContractTimeout, err = cf.GetDuration(config2.SmartContractTimeout)
 	if err != nil {
 		return err
 	}
 	if conf.SmartContractTimeout == 0 {
 		conf.SmartContractTimeout = DefaultSmartContractTimeout
 	}
-	conf.SmartContractSettingUpdatePeriod, err = cf.GetInt64(minersc.SmartContractSettingUpdatePeriod)
+	conf.SmartContractSettingUpdatePeriod, err = cf.GetInt64(config2.SmartContractSettingUpdatePeriod)
 	if err != nil {
 		return err
 	}
-	if txnsExempted, err := cf.GetStrings(minersc.TransactionExempt); err != nil {
+	if txnsExempted, err := cf.GetStrings(config2.TransactionExempt); err != nil {
 		return err
 	} else {
 		conf.TxnExempt = make(map[string]bool)
@@ -710,58 +830,58 @@ func (c *ConfigImpl) Update(fields map[string]string, version int64) error {
 // We don't need this yet, as the health check settings are used to set up a worker thread.
 func (conf *ConfigData) UpdateHealthCheckSettings(cf *minersc.GlobalSettings) error {
 	var err error
-	conf.HealthShowCounters, err = cf.GetBool(minersc.HealthCheckShowCounters)
+	conf.HealthShowCounters, err = cf.GetBool(config2.HealthCheckShowCounters)
 	if err != nil {
 		return err
 	}
 	ds := &conf.HCCycleScan[DeepScan]
-	ds.Enabled, err = cf.GetBool(minersc.HealthCheckDeepScanEnabled)
+	ds.Enabled, err = cf.GetBool(config2.HealthCheckDeepScanEnabled)
 	if err != nil {
 		return err
 	}
-	ds.BatchSize, err = cf.GetInt64(minersc.HealthCheckDeepScanBatchSize)
+	ds.BatchSize, err = cf.GetInt64(config2.HealthCheckDeepScanBatchSize)
 	if err != nil {
 		return err
 	}
-	ds.Window, err = cf.GetInt64(minersc.HealthCheckDeepScanWindow)
+	ds.Window, err = cf.GetInt64(config2.HealthCheckDeepScanWindow)
 	if err != nil {
 		return err
 	}
-	ds.Settle, err = cf.GetDuration(minersc.HealthCheckDeepScanSettleSecs)
+	ds.Settle, err = cf.GetDuration(config2.HealthCheckDeepScanSettleSecs)
 	if err != nil {
 		return err
 	}
-	ds.RepeatInterval, err = cf.GetDuration(minersc.HealthCheckDeepScanIntervalMins)
+	ds.RepeatInterval, err = cf.GetDuration(config2.HealthCheckDeepScanIntervalMins)
 	if err != nil {
 		return err
 	}
-	ds.ReportStatus, err = cf.GetDuration(minersc.HealthCheckDeepScanReportStatusMins)
+	ds.ReportStatus, err = cf.GetDuration(config2.HealthCheckDeepScanReportStatusMins)
 	if err != nil {
 		return err
 	}
 
 	ps := &conf.HCCycleScan[ProximityScan]
-	ps.Enabled, err = cf.GetBool(minersc.HealthCheckProximityScanEnabled)
+	ps.Enabled, err = cf.GetBool(config2.HealthCheckProximityScanEnabled)
 	if err != nil {
 		return err
 	}
-	ps.BatchSize, err = cf.GetInt64(minersc.HealthCheckProximityScanBatchSize)
+	ps.BatchSize, err = cf.GetInt64(config2.HealthCheckProximityScanBatchSize)
 	if err != nil {
 		return err
 	}
-	ps.Window, err = cf.GetInt64(minersc.HealthCheckProximityScanWindow)
+	ps.Window, err = cf.GetInt64(config2.HealthCheckProximityScanWindow)
 	if err != nil {
 		return err
 	}
-	ps.Settle, err = cf.GetDuration(minersc.HealthCheckProximityScanSettleSecs)
+	ps.Settle, err = cf.GetDuration(config2.HealthCheckProximityScanSettleSecs)
 	if err != nil {
 		return err
 	}
-	ps.RepeatInterval, err = cf.GetDuration(minersc.HealthCheckProximityScanRepeatIntervalMins)
+	ps.RepeatInterval, err = cf.GetDuration(config2.HealthCheckProximityScanRepeatIntervalMins)
 	if err != nil {
 		return err
 	}
-	ps.ReportStatus, err = cf.GetDuration(minersc.HealthCheckProximityScanRejportStatusMins)
+	ps.ReportStatus, err = cf.GetDuration(config2.HealthCheckProximityScanRejportStatusMins)
 	if err != nil {
 		return err
 	}

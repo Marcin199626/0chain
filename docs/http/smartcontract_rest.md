@@ -154,7 +154,6 @@ File: 0Chain/code/go/0chain.net/smartcontract/storagesc/sc.go
 
 | Endpoint: fc.SmartContractExecutionStats | Handler |
 | ------ | ------ |
-| challenge_request | metrics.GetOrRegisterTimer |
 | challenge_response | metrics.GetOrRegisterTimer |
 | generate_challenges | metrics.GetOrRegisterTimer |
 
@@ -208,7 +207,6 @@ File: 0Chain/code/go/0chain.net/smartcontract/storagesc/sc.go
 
 | Endpoint: fc.SmartContractExecutionStats | Handler |
 | ------ | ------ |
-| new_read_pool | metrics.GetOrRegisterTimer |
 | read_pool_lock | metrics.GetOrRegisterTimer |
 | read_pool_unlock | metrics.GetOrRegisterTimer |
 
@@ -223,7 +221,6 @@ File: 0Chain/code/go/0chain.net/smartcontract/storagesc/sc.go
 | Endpoint: fc.SmartContractExecutionStats | Handler |
 | ------ | ------ |
 | write_pool_lock | metrics.GetOrRegisterTimer |
-| write_pool_unlock | metrics.GetOrRegisterTimer |
 
 
 > stake pool
@@ -237,7 +234,6 @@ File: 0Chain/code/go/0chain.net/smartcontract/storagesc/sc.go
 | ------ | ------ |
 | stake_pool_lock | metrics.GetOrRegisterTimer |
 | stake_pool_unlock | metrics.GetOrRegisterTimer |
-| stake_pool_pay_interests | metrics.GetOrRegisterTimer |
 
 
 > challenge pool

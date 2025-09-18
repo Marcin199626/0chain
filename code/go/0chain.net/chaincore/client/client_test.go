@@ -9,8 +9,8 @@ import (
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
 	"0chain.net/core/encryption"
-	"0chain.net/core/logging"
 	"0chain.net/core/memorystore"
+	"github.com/0chain/common/core/logging"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gomodule/redigo/redis"
 	"github.com/stretchr/testify/require"
@@ -76,32 +76,6 @@ func TestSaveClients(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, client.PublicKey, c.PublicKey)
-}
-
-func TestClientChunkSave(t *testing.T) {
-	common.SetupRootContext(context.Background())
-	if err := initDefaultPool(); err != nil {
-		t.Fatal(err)
-	}
-	setupEntity()
-	numWorkers := 1000
-	done := make(chan bool, 100)
-	for i := 1; i <= numWorkers; i++ {
-		sigScheme := encryption.NewED25519Scheme()
-		err := sigScheme.GenerateKeys()
-		if err != nil {
-			t.Fatal(err)
-		}
-		go postClient(t, sigScheme, done)
-	}
-	for count := 0; true; {
-		<-done
-		count++
-		if count == numWorkers {
-			break
-		}
-	}
-	common.Done()
 }
 
 func TestClientID(t *testing.T) {

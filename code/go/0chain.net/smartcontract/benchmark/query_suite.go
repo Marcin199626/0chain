@@ -9,11 +9,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/stretchr/testify/require"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 type TestSuiteFunc func(data BenchData, sigScheme SignatureScheme) TestSuite
@@ -64,14 +65,15 @@ func (qbt *QueryBenchTest) Run(balances cstate.TimedQueryStateContext, b *testin
 		req.URL.RawQuery = q.Encode()
 	}
 	b.StartTimer()
+
 	qbt.Receiver.SetQueryStateContext(balances)
 	qbt.Endpoint(rec, req)
 
 	b.StopTimer()
 	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+	defer resp.Body.Close()
 	if viper.GetBool(ShowOutput) && !qbt.shownResult {
-		body, _ := io.ReadAll(resp.Body)
-		defer resp.Body.Close()
 		var prettyJSON bytes.Buffer
 		err := json.Indent(&prettyJSON, body, "", "\t")
 		require.NoError(b, err)
@@ -79,7 +81,7 @@ func (qbt *QueryBenchTest) Run(balances cstate.TimedQueryStateContext, b *testin
 		qbt.shownResult = true
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("status code %v not ok: %v", resp.StatusCode, resp.Status)
+		return fmt.Errorf("status code %v not ok: %v, err: %v", resp.StatusCode, resp.Status, string(body))
 	}
 	b.StartTimer()
 

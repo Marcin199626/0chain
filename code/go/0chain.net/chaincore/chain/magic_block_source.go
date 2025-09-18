@@ -3,7 +3,8 @@ package chain
 import (
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"os"
+
 	"net/url"
 	"path"
 	"path/filepath"
@@ -11,7 +12,7 @@ import (
 	"0chain.net/chaincore/block"
 	"0chain.net/chaincore/httpclientutil"
 
-	"0chain.net/core/logging"
+	"github.com/0chain/common/core/logging"
 	"go.uber.org/zap"
 )
 
@@ -45,7 +46,7 @@ func ReadMagicBlockFile(path string) (mb *block.MagicBlock, err error) {
 	}
 
 	var b []byte
-	if b, err = ioutil.ReadFile(path); err != nil {
+	if b, err = os.ReadFile(path); err != nil {
 		return nil, fmt.Errorf("reading magic block file: %v", err)
 	}
 
@@ -55,14 +56,15 @@ func ReadMagicBlockFile(path string) (mb *block.MagicBlock, err error) {
 	}
 
 	logging.Logger.Info("read magic block file",
-		zap.Any("number", mb.MagicBlockNumber),
-		zap.Any("sr", mb.StartingRound),
-		zap.Any("hash", mb.Hash))
+		zap.Int64("number", mb.MagicBlockNumber),
+		zap.Int64("sr", mb.StartingRound),
+		zap.String("hash", mb.Hash))
 	return
 }
 
 // GetMagicBlockFrom0DNS with given URL base.
 func GetMagicBlockFrom0DNS(urlBase string) (mb *block.MagicBlock, err error) {
+	logging.Logger.Info("get magic block from 0DNS", zap.String("0dns", urlBase))
 	if urlBase == "" {
 		return nil, errors.New("empty 0DNS URL base configured")
 	}
@@ -75,8 +77,8 @@ func GetMagicBlockFrom0DNS(urlBase string) (mb *block.MagicBlock, err error) {
 		return nil, fmt.Errorf("getting MB from 0DNS %q: %v", full, err)
 	}
 	logging.Logger.Info("get magic block file from 0DNS", zap.String("0dns", full),
-		zap.Any("number", mb.MagicBlockNumber),
-		zap.Any("sr", mb.StartingRound),
-		zap.Any("hash", mb.Hash))
+		zap.Int64("number", mb.MagicBlockNumber),
+		zap.Int64("sr", mb.StartingRound),
+		zap.String("hash", mb.Hash))
 	return
 }

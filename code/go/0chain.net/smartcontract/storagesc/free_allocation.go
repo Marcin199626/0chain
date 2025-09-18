@@ -1,19 +1,18 @@
 package storagesc
 
 import (
-	"encoding/hex"
-	"encoding/json"
-	"fmt"
-
-	"0chain.net/chaincore/smartcontractinterface"
-
-	"0chain.net/chaincore/currency"
-
 	cstate "0chain.net/chaincore/chain/state"
+	"0chain.net/chaincore/smartcontractinterface"
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
-	"0chain.net/core/util"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"github.com/0chain/common/core/currency"
+	"github.com/0chain/common/core/logging"
+	"github.com/0chain/common/core/util"
+	"go.uber.org/zap"
 )
 
 const (
@@ -24,17 +23,19 @@ const (
 //go:generate msgp -io=false -tests=false -unexported=true -v
 
 type freeStorageMarker struct {
-	Assigner   string           `json:"assigner"`
-	Recipient  string           `json:"recipient"`
-	FreeTokens float64          `json:"free_tokens"`
-	Timestamp  common.Timestamp `json:"timestamp"`
-	Signature  string           `json:"signature"`
+	Assigner   string   `json:"assigner"`
+	Recipient  string   `json:"recipient"`
+	FreeTokens float64  `json:"free_tokens"`
+	Nonce      int64    `json:"nonce"`
+	Signature  string   `json:"signature"`
+	Blobbers   []string `json:"blobbers"`
 }
 
 func (frm *freeStorageMarker) decode(b []byte) error {
 	return json.Unmarshal(b, frm)
 }
 
+// swagger:model freeStorageAllocationInput
 type freeStorageAllocationInput struct {
 	RecipientPublicKey string   `json:"recipient_public_key"`
 	Marker             string   `json:"marker"`
@@ -66,12 +67,12 @@ func freeStorageAssignerKey(sscKey, clientId string) datastore.Key {
 }
 
 type freeStorageAssigner struct {
-	ClientId           string             `json:"client_id"`
-	PublicKey          string             `json:"public_key"`
-	IndividualLimit    currency.Coin      `json:"individual_limit"`
-	TotalLimit         currency.Coin      `json:"total_limit"`
-	CurrentRedeemed    currency.Coin      `json:"current_redeemed"`
-	RedeemedTimestamps []common.Timestamp `json:"redeemed_timestamps"`
+	ClientId        string        `json:"client_id"`
+	PublicKey       string        `json:"public_key"`
+	IndividualLimit currency.Coin `json:"individual_limit"`
+	TotalLimit      currency.Coin `json:"total_limit"`
+	CurrentRedeemed currency.Coin `json:"current_redeemed"`
+	RedeemedNonces  []int64       `json:"redeemed_nonces"`
 }
 
 func (fsa *freeStorageAssigner) Encode() []byte {
@@ -91,19 +92,16 @@ func (fsa *freeStorageAssigner) save(sscKey string, balances cstate.StateContext
 	return err
 }
 
+// TODO test that we really send some value here
 func (fsa *freeStorageAssigner) validate(
 	marker freeStorageMarker,
 	now common.Timestamp,
 	value currency.Coin,
 	balances cstate.StateContextI,
 ) error {
-	if marker.Timestamp >= now {
-		return fmt.Errorf("marker timestamped in the future: %v", marker.Timestamp)
-	}
-
-	verified, err := verifyFreeAllocationRequest(marker, fsa.PublicKey, balances)
-	if err != nil {
-		return err
+	verified, e := verifyFreeAllocationRequestNew(marker, fsa.PublicKey, balances)
+	if e != nil {
+		return e
 	}
 	if !verified {
 		return fmt.Errorf("failed to verify signature")
@@ -122,9 +120,9 @@ func (fsa *freeStorageAssigner) validate(
 		return fmt.Errorf("%d exceeded permitted free storage  %d", value, fsa.IndividualLimit)
 	}
 
-	for _, timestamp := range fsa.RedeemedTimestamps {
-		if marker.Timestamp == timestamp {
-			return fmt.Errorf("marker already redeemed, timestamp: %v", marker.Timestamp)
+	for _, nonce := range fsa.RedeemedNonces {
+		if marker.Nonce == nonce {
+			return fmt.Errorf("marker already redeemed, nonce: %v", marker.Nonce)
 		}
 	}
 
@@ -195,27 +193,22 @@ func (ssc *StorageSmartContract) addFreeStorageAssigner(
 	return "", nil
 }
 
-func verifyFreeAllocationRequest(
+func verifyFreeAllocationRequestNew(
 	frm freeStorageMarker,
 	publicKey string,
 	balances cstate.StateContextI,
 ) (bool, error) {
-	var request = struct {
-		Recipient  string           `json:"recipient"`
-		FreeTokens float64          `json:"free_tokens"`
-		Timestamp  common.Timestamp `json:"timestamp"`
-	}{
-		frm.Recipient, frm.FreeTokens, frm.Timestamp,
+	var ids string
+	for _, b := range frm.Blobbers {
+		ids += b
 	}
-	responseBytes, err := json.Marshal(&request)
-	if err != nil {
-		return false, err
-	}
+	marker := fmt.Sprintf("%s:%f:%d:%s", frm.Recipient, frm.FreeTokens, frm.Nonce, ids)
+	logging.Logger.Debug("free_storage_marker verify", zap.String("marker", marker), zap.String("pub_key", publicKey))
 	signatureScheme := balances.GetSignatureScheme()
 	if err := signatureScheme.SetPublicKey(publicKey); err != nil {
 		return false, err
 	}
-	return signatureScheme.Verify(frm.Signature, hex.EncodeToString(responseBytes))
+	return signatureScheme.Verify(frm.Signature, hex.EncodeToString([]byte(marker)))
 }
 
 func (ssc *StorageSmartContract) freeAllocationRequest(
@@ -253,22 +246,36 @@ func (ssc *StorageSmartContract) freeAllocationRequest(
 			"error getting assigner details: %v", err)
 	}
 
-	if err := assigner.validate(marker, txn.CreationDate, txn.Value, balances); err != nil {
+	coin, err := currency.ParseZCN(marker.FreeTokens)
+	if err != nil {
+		return "", common.NewErrorf("free_allocation_failed",
+			"marker verification failed: %v", err)
+	}
+	//todo query sharder on 0box to get the price of allocation
+	if err := assigner.validate(marker, txn.CreationDate, coin, balances); err != nil {
 		return "", common.NewErrorf("free_allocation_failed",
 			"marker verification failed: %v", err)
 	}
 
-	var request = newAllocationRequest{
-		DataShards:      conf.FreeAllocationSettings.DataShards,
-		ParityShards:    conf.FreeAllocationSettings.ParityShards,
-		Size:            conf.FreeAllocationSettings.Size,
-		Expiration:      common.Timestamp(common.ToTime(txn.CreationDate).Add(conf.FreeAllocationSettings.Duration).Unix()),
-		Owner:           marker.Recipient,
-		OwnerPublicKey:  inputObj.RecipientPublicKey,
-		ReadPriceRange:  conf.FreeAllocationSettings.ReadPriceRange,
-		WritePriceRange: conf.FreeAllocationSettings.WritePriceRange,
-		Blobbers:        inputObj.Blobbers,
+	var blobberAuthTickets []string
+
+	request := newAllocationRequest{
+		DataShards:           conf.FreeAllocationSettings.DataShards,
+		ParityShards:         conf.FreeAllocationSettings.ParityShards,
+		Size:                 conf.FreeAllocationSettings.Size,
+		Owner:                marker.Recipient,
+		OwnerPublicKey:       inputObj.RecipientPublicKey,
+		ReadPriceRange:       conf.FreeAllocationSettings.ReadPriceRange,
+		WritePriceRange:      conf.FreeAllocationSettings.WritePriceRange,
+		Blobbers:             marker.Blobbers,
+		ThirdPartyExtendable: true,
+		StorageVersion:       1, // Use storageV2 for free allocation
 	}
+
+	for range marker.Blobbers {
+		blobberAuthTickets = append(blobberAuthTickets, "")
+	}
+	request.BlobberAuthTickets = blobberAuthTickets
 
 	arBytes, err := request.encode()
 	if err != nil {
@@ -280,27 +287,28 @@ func (ssc *StorageSmartContract) freeAllocationRequest(
 	if err != nil {
 		return "", err
 	}
+
 	newRedeemed, err := currency.AddCoin(assigner.CurrentRedeemed, free)
-	totalMint, err := currency.ParseZCN(marker.FreeTokens)
 	if err != nil {
-		return "", err
+		return "", common.NewErrorf("free_allocation_failed", "add coins: %v", err)
 	}
+
 	assigner.CurrentRedeemed = newRedeemed
 
 	if err != nil {
 		return "", err
 	}
-	readPoolTokens, err := currency.Float64ToCoin(float64(totalMint) * conf.FreeAllocationSettings.ReadPoolFraction)
+	readPoolTokens, err := currency.Float64ToCoin(float64(free) * conf.FreeAllocationSettings.ReadPoolFraction)
 	if err != nil {
 		return "", common.NewErrorf("free_allocation_failed", "converting read pool tokens to Coin: %v", err)
 	}
-	writePoolTokens, err := currency.MinusCoin(totalMint, readPoolTokens)
+	writePoolTokens, err := currency.MinusCoin(free, readPoolTokens)
 	if err != nil {
 		return "", common.NewErrorf("free_allocation_failed",
 			"subtracting read pool token from transaction value: %v", err)
 	}
 
-	resp, err := ssc.newAllocationRequestInternal(txn, arBytes, conf, writePoolTokens, balances, nil)
+	resp, err := ssc.newAllocationRequestInternal(txn, arBytes, conf, NewTokenTransfer(writePoolTokens, conf.OwnerId, txn.ToClientID, true), balances, nil)
 	if err != nil {
 		return "", common.NewErrorf("free_allocation_failed", "creating new allocation: %v", err)
 	}
@@ -310,84 +318,18 @@ func (ssc *StorageSmartContract) freeAllocationRequest(
 		return "", common.NewErrorf("free_allocation_failed", "unmarshalling allocation: %v", err)
 	}
 
-	assigner.RedeemedTimestamps = append(assigner.RedeemedTimestamps, marker.Timestamp)
+	assigner.RedeemedNonces = append(assigner.RedeemedNonces, marker.Nonce)
 	if err := assigner.save(ssc.ID, balances); err != nil {
-		return "", common.NewErrorf("free_allocation_failed", "assigner save failed: %v", err)
+		return "", common.NewErrorf("free_allocation_failed", "assigner Save failed: %v", err)
 	}
 
 	txn.Value = readPoolTokens
-	_, err = ssc.readPoolLockInternal(txn, readPoolTokens, true, marker.Recipient, balances)
+	_, err = ssc.readPoolLockInternal(txn, NewTokenTransfer(readPoolTokens, conf.OwnerId, txn.ToClientID, true), marker.Recipient, balances)
 	if err != nil {
 		return "", common.NewErrorf("free_allocation_failed", "locking tokens in read pool: %v", err)
 	}
 
 	return resp, err
-}
-
-func (ssc *StorageSmartContract) updateFreeStorageRequest(
-	txn *transaction.Transaction,
-	input []byte,
-	balances cstate.StateContextI,
-) (string, error) {
-	var err error
-	var inputObj freeStorageUpgradeInput
-	if err := json.Unmarshal(input, &inputObj); err != nil {
-		return "", common.NewErrorf("free_allocation_failed",
-			"unmarshal input: %v", err)
-	}
-
-	var marker freeStorageMarker
-	if err := marker.decode([]byte(inputObj.Marker)); err != nil {
-		return "", common.NewErrorf("update_free_storage_request",
-			"unmarshal request: %v", err)
-	}
-
-	var conf *Config
-	if conf, err = ssc.getConfig(balances, true); err != nil {
-		return "", common.NewErrorf("update_free_storage_request",
-			"can't get config: %v", err)
-	}
-
-	assigner, err := ssc.getFreeStorageAssigner(marker.Assigner, balances)
-	if err != nil {
-		return "", common.NewErrorf("update_free_storage_request",
-			"error getting assigner details: %v", err)
-	}
-
-	if err := assigner.validate(marker, txn.CreationDate, txn.Value, balances); err != nil {
-		return "", common.NewErrorf("update_free_storage_request",
-			"marker verification failed: %v", err)
-	}
-
-	var request = updateAllocationRequest{
-		ID:         inputObj.AllocationId,
-		OwnerID:    marker.Recipient,
-		Size:       conf.FreeAllocationSettings.Size,
-		Expiration: common.Timestamp(conf.FreeAllocationSettings.Duration.Seconds()),
-	}
-	input, err = json.Marshal(request)
-	if err != nil {
-		return "", common.NewErrorf("update_free_storage_request",
-			"marshal marker: %v", err)
-	}
-
-	resp, err := ssc.updateAllocationRequestInternal(txn, input, conf, balances)
-	if err != nil {
-		return "", common.NewErrorf("update_free_storage_request", err.Error())
-	}
-
-	newRedeemed, err := currency.AddCoin(assigner.CurrentRedeemed, txn.Value)
-	if err != nil {
-		return "", common.NewErrorf("update_free_storage_request",
-			"can't add redeemed tokens: %v", err)
-	}
-	assigner.CurrentRedeemed = newRedeemed
-	assigner.RedeemedTimestamps = append(assigner.RedeemedTimestamps, marker.Timestamp)
-	if err := assigner.save(ssc.ID, balances); err != nil {
-		return "", common.NewErrorf("update_free_storage_request", "assigner save failed: %v", err)
-	}
-
-	return resp, nil
 }
 
 func (ssc *StorageSmartContract) getFreeStorageAssigner(

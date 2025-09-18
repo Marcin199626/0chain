@@ -14,8 +14,8 @@ import (
 	"0chain.net/chaincore/smartcontractinterface"
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/common"
-	. "0chain.net/core/logging"
-	"0chain.net/core/util"
+	. "github.com/0chain/common/core/logging"
+	"github.com/0chain/common/core/util"
 	"go.uber.org/zap"
 )
 
@@ -59,8 +59,8 @@ func (ms *MultiSigSmartContract) setSC(sc *smartcontractinterface.SmartContract,
 	ms.SmartContract = sc
 }
 
-func (ms *MultiSigSmartContract) GetCost(t *transaction.Transaction, funcName string, balances state.StateContextI) (int, error) {
-	return 0, nil
+func (ms *MultiSigSmartContract) GetCostTable(balances c_state.StateContextI) (map[string]int, error) {
+	return map[string]int{}, nil
 }
 
 func (ms *MultiSigSmartContract) Execute(t *transaction.Transaction, funcName string, inputData []byte, balances state.StateContextI) (string, error) {

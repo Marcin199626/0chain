@@ -5,7 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"0chain.net/chaincore/currency"
+	"0chain.net/core/sortedmap"
+	"github.com/0chain/common/core/currency"
 
 	"0chain.net/smartcontract/stakepool"
 
@@ -26,6 +27,7 @@ const (
 	GlobalNodeType        = "globalnode"
 	StakePoolNodeType     = "stakepool"
 	UserNodeType          = "usernode"
+	Porvider              = "provider"
 )
 
 type (
@@ -149,9 +151,13 @@ func (mp *MintPayload) GetStringToSign() string {
 	return encryption.Hash(fmt.Sprintf("%v:%v:%v:%v", mp.EthereumTxnID, mp.Amount, mp.Nonce, mp.ReceivingClientID))
 }
 
-func (mp *MintPayload) verifySignatures(state cstate.StateContextI) (err error) {
+func (mp *MintPayload) verifySignatures(signatures []*AuthorizerSignature, state cstate.StateContextI) error {
 	toSign := mp.GetStringToSign()
-	for _, v := range mp.Signatures {
+	if len(signatures) == 0 {
+		return errors.New("signatures not found")
+	}
+
+	for _, v := range signatures {
 		authorizerID := v.ID
 		if authorizerID == "" {
 			return errors.New("authorizer ID is empty in a signature")
@@ -178,7 +184,16 @@ func (mp *MintPayload) verifySignatures(state cstate.StateContextI) (err error) 
 		}
 	}
 
-	return
+	return nil
+}
+
+func (mp *MintPayload) getUniqueSignatures() []*AuthorizerSignature {
+	sigsMap := sortedmap.New[string, *AuthorizerSignature]()
+	for i, v := range mp.Signatures {
+		sigsMap.Put(v.ID, mp.Signatures[i])
+	}
+
+	return sigsMap.GetValues()
 }
 
 // ---- BurnPayloadResponse ----------
@@ -197,6 +212,23 @@ func (bp *BurnPayloadResponse) Encode() []byte {
 
 func (bp *BurnPayloadResponse) Decode(input []byte) error {
 	err := json.Unmarshal(input, bp)
+	return err
+}
+
+// ------ RepairEthAddressPayload ----------------
+
+type RepairEthAddressPayload struct {
+	EthereumAddress string `json:"ethereum_address"`
+	Nonce           int64  `json:"nonce"`
+}
+
+func (reap *RepairEthAddressPayload) Encode() []byte {
+	buff, _ := json.Marshal(reap)
+	return buff
+}
+
+func (reap *RepairEthAddressPayload) Decode(input []byte) error {
+	err := json.Unmarshal(input, reap)
 	return err
 }
 
@@ -234,6 +266,13 @@ func (pk *UpdateAuthorizerStakePoolPayload) Decode(input []byte) error {
 
 // ------- AddAuthorizerPayload ------------
 
+//	type addAuthorizerPayload struct {
+//		URL           string
+//		ClientID      string
+//		ClientKey     string
+//		NumDelegates  int
+//		ServiceCharge float64
+//	}
 type AddAuthorizerPayload struct {
 	PublicKey         string             `json:"public_key"`
 	URL               string             `json:"url"`
@@ -294,4 +333,44 @@ type poolStat struct {
 func (ps *poolStat) encode() []byte {
 	buff, _ := json.Marshal(ps)
 	return buff
+}
+
+type AuthCount struct {
+	Count int `json:"auth_count"`
+}
+
+func (ac *AuthCount) Encode() ([]byte, error) {
+	return json.Marshal(ac)
+}
+
+func (ac *AuthCount) Decode(input []byte) error {
+	return json.Unmarshal(input, ac)
+}
+
+type DeleteAuthorizerPayload struct {
+	ID string `json:"id"`
+}
+
+func (dap *DeleteAuthorizerPayload) Encode() (data []byte, err error) {
+	data, err = json.Marshal(dap)
+	return
+}
+
+func (dap *DeleteAuthorizerPayload) Decode(input []byte) error {
+	err := json.Unmarshal(input, dap)
+	return err
+}
+
+type AuthorizerHealthCheckPayload struct {
+	ID string `json:"id"`
+}
+
+func (ahp *AuthorizerHealthCheckPayload) Encode() (data []byte, err error) {
+	data, err = json.Marshal(ahp)
+	return
+}
+
+func (ahp *AuthorizerHealthCheckPayload) Decode(input []byte) error {
+	err := json.Unmarshal(input, ahp)
+	return err
 }

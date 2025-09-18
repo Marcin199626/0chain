@@ -7,22 +7,25 @@ import (
 	"strconv"
 	"sync"
 
-	"0chain.net/chaincore/currency"
+	"0chain.net/chaincore/transaction"
+	"github.com/0chain/common/core/currency"
 
 	cstate "0chain.net/chaincore/chain/state"
 	"0chain.net/core/common"
 	"0chain.net/core/encryption"
-	"0chain.net/core/logging"
 	"0chain.net/core/maths"
-	"0chain.net/smartcontract/dbs"
 	"0chain.net/smartcontract/dbs/event"
 	"0chain.net/smartcontract/stakepool/spenum"
+	"github.com/0chain/common/core/logging"
+	"github.com/0chain/common/core/util"
 	"go.uber.org/zap"
 )
 
-func (ssc *StorageSmartContract) blobberBlockRewards(
-	balances cstate.StateContextI,
-) (err error) {
+type BlobberBlockRewardsInput struct {
+	Round int64 `json:"round,omitempty"`
+}
+
+func (ssc *StorageSmartContract) blobberBlockRewards(t *transaction.Transaction, input []byte, balances cstate.StateContextI) (ferr error) {
 	logging.Logger.Info("blobberBlockRewards started",
 		zap.Int64("round", balances.GetBlock().Round),
 		zap.String("block_hash", balances.GetBlock().Hash))
@@ -39,13 +42,17 @@ func (ssc *StorageSmartContract) blobberBlockRewards(
 			"cannot get smart contract configurations: "+err.Error())
 	}
 
-	if conf.BlockReward.BlockReward == 0 {
+	if balances.GetBlock().Round%conf.BlockReward.TriggerPeriod != 0 {
+		return common.NewError("blobber_block_rewards_failed",
+			"block reward trigger period not reached")
+	}
+
+	if conf.BlockReward.BlockReward == 0 || conf.BlockReward.TriggerPeriod == 0 {
 		return nil
 	}
 
 	bbr, err := getBlockReward(conf.BlockReward.BlockReward, balances.GetBlock().Round,
-		conf.BlockReward.BlockRewardChangePeriod, conf.BlockReward.BlockRewardChangeRatio,
-		conf.BlockReward.BlobberWeight)
+		conf.BlockReward.BlockRewardChangePeriod, conf.BlockReward.BlockRewardChangeRatio)
 	if err != nil {
 		return common.NewError("blobber_block_rewards_failed",
 			"cannot get block rewards: "+err.Error())
@@ -56,6 +63,21 @@ func (ssc *StorageSmartContract) blobberBlockRewards(
 		return common.NewError("blobber_block_rewards_failed",
 			"cannot get all blobbers list: "+err.Error())
 	}
+
+	defer func() {
+		//we are returning error here and can't shadow it with return of next calls
+		if ferr != nil {
+			return
+		}
+		logging.Logger.Info("blobber_block_rewards : cleaning older partition",
+			zap.Any("round", BlobberRewardKey(GetPreviousRewardRound(balances.GetBlock().Round, conf.BlockReward.TriggerPeriod))))
+
+		_, ferr = balances.DeleteTrieNode(BlobberRewardKey(GetPreviousRewardRound(balances.GetBlock().Round, conf.BlockReward.TriggerPeriod)))
+		if ferr != nil {
+			logging.Logger.Error("blobber_block_rewards_failed",
+				zap.String("deleting blobber reward node", ferr.Error()))
+		}
+	}()
 
 	hashString := encryption.Hash(balances.GetTransaction().Hash + balances.GetBlock().PrevHash)
 	var randomSeed int64
@@ -70,6 +92,9 @@ func (ssc *StorageSmartContract) blobberBlockRewards(
 	if err := activePassedBlobberRewardPart.GetRandomItems(balances, r, &blobberRewards); err != nil {
 		logging.Logger.Info("blobber_block_rewards_failed",
 			zap.String("getting random partition", err.Error()))
+		if err != util.ErrValueNotPresent {
+			return err
+		}
 		return nil
 	}
 
@@ -79,16 +104,16 @@ func (ssc *StorageSmartContract) blobberBlockRewards(
 	}
 
 	var wg sync.WaitGroup
-	errorChan := make(chan error, len(blobberRewards))
-	spChan := make(chan spResp, len(blobberRewards))
+	errC := make(chan error, len(blobberRewards))
+	spC := make(chan spResp, len(blobberRewards))
 	for i, br := range blobberRewards {
 		wg.Add(1)
 		go func(b BlobberRewardNode, i int) {
 			defer wg.Done()
-			if sp, err := ssc.getStakePool(b.ID, balances); err != nil {
-				errorChan <- err
+			if sp, err := ssc.getStakePool(spenum.Blobber, b.ID, balances); err != nil {
+				errC <- err
 			} else {
-				spChan <- spResp{
+				spC <- spResp{
 					index: i,
 					sp:    sp,
 				}
@@ -96,18 +121,23 @@ func (ssc *StorageSmartContract) blobberBlockRewards(
 		}(br, i)
 	}
 	wg.Wait()
-	close(errorChan)
-	close(spChan)
+	close(spC)
 
-	for err := range errorChan {
-		if err != nil {
-			return err
-		}
+	select {
+	case err := <-errC:
+		return err
+	default:
 	}
 
 	stakePools := make([]*stakePool, len(blobberRewards))
-	for resp := range spChan {
+	before := make([]currency.Coin, len(blobberRewards))
+	for resp := range spC {
 		stakePools[resp.index] = resp.sp
+		stake, err := resp.sp.stake()
+		if err != nil {
+			return err
+		}
+		before[resp.index] = stake
 	}
 
 	qualifyingBlobberIds := make([]string, len(blobberRewards))
@@ -129,6 +159,7 @@ func (ssc *StorageSmartContract) blobberBlockRewards(
 			br.TotalData,
 			br.DataRead,
 		)
+
 		zeta := maths.GetZeta(
 			conf.BlockReward.Zeta.I,
 			conf.BlockReward.Zeta.K,
@@ -136,6 +167,7 @@ func (ssc *StorageSmartContract) blobberBlockRewards(
 			float64(br.WritePrice),
 			float64(br.ReadPrice),
 		)
+
 		qualifyingBlobberIds[i] = br.ID
 		totalQStake += stake
 		blobberWeight := ((gamma * zeta) + 1) * stake * float64(br.SuccessChallenges)
@@ -174,7 +206,8 @@ func (ssc *StorageSmartContract) blobberBlockRewards(
 				zap.Int64("round", balances.GetBlock().Round),
 				zap.String("block_hash", balances.GetBlock().Hash))
 
-			if err := qsp.DistributeRewards(reward, qualifyingBlobberIds[i], spenum.Blobber, balances); err != nil {
+			if err := qsp.DistributeRewards(
+				reward, qualifyingBlobberIds[i], spenum.Blobber, spenum.BlockRewardBlobber, balances); err != nil {
 				return common.NewError("blobber_block_rewards_failed", "minting capacity reward"+err.Error())
 			}
 
@@ -193,7 +226,7 @@ func (ssc *StorageSmartContract) blobberBlockRewards(
 
 		if rShare > 0 {
 			for i := range stakePools {
-				if err := stakePools[i].DistributeRewards(rShare, qualifyingBlobberIds[i], spenum.Blobber, balances); err != nil {
+				if err := stakePools[i].DistributeRewards(rShare, qualifyingBlobberIds[i], spenum.Blobber, spenum.BlockRewardBlobber, balances); err != nil {
 					return common.NewError("blobber_block_rewards_failed", "minting capacity reward"+err.Error())
 				}
 			}
@@ -201,7 +234,7 @@ func (ssc *StorageSmartContract) blobberBlockRewards(
 
 		if rl > 0 {
 			for i := 0; i < int(rl); i++ {
-				if err := stakePools[i].DistributeRewards(1, qualifyingBlobberIds[i], spenum.Blobber, balances); err != nil {
+				if err := stakePools[i].DistributeRewards(1, qualifyingBlobberIds[i], spenum.Blobber, spenum.BlockRewardBlobber, balances); err != nil {
 					return common.NewError("blobber_block_rewards_failed", "minting capacity reward"+err.Error())
 				}
 			}
@@ -210,7 +243,7 @@ func (ssc *StorageSmartContract) blobberBlockRewards(
 	}
 
 	for i, qsp := range stakePools {
-		if err = qsp.save(ssc.ID, qualifyingBlobberIds[i], balances); err != nil {
+		if err = qsp.Save(spenum.Blobber, qualifyingBlobberIds[i], balances); err != nil {
 			return common.NewError("blobber_block_rewards_failed",
 				"saving stake pool: "+err.Error())
 		}
@@ -220,14 +253,9 @@ func (ssc *StorageSmartContract) blobberBlockRewards(
 				"getting stake pool stake: "+err.Error())
 		}
 
-		data := dbs.DbUpdates{
-			Id: qualifyingBlobberIds[i],
-			Updates: map[string]interface{}{
-				"total_stake": int64(staked),
-			},
-		}
-		balances.EmitEvent(event.TypeStats, event.TagUpdateBlobber, qualifyingBlobberIds[i], data)
-
+		bid := qualifyingBlobberIds[i]
+		tag, data := event.NewUpdateBlobberTotalStakeEvent(bid, staked)
+		balances.EmitEvent(event.TypeStats, tag, bid, data)
 	}
 
 	return nil
@@ -237,15 +265,14 @@ func getBlockReward(
 	br currency.Coin,
 	currentRound,
 	brChangePeriod int64,
-	brChangeRatio,
-	blobberWeight float64) (currency.Coin, error) {
+	brChangeRatio float64) (currency.Coin, error) {
 	if brChangeRatio <= 0 || brChangeRatio >= 1 {
 		return 0, fmt.Errorf("unexpected block reward change ratio: %f", brChangeRatio)
 	}
 	changeBalance := 1 - brChangeRatio
 	changePeriods := currentRound / brChangePeriod
 
-	factor := math.Pow(changeBalance, float64(changePeriods)) * blobberWeight
+	factor := math.Pow(changeBalance, float64(changePeriods))
 	return currency.MultFloat64(br, factor)
 }
 

@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"0chain.net/chaincore/config"
 	"0chain.net/core/common"
-	"0chain.net/core/logging"
+	"0chain.net/core/config"
 	common2 "0chain.net/smartcontract/common"
+	"github.com/0chain/common/core/logging"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -61,7 +61,7 @@ func TestWriteMarker(t *testing.T) {
 		MaxOpenConns:    200,
 		ConnMaxLifetime: 20 * time.Second,
 	}
-	eventDb, err := NewEventDb(access)
+	eventDb, err := NewEventDbWithoutWorker(access, config.DbSettings{})
 	require.NoError(t, err)
 	defer eventDb.Close()
 	err = eventDb.Drop()
@@ -87,12 +87,14 @@ func TestWriteMarker(t *testing.T) {
 	eventAddOrOverwriteWm := Event{
 		BlockNumber: eWriteMarker.BlockNumber,
 		TxHash:      eWriteMarker.TransactionID,
-		Type:        int(TypeStats),
-		Tag:         int(TagAddWriteMarker),
+		Type:        TypeStats,
+		Tag:         TagAddWriteMarker,
 		Data:        string(data),
 	}
 	events := []Event{eventAddOrOverwriteWm}
-	eventDb.AddEvents(context.TODO(), events)
+	eventDb.ProcessEvents(context.TODO(), events, 100, "hash", 10,
+		func(be BlockEvents) error { return nil },
+		CommitNow())
 
 	wm, err := eventDb.GetWriteMarker(eWriteMarker.TransactionID)
 	require.NoError(t, err)
@@ -117,7 +119,7 @@ func TestGetWriteMarkers(t *testing.T) {
 		ConnMaxLifetime: 20 * time.Second,
 	}
 	t.Skip("only for local debugging, requires local postgresql")
-	eventDb, err := NewEventDb(access)
+	eventDb, err := NewEventDbWithoutWorker(access, config.DbSettings{})
 	if err != nil {
 		return
 	}
@@ -129,12 +131,11 @@ func TestGetWriteMarkers(t *testing.T) {
 		return
 	}
 	defer eventDb.Drop()
-
-	err = eventDb.addOrOverwriteBlobber(Blobber{BlobberID: "someHash"})
+	err = eventDb.updateBlobber([]Blobber{{Provider: Provider{ID: "someHash"}}})
 	if !assert.NoError(t, err, "Error while writing blobber marker") {
 		return
 	}
-	err = eventDb.addTransaction(Transaction{Hash: "something"})
+	err = eventDb.addTransactions([]Transaction{{Hash: "something"}})
 	if !assert.NoError(t, err, "Error while writing blobber marker") {
 		return
 	}
@@ -176,16 +177,7 @@ func TestGetWriteMarkers(t *testing.T) {
 		assert.NoError(t, err)
 		compareWriteMarker(t, gotWM, "someHash", 5, 5, true)
 	})
-	t.Run("GetWriteMarkersForAllocationFile", func(t *testing.T) {
-		gotWM, err := eventDb.GetWriteMarkersForAllocationFile("allocation_id", "name_txt", common2.Pagination{Offset: 20})
-		assert.NoError(t, err)
-		compareWriteMarker(t, gotWM, "someHash", 5, 5, true)
-	})
-	t.Run("WriteMarkers size total", func(t *testing.T) {
-		gotWM, err := eventDb.GetAllocationWrittenSizeInLastNBlocks(5, "")
-		assert.NoError(t, err)
-		assert.Equal(t, int64(30), gotWM)
-	})
+
 	t.Run("writeMarker count", func(t *testing.T) {
 		gotCount, err := eventDb.GetWriteMarkerCount("allocation_id")
 		assert.NoError(t, err)
@@ -196,11 +188,12 @@ func TestGetWriteMarkers(t *testing.T) {
 func addWriterMarkers(t *testing.T, eventDb *EventDb, blobberID string) {
 	for i := 0; i < 10; i++ {
 		transactionID := fmt.Sprintf("transactionHash_%d", i)
-		err := eventDb.addTransaction(Transaction{Hash: transactionID})
+		err := eventDb.addTransactions([]Transaction{{Hash: transactionID}})
 		if !assert.NoError(t, err, "Error while writing blobber marker") {
 			return
 		}
-		err = eventDb.addWriteMarker(WriteMarker{TransactionID: transactionID, BlobberID: blobberID, BlockNumber: int64(i), Size: int64(i), AllocationID: "allocation_id", Name: "name.txt"})
+		wm := WriteMarker{TransactionID: transactionID, BlobberID: blobberID, BlockNumber: int64(i), Size: int64(i), AllocationID: "allocation_id"}
+		err = eventDb.addWriteMarkers([]WriteMarker{wm})
 		if !assert.NoError(t, err, "Error while writing read marker") {
 			return
 		}

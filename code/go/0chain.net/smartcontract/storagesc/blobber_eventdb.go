@@ -3,76 +3,186 @@ package storagesc
 import (
 	cstate "0chain.net/chaincore/chain/state"
 	"0chain.net/smartcontract/dbs"
-
 	"0chain.net/smartcontract/dbs/event"
+	"github.com/0chain/common/core/logging"
+	"go.uber.org/zap"
 )
 
-func emitAddOrOverwriteBlobber(
-	sn *StorageNode, sp *stakePool, balances cstate.StateContextI,
-) error {
+func emitUpdateBlobber(sn *StorageNode, sp *stakePool, balances cstate.StateContextI) error {
 	staked, err := sp.stake()
 	if err != nil {
 		return err
 	}
+	b := sn.mustBase()
 	data := &event.Blobber{
-		BlobberID:        sn.ID,
-		BaseURL:          sn.BaseURL,
-		Latitude:         sn.Geolocation.Latitude,
-		Longitude:        sn.Geolocation.Longitude,
-		ReadPrice:        sn.Terms.ReadPrice,
-		WritePrice:       sn.Terms.WritePrice,
-		MinLockDemand:    sn.Terms.MinLockDemand,
-		MaxOfferDuration: sn.Terms.MaxOfferDuration.Nanoseconds(),
+		BaseURL:    b.BaseURL,
+		ReadPrice:  b.Terms.ReadPrice,
+		WritePrice: b.Terms.WritePrice,
 
-		Capacity:        sn.Capacity,
-		Allocated:       sn.Allocated,
-		SavedData:       sn.SavedData,
-		LastHealthCheck: int64(sn.LastHealthCheck),
-
-		DelegateWallet: sn.StakePoolSettings.DelegateWallet,
-		MinStake:       sn.StakePoolSettings.MinStake,
-		MaxStake:       sn.StakePoolSettings.MaxStake,
-		NumDelegates:   sn.StakePoolSettings.MaxNumDelegates,
-		ServiceCharge:  sn.StakePoolSettings.ServiceChargeRatio,
-
-		OffersTotal:  sp.TotalOffers,
-		UnstakeTotal: sp.TotalUnStake,
-		Reward:       sp.Reward,
-		TotalStake:   staked,
-
-		Name:        sn.Information.Name,
-		WebsiteUrl:  sn.Information.WebsiteUrl,
-		Description: sn.Information.Description,
-		LogoUrl:     sn.Information.LogoUrl,
+		Capacity:     b.Capacity,
+		Allocated:    b.Allocated,
+		SavedData:    b.SavedData,
+		NotAvailable: b.NotAvailable,
+		// IsRestricted: *sn.IsRestricted,
+		Provider: event.Provider{
+			ID:              b.ID,
+			DelegateWallet:  b.StakePoolSettings.DelegateWallet,
+			NumDelegates:    b.StakePoolSettings.MaxNumDelegates,
+			ServiceCharge:   b.StakePoolSettings.ServiceChargeRatio,
+			LastHealthCheck: b.LastHealthCheck,
+			TotalStake:      staked,
+		},
+		OffersTotal: sp.TotalOffers,
 	}
 
-	balances.EmitEvent(event.TypeStats, event.TagAddOrOverwriteBlobber, sn.ID, data)
+	if err = cstate.WithActivation(balances, "electra", func() error {
+		if v2, ok := sn.Entity().(*storageNodeV2); ok && v2.IsRestricted != nil {
+			data.IsRestricted = *v2.IsRestricted
+		}
+		return nil
+	}, func() error {
+		if sn.Entity().GetVersion() == "v3" {
+			v3, ok := sn.Entity().(*storageNodeV3)
+			if ok {
+				if v3.IsRestricted != nil {
+					data.IsRestricted = *v3.IsRestricted
+				}
+				if v3.IsEnterprise != nil {
+					data.IsEnterprise = *v3.IsEnterprise
+				}
+			}
+		} else if sn.Entity().GetVersion() == "v4" {
+			v4, ok := sn.Entity().(*storageNodeV4)
+			if ok {
+				if v4.IsRestricted != nil {
+					data.IsRestricted = *v4.IsRestricted
+				}
+				if v4.IsEnterprise != nil {
+					data.IsEnterprise = *v4.IsEnterprise
+				}
+				if v4.StorageVersion != nil {
+					data.StorageVersion = *v4.StorageVersion
+				}
+				if v4.ManagingWallet != nil {
+					data.ManagingWallet = *v4.ManagingWallet
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	balances.EmitEvent(event.TypeStats, event.TagUpdateBlobber, b.ID, data)
 	return nil
 }
 
-func emitUpdateBlobber(sn *StorageNode, balances cstate.StateContextI) error {
-	data := &dbs.DbUpdates{
-		Id: sn.ID,
-		Updates: map[string]interface{}{
-			"base_url":           sn.BaseURL,
-			"latitude":           sn.Geolocation.Latitude,
-			"longitude":          sn.Geolocation.Longitude,
-			"read_price":         int64(sn.Terms.ReadPrice),
-			"write_price":        int64(sn.Terms.WritePrice),
-			"min_lock_demand":    sn.Terms.MinLockDemand,
-			"max_offer_duration": sn.Terms.MaxOfferDuration.Nanoseconds(),
-			"capacity":           sn.Capacity,
-			"allocated":          sn.Allocated,
-			"last_health_check":  int64(sn.LastHealthCheck),
-			"delegate_wallet":    sn.StakePoolSettings.DelegateWallet,
-			"min_stake":          int64(sn.StakePoolSettings.MinStake),
-			"max_stake":          int64(sn.StakePoolSettings.MaxStake),
-			"num_delegates":      sn.StakePoolSettings.MaxNumDelegates,
-			"service_charge":     sn.StakePoolSettings.ServiceChargeRatio,
-			"saved_data":         sn.SavedData,
+func emitAddBlobber(sn *StorageNode, sp *stakePool, balances cstate.StateContextI) error {
+	staked, err := sp.stake()
+	if err != nil {
+		return err
+	}
+	b := sn.mustBase()
+
+	data := &event.Blobber{
+		BaseURL:    b.BaseURL,
+		ReadPrice:  b.Terms.ReadPrice,
+		WritePrice: b.Terms.WritePrice,
+
+		Capacity:     b.Capacity,
+		Allocated:    b.Allocated,
+		SavedData:    b.SavedData,
+		NotAvailable: false,
+		Provider: event.Provider{
+			ID:              b.ID,
+			DelegateWallet:  b.StakePoolSettings.DelegateWallet,
+			NumDelegates:    b.StakePoolSettings.MaxNumDelegates,
+			ServiceCharge:   b.StakePoolSettings.ServiceChargeRatio,
+			LastHealthCheck: b.LastHealthCheck,
+			TotalStake:      staked,
+			Rewards: event.ProviderRewards{
+				ProviderID:   b.ID,
+				Rewards:      sp.Reward,
+				TotalRewards: sp.Reward,
+			},
 		},
+
+		OffersTotal: sp.TotalOffers,
+
+		CreationRound: balances.GetBlock().Round,
 	}
 
-	balances.EmitEvent(event.TypeStats, event.TagUpdateBlobber, sn.ID, data)
+	if err = cstate.WithActivation(balances, "electra", func() error {
+		if v2, ok := sn.Entity().(*storageNodeV2); ok {
+			if v2.IsRestricted != nil {
+				data.IsRestricted = *v2.IsRestricted
+			}
+		}
+		return nil
+	}, func() error {
+		if sn.Entity().GetVersion() == storageNodeV3Version {
+			logging.Logger.Info("emitAddBlobber storageV3", zap.Any("sn", sn))
+			v3, ok := sn.Entity().(*storageNodeV3)
+			if ok {
+				if v3.IsRestricted != nil {
+					data.IsRestricted = *v3.IsRestricted
+				}
+
+				if v3.IsEnterprise != nil {
+					data.IsEnterprise = *v3.IsEnterprise
+				}
+			}
+		} else if sn.Entity().GetVersion() == storageNodeV4Version {
+			logging.Logger.Info("emitAddBlobber storageV4", zap.Any("sn", sn))
+			v4, ok := sn.Entity().(*storageNodeV4)
+			if ok {
+				if v4.IsRestricted != nil {
+					data.IsRestricted = *v4.IsRestricted
+				}
+
+				if v4.IsEnterprise != nil {
+					data.IsEnterprise = *v4.IsEnterprise
+				}
+
+				if v4.StorageVersion != nil {
+					data.StorageVersion = *v4.StorageVersion
+				}
+
+				if v4.ManagingWallet != nil {
+					data.ManagingWallet = *v4.ManagingWallet
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	logging.Logger.Info("emitAddBlobber", zap.Any("data", data))
+
+	balances.EmitEvent(event.TypeStats, event.TagAddBlobber, b.ID, data)
 	return nil
+}
+
+func emitUpdateBlobberAllocatedSavedHealth(sn *StorageNode, balances cstate.StateContextI) {
+	b := sn.mustBase()
+	balances.EmitEvent(event.TypeStats, event.TagUpdateBlobberAllocatedSavedHealth, b.ID, event.Blobber{
+		Provider: event.Provider{
+			ID:              b.ID,
+			LastHealthCheck: b.LastHealthCheck,
+		},
+		Allocated: b.Allocated,
+		SavedData: b.SavedData,
+	})
+}
+
+func emitBlobberHealthCheck(sn *StorageNode, downtime uint64, balances cstate.StateContextI) {
+	b := sn.mustBase()
+	data := dbs.DbHealthCheck{
+		ID:              b.ID,
+		LastHealthCheck: b.LastHealthCheck,
+		Downtime:        downtime,
+	}
+
+	balances.EmitEvent(event.TypeStats, event.TagBlobberHealthCheck, b.ID, data)
 }

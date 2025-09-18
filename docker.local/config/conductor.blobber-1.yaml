@@ -7,73 +7,69 @@
 # enabled test cases sets
 enable:
   - "Blobber Up/Down"
-## DISABLED: Test does not match description
-#  - "Invalid sharder response"
 
 # sets of test cases
 sets:
   - name: "Blobber Up/Down"
     tests:
       - "One blobber down"
-## DISABLED: Test does not match description
-#  - name: "Invalid sharder response"
-#    tests:
-#      - "Sharder sends wrong transaction verification"
-
 # test cases
 tests:
   ## One blobber to go down after allocation was created.
   ## List, download, and delete should continue to work.
   - name: "One blobber down"
     flow:
-      - command:
-          name: 'build_base'
-          timeout: '15m'
-      - command:
-          name: 'build_sharder'
-          timeout: '15m'
-      - command:
-          name: 'build_miner'
-          timeout: '15m'
-      - command:
-          name: 'build_test_blobbers'
-          timeout: '10m'
       - set_monitor: "sharder-1"
       - cleanup_bc: {}
       - command:
           name: "cleanup_blobbers"
       - command:
           name: "cleanup_0dns"
+      - start: ['0dns']
       - wait_add:
           sharders: ['sharder-1']
           miners: ['miner-1', 'miner-2', 'miner-3']
           start: true
       - wait_round:
           round: 15 # just wait the BC starts
-      - start: ['0dns']
       #wait the 0dns starts
-      - command:
-          name: "sleep_20s"
+      - sleep: "20s"
       - wait_add:
           blobbers: ['blobber-1', 'blobber-2', 'blobber-3']
+          validators: ['validator-1', 'validator-2', 'validator-3']
           start: true
-      # - wait_round:
-      #     round: 250 # just wait the BC starts
-      # - wait_add:
-      #     blobbers: ['blobber-1', 'blobber-2', 'blobber-3']
-      #     timeout: '1m'
+      - command:
+          name: "check_registered"
+          params:
+            provider_type: blobber
+            provider_ids:
+              - "f65af5d64000c7cd2883f4910eb69086f9d6e6635c744e62afcfab58b938ee25"
+              - "7a90e6790bcd3d78422d7a230390edc102870fe58c15472073922024985b1c7d"
+              - "2f051ca6447d8712a020213672bece683dbd0d23a81fdf93ff273043a0764d18"
+      - command:
+          name: "check_registered"
+          params:
+            provider_type: validator
+            provider_ids:
+              - "41313b795d2c057b6277801e9ed277b444770c2af75f5209afd00bd07c72cc0b"
+              - "ab549edb7cea822dab0b460f65dcde85f698c1e97d730e3ffc6b0f8b576b65bd"
+              - "86cf791f03f01e3e4d318b1ca009a51c91dd43f7cf3c87a32f531b609cc5044b"
       - command:
           name: 'init_allocation'
-          timeout: '10m'
+          timeout: '15m'
+          retry_count: 3
       - stop: ['blobber-3']
-      - command:
-          name: 'sleep_20s'
+      # TODO: check that blobber-3 is actually down
+      - wait_round:
+          shift: 250
       - command:
           name: 'list'
       - command:
           name: 'download'
+      - sleep: "20s"
       - command:
           name: 'delete'
+      - sleep: "40s"
       - command:
           name: 'upload'
       - cleanup_bc: {}
@@ -81,40 +77,3 @@ tests:
           name: "cleanup_blobbers"
       - command:
           name: "cleanup_0dns"
-
-  ## DISABLED: Test does not match description
-#  - name: "Sharder sends wrong transaction verification"
-#    flow:
-#      - set_monitor: "sharder-1"
-#      - cleanup_bc: {}
-#      - command:
-#          name: "cleanup_0dns"
-#      - start: ['sharder-1']
-#      - start: ["sharder-2"]
-#      - start: ['miner-1', 'miner-2', 'miner-3']
-#      # Temporarily use `wait_round` as `wait_sharder_keep` and `wait_view_change`
-#      # require view_change config to be enabled
-#      - wait_round:
-#          round: 100
-#          timeout: '5m'
-##      - wait_sharder_keep:
-##          timeout: '5m'
-##          sharders: ['sharder-2']
-##      - wait_view_change:
-##          expect_magic_block:
-##            miners: ['miner-1', 'miner-2', 'miner-3']
-##            sharders: ['sharder-1', 'sharder-2']
-#      - verify_transaction:
-#          by: ['sharder-2']
-#      - start: ['0dns']
-#      - command:
-#          name: "sleep_20s" # wait the 0dns starts
-#      # double and triple sleep may help for a big network latency
-#      - command:
-#          name: "sleep_20s" # wait the 0dns starts
-#      - command:
-#          name: "sleep_20s" # wait the 0dns starts
-#      - command:
-#          name: 'unverified_transaction'
-
-...

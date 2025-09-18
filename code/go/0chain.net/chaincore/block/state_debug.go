@@ -7,8 +7,9 @@ import (
 	"os"
 
 	"0chain.net/chaincore/state"
-	"0chain.net/core/logging"
-	"0chain.net/core/util"
+	"github.com/0chain/common/core/logging"
+	"github.com/0chain/common/core/statecache"
+	"github.com/0chain/common/core/util"
 	"go.uber.org/zap"
 )
 
@@ -24,7 +25,7 @@ func SetupStateLogger(file string) {
 	fmt.Fprintf(StateOut, "starting state log ...\n")
 }
 
-//StateSanityCheck - after generating a block or verification of a block, this can be called to run some state sanity checks
+// StateSanityCheck - after generating a block or verification of a block, this can be called to run some state sanity checks
 func StateSanityCheck(ctx context.Context, b *Block) {
 	if !state.DebugBlock() {
 		return
@@ -52,7 +53,7 @@ func validateStateChangesRoot(b *Block) error {
 		if bsc.GetRoot() != nil {
 			computedRoot = bsc.GetRoot().GetHash()
 		}
-		logging.Logger.Error("block state change - root mismatch", zap.Int64("round", b.Round), zap.String("block", b.Hash), zap.String("state_root", util.ToHex(b.ClientStateHash)), zap.Any("computed_root", computedRoot))
+		logging.Logger.Error("block state change - root mismatch", zap.Int64("round", b.Round), zap.String("block", b.Hash), zap.String("state_root", util.ToHex(b.ClientStateHash)), zap.String("computed_root", computedRoot))
 		return ErrStateMismatch
 	}
 	return nil
@@ -92,9 +93,9 @@ func ValidateState(ctx context.Context, b *Block, priorRoot util.Key) error {
 				b.ClientState.PrettyPrint(StateOut)
 			}
 			if state.DebugBlock() {
-				logging.Logger.DPanic("validate state", zap.Int64("round", b.Round), zap.String("block", b.Hash), zap.Any("state", util.ToHex(b.ClientState.GetRoot())), zap.String("computed_state", stateRoot.GetHash()), zap.Int("changes", len(changes.Nodes)))
+				logging.Logger.DPanic("validate state", zap.Int64("round", b.Round), zap.String("block", b.Hash), zap.String("state", util.ToHex(b.ClientState.GetRoot())), zap.String("computed_state", stateRoot.GetHash()), zap.Int("changes", len(changes.Nodes)))
 			} else {
-				logging.Logger.Error("validate state", zap.Int64("round", b.Round), zap.String("block", b.Hash), zap.Any("state", util.ToHex(b.ClientState.GetRoot())), zap.String("computed_state", stateRoot.GetHash()), zap.Int("changes", len(changes.Nodes)))
+				logging.Logger.Error("validate state", zap.Int64("round", b.Round), zap.String("block", b.Hash), zap.String("state", util.ToHex(b.ClientState.GetRoot())), zap.String("computed_state", stateRoot.GetHash()), zap.Int("changes", len(changes.Nodes)))
 			}
 		}
 		if priorRoot == nil {
@@ -103,14 +104,14 @@ func ValidateState(ctx context.Context, b *Block, priorRoot util.Key) error {
 		err = changes.Validate(ctx)
 		if err != nil {
 			logging.Logger.Error("validate state - changes validate failure", zap.Error(err))
-			pstate := util.NewMerklePatriciaTrie(b.ClientState.GetNodeDB(), b.ClientState.GetVersion(), priorRoot)
+			pstate := util.NewMerklePatriciaTrie(b.ClientState.GetNodeDB(), b.ClientState.GetVersion(), priorRoot, statecache.NewEmpty())
 			PrintStates(b.ClientState, pstate)
 			return err
 		}
 		err = b.ClientState.Validate()
 		if err != nil {
 			logging.Logger.Error("validate state - client state validate failure", zap.Error(err))
-			pstate := util.NewMerklePatriciaTrie(b.ClientState.GetNodeDB(), b.ClientState.GetVersion(), priorRoot)
+			pstate := util.NewMerklePatriciaTrie(b.ClientState.GetNodeDB(), b.ClientState.GetVersion(), priorRoot, statecache.NewEmpty())
 			PrintStates(b.ClientState, pstate)
 			/*
 				if state.Debug() && stateOut != nil {

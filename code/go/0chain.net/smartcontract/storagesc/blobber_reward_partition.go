@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	"0chain.net/chaincore/currency"
+	"github.com/0chain/common/core/currency"
 
 	c_state "0chain.net/chaincore/chain/state"
 	"0chain.net/core/datastore"
@@ -13,7 +13,7 @@ import (
 
 //go:generate msgp -io=false -tests=false -unexported=true -v
 
-const blobberRewardsPartitionSize = 5
+var blobberRewardsPartitionSize = 5
 
 type BlobberRewardNode struct {
 	ID                string        `json:"id"`
@@ -39,12 +39,12 @@ func BlobberRewardKey(round int64) datastore.Key {
 
 // getActivePassedBlobberRewardsPartitions gets blobbers passed challenge from last challenge period
 func getActivePassedBlobberRewardsPartitions(balances c_state.StateContextI, period int64) (*partitions.Partitions, error) {
-	name := BlobberRewardKey(GetPreviousRewardRound(balances.GetBlock().Round, period))
-	return partitions.CreateIfNotExists(balances, name, blobberRewardsPartitionSize)
+	key := BlobberRewardKey(GetPreviousRewardRound(balances.GetBlock().Round, period))
+	return partitions.CreateIfNotExists(balances, key, blobberRewardsPartitionSize)
 }
 
 // getOngoingPassedBlobberRewardsPartitions gets blobbers passed challenge from ongoing challenge period
 func getOngoingPassedBlobberRewardsPartitions(balances c_state.StateContextI, period int64) (*partitions.Partitions, error) {
-	name := BlobberRewardKey(GetCurrentRewardRound(balances.GetBlock().Round, period))
-	return partitions.CreateIfNotExists(balances, name, blobberRewardsPartitionSize)
+	key := BlobberRewardKey(GetCurrentRewardRound(balances.GetBlock().Round, period))
+	return partitions.CreateIfNotExists(balances, key, blobberRewardsPartitionSize)
 }

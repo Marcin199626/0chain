@@ -3,7 +3,7 @@ package minersc_test
 import (
 	"testing"
 
-	"0chain.net/smartcontract"
+	"0chain.net/core/config"
 	"0chain.net/smartcontract/minersc"
 
 	chainstate "0chain.net/chaincore/chain/state"
@@ -14,31 +14,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestGlobalSettings(t *testing.T) {
-	require.Len(t, minersc.GlobalSettingName, int(minersc.NumOfGlobalSettings))
-	require.Len(t, minersc.GlobalSettingInfo, int(minersc.NumOfGlobalSettings))
-
-	for key := range minersc.GlobalSettingInfo {
-		found := false
-		for _, name := range minersc.GlobalSettingName {
-			if key == name {
-				found = true
-				break
-			}
-		}
-		require.True(t, found)
-	}
-
-	for _, name := range minersc.GlobalSettingName {
-		_, ok := minersc.GlobalSettingInfo[name]
-		require.True(t, ok)
-	}
-
-}
-
 func TestUpdateGlobals(t *testing.T) {
 	const (
 		mockNotASetting = "mock not a setting"
+		mockRoundNumber = 17
 	)
 	type args struct {
 		msc      *minersc.MinerSmartContract
@@ -78,8 +57,8 @@ func TestUpdateGlobals(t *testing.T) {
 		return args{
 			msc:      msc,
 			txn:      txn,
-			input:    (&smartcontract.StringMap{p.inputMap}).Encode(),
-			gn:       &minersc.GlobalNode{OwnerId: owner},
+			input:    (&config.StringMap{p.inputMap}).Encode(),
+			gn:       minersc.NewGlobalNode(owner, make(map[string]int)),
 			balances: balances,
 		}
 	}

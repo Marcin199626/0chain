@@ -4,9 +4,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/herumi/bls/ffi/go/bls"
+	"github.com/herumi/bls-go-binary/bls"
 
-	"0chain.net/core/logging"
+	"github.com/0chain/common/core/logging"
 )
 
 func init() {

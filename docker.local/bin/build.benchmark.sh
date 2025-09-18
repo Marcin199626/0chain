@@ -2,5 +2,8 @@
 
 cmd="build"
 
-docker $cmd -f docker.local/build.benchmarks/Dockerfile . -t zchain_benchmarks
+# generate mocks
+make install-mockery
+make build-mocks
 
+docker $cmd -f docker.local/build.benchmarks/Dockerfile . -t zchain_benchmarks

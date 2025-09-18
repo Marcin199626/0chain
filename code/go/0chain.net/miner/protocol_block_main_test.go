@@ -2,6 +2,7 @@ package miner
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -10,14 +11,14 @@ import (
 	"0chain.net/chaincore/block"
 	"0chain.net/chaincore/chain"
 	"0chain.net/chaincore/client"
-	"0chain.net/chaincore/config"
 	"0chain.net/chaincore/node"
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/common"
+	"0chain.net/core/config"
 	"0chain.net/core/datastore"
 	"0chain.net/core/encryption"
-	"0chain.net/core/logging"
 	"0chain.net/core/memorystore"
+	"github.com/0chain/common/core/logging"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gomodule/redigo/redis"
@@ -27,7 +28,7 @@ import (
 func TestTxnIterInfo_checkForCurrent(t *testing.T) {
 	type fields struct {
 		pastTxns    []datastore.Entity
-		futureTxns  map[datastore.Key][]*transaction.Transaction
+		futureTxns  map[datastore.Key]*clientNonceTxns
 		currentTxns []*transaction.Transaction
 	}
 	type args struct {
@@ -79,104 +80,106 @@ func TestTxnIterInfo_checkForCurrent(t *testing.T) {
 			name: "test_for_empty_future_with_client",
 			fields: fields{
 				pastTxns:    nil,
-				futureTxns:  map[datastore.Key][]*transaction.Transaction{"1": {txs1[0]}},
+				futureTxns:  map[datastore.Key]*clientNonceTxns{"1": {0, []*transaction.Transaction{txs1[0]}}},
 				currentTxns: nil,
 			},
 			args: args{txs2[0]},
 			want: fields{
 				pastTxns:    nil,
-				futureTxns:  map[datastore.Key][]*transaction.Transaction{"1": {txs1[0]}},
+				futureTxns:  map[datastore.Key]*clientNonceTxns{"1": {0, []*transaction.Transaction{txs1[0]}}},
 				currentTxns: nil,
 			},
 		}, {
 			name: "test_with_gap",
 			fields: fields{
 				pastTxns:    nil,
-				futureTxns:  map[datastore.Key][]*transaction.Transaction{"1": {txs1[4], txs1[5], txs1[6]}},
+				futureTxns:  map[datastore.Key]*clientNonceTxns{"1": {0, []*transaction.Transaction{txs1[4], txs1[5], txs1[6]}}},
 				currentTxns: nil,
 			},
 			args: args{txs1[0]},
 			want: fields{
 				pastTxns:    nil,
-				futureTxns:  map[datastore.Key][]*transaction.Transaction{"1": {txs1[4], txs1[5], txs1[6]}},
+				futureTxns:  map[datastore.Key]*clientNonceTxns{"1": {0, []*transaction.Transaction{txs1[4], txs1[5], txs1[6]}}},
 				currentTxns: nil,
 			},
 		}, {
 			name: "test_with_next_and_gap",
 			fields: fields{
 				pastTxns:    nil,
-				futureTxns:  map[datastore.Key][]*transaction.Transaction{"1": {txs1[1], txs1[6], txs1[7], txs1[8]}},
+				futureTxns:  map[datastore.Key]*clientNonceTxns{"1": {0, []*transaction.Transaction{txs1[1], txs1[6], txs1[7], txs1[8]}}},
 				currentTxns: nil,
 			},
 			args: args{txs1[0]},
 			want: fields{
 				pastTxns:    nil,
-				futureTxns:  map[datastore.Key][]*transaction.Transaction{"1": {txs1[6], txs1[7], txs1[8]}},
+				futureTxns:  map[datastore.Key]*clientNonceTxns{"1": {1, []*transaction.Transaction{txs1[6], txs1[7], txs1[8]}}},
 				currentTxns: []*transaction.Transaction{txs1[1]},
 			},
 		}, {
 			name: "test_with_next_two_and_gap",
 			fields: fields{
 				pastTxns:    nil,
-				futureTxns:  map[datastore.Key][]*transaction.Transaction{"1": {txs1[1], txs1[4], txs1[8]}},
+				futureTxns:  map[datastore.Key]*clientNonceTxns{"1": {0, []*transaction.Transaction{txs1[1], txs1[4], txs1[8]}}},
 				currentTxns: nil,
 			},
 			args: args{txs1[0]},
 			want: fields{
 				pastTxns:    nil,
-				futureTxns:  map[datastore.Key][]*transaction.Transaction{"1": {txs1[8]}},
+				futureTxns:  map[datastore.Key]*clientNonceTxns{"1": {2, []*transaction.Transaction{txs1[8]}}},
 				currentTxns: []*transaction.Transaction{txs1[1], txs1[4]},
 			},
 		}, {
 			name: "test_with_next_three_and_no_gap",
 			fields: fields{
 				pastTxns:    nil,
-				futureTxns:  map[datastore.Key][]*transaction.Transaction{"1": {txs1[1], txs1[4], txs1[6]}},
+				futureTxns:  map[datastore.Key]*clientNonceTxns{"1": {0, []*transaction.Transaction{txs1[1], txs1[4], txs1[6]}}},
 				currentTxns: nil,
 			},
 			args: args{txs1[0]},
 			want: fields{
 				pastTxns:    nil,
-				futureTxns:  map[string][]*transaction.Transaction{"1": {}},
+				futureTxns:  map[string]*clientNonceTxns{"1": {3, []*transaction.Transaction{}}},
 				currentTxns: []*transaction.Transaction{txs1[1], txs1[4], txs1[6]},
 			},
 		}, {
 			name: "test_with_next_three_and_2_similar_no_gap",
 			fields: fields{
 				pastTxns:    nil,
-				futureTxns:  map[datastore.Key][]*transaction.Transaction{"1": {txs1[1], txs1[3], txs1[4], txs1[6]}},
+				futureTxns:  map[datastore.Key]*clientNonceTxns{"1": {0, []*transaction.Transaction{txs1[1], txs1[3], txs1[4], txs1[6]}}},
 				currentTxns: nil,
 			},
 			args: args{txs1[0]},
 			want: fields{
 				pastTxns:    []datastore.Entity{txs1[3]},
-				futureTxns:  map[string][]*transaction.Transaction{"1": {}},
+				futureTxns:  map[string]*clientNonceTxns{"1": {3, []*transaction.Transaction{}}},
 				currentTxns: []*transaction.Transaction{txs1[1], txs1[4], txs1[6]},
 			},
 		}, {
 			name: "test_with_next_three_and_2_similar_and_gap",
 			fields: fields{
-				pastTxns:    nil,
-				futureTxns:  map[datastore.Key][]*transaction.Transaction{"1": {txs1[1], txs1[3], txs1[4], txs1[6], txs1[8]}},
+				pastTxns: nil,
+				futureTxns: map[datastore.Key]*clientNonceTxns{"1": {0,
+					[]*transaction.Transaction{txs1[1], txs1[3], txs1[4], txs1[6], txs1[8]}}},
 				currentTxns: nil,
 			},
 			args: args{txs1[0]},
 			want: fields{
 				pastTxns:    []datastore.Entity{txs1[3]},
-				futureTxns:  map[string][]*transaction.Transaction{"1": {txs1[8]}},
+				futureTxns:  map[string]*clientNonceTxns{"1": {3, []*transaction.Transaction{txs1[8]}}},
 				currentTxns: []*transaction.Transaction{txs1[1], txs1[4], txs1[6]},
 			},
 		}, {
 			name: "test_full",
 			fields: fields{
-				pastTxns:    nil,
-				futureTxns:  map[datastore.Key][]*transaction.Transaction{"1": {txs1[1], txs1[2], txs1[3], txs1[4], txs1[5], txs1[6], txs1[7], txs1[8]}},
+				pastTxns: nil,
+				futureTxns: map[datastore.Key]*clientNonceTxns{"1": {0,
+					[]*transaction.Transaction{txs1[1], txs1[2], txs1[3], txs1[4], txs1[5], txs1[6], txs1[7], txs1[8]}}},
 				currentTxns: nil,
 			},
 			args: args{txs1[0]},
 			want: fields{
 				pastTxns:    []datastore.Entity{txs1[2], txs1[3], txs1[5]},
-				futureTxns:  map[string][]*transaction.Transaction{"1": {}},
+				futureTxns:  map[string]*clientNonceTxns{"1": {5, []*transaction.Transaction{}}},
 				currentTxns: []*transaction.Transaction{txs1[1], txs1[4], txs1[6], txs1[7], txs1[8]},
 			},
 		},
@@ -190,106 +193,8 @@ func TestTxnIterInfo_checkForCurrent(t *testing.T) {
 			}
 			tii.checkForCurrent(tt.args.txn)
 			require.Equal(t, tt.want.pastTxns, tii.pastTxns)
-			require.Equal(t, tt.want.futureTxns, tii.futureTxns)
+			require.EqualValues(t, tt.want.futureTxns, tii.futureTxns)
 			require.Equal(t, tt.want.currentTxns, tii.currentTxns)
-		})
-	}
-}
-
-func TestTxnIterInfo_checkForInvalidTxns(t *testing.T) {
-	type fields struct {
-		pastTxns []datastore.Entity
-		txns     []*transaction.Transaction
-	}
-	txs1 := []*transaction.Transaction{
-		{ClientID: "1", Nonce: 0},
-		{ClientID: "1", Nonce: 1},
-		{ClientID: "1", Nonce: 1},
-		{ClientID: "1", Nonce: 1},
-		{ClientID: "1", Nonce: 2},
-	}
-	txs2 := []*transaction.Transaction{
-		{ClientID: "2", Nonce: 0},
-		{ClientID: "2", Nonce: 1},
-	}
-
-	tests := []struct {
-		name   string
-		fields fields
-		want   []datastore.Entity
-	}{
-		{
-			name: "test_for_empty_pastTxns_and_no_txns",
-			fields: fields{
-				pastTxns: nil,
-				txns:     nil,
-			},
-			want: []datastore.Entity{},
-		}, {
-			name: "test_for_empty_pastTxns",
-			fields: fields{
-				pastTxns: nil,
-				txns:     []*transaction.Transaction{txs1[0], txs2[1]},
-			},
-			want: []datastore.Entity{},
-		}, {
-			name: "test_for_pastTxns_from_one_client",
-			fields: fields{
-				pastTxns: []datastore.Entity{txs1[0]},
-				txns:     []*transaction.Transaction{txs1[1], txs2[1]},
-			},
-			want: []datastore.Entity{txs1[0]},
-		}, {
-			name: "test_for_pastTxns_from_two_client",
-			fields: fields{
-				pastTxns: []datastore.Entity{txs1[0], txs2[0]},
-				txns:     []*transaction.Transaction{txs1[1], txs2[1]},
-			},
-			want: []datastore.Entity{txs1[0], txs2[0]},
-		}, {
-			name: "test_for_with_txns_and_pastTxns_from_different_clients",
-			fields: fields{
-				pastTxns: []datastore.Entity{txs1[0]},
-				txns:     []*transaction.Transaction{txs2[1]},
-			},
-			want: []datastore.Entity{},
-		}, {
-			name: "test_with_no_txns",
-			fields: fields{
-				pastTxns: []datastore.Entity{txs1[0]},
-				txns:     nil,
-			},
-			want: []datastore.Entity{},
-		}, {
-			name: "test_with_equal_nonce",
-			fields: fields{
-				pastTxns: []datastore.Entity{txs1[1]},
-				txns:     []*transaction.Transaction{txs1[2]},
-			},
-			want: []datastore.Entity{txs1[1]},
-		}, {
-			name: "test_with_multiple_clashes",
-			fields: fields{
-				pastTxns: []datastore.Entity{txs1[0], txs1[1], txs1[2]},
-				txns:     []*transaction.Transaction{txs1[3]},
-			},
-			want: []datastore.Entity{txs1[0], txs1[1], txs1[2]},
-		}, {
-			name: "test_for_pastTxns_with_larger_nonce",
-			fields: fields{
-				pastTxns: []datastore.Entity{txs1[4]},
-				txns:     []*transaction.Transaction{txs1[1]},
-			},
-			want: []datastore.Entity{},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tii := TxnIterInfo{
-				pastTxns: tt.fields.pastTxns,
-			}
-			invalidTxns := tii.checkForInvalidTxns(tt.fields.txns)
-			require.Equal(t, tt.want, invalidTxns)
 		})
 	}
 }
@@ -317,6 +222,7 @@ func initDefaultPool() error {
 
 func TestChain_deletingTxns(t *testing.T) {
 
+	transaction.SetTxnTimeout(int64(3 * time.Minute))
 	txs1 := []*transaction.Transaction{
 		{Nonce: 0},
 		{Nonce: 1},
@@ -335,7 +241,7 @@ func TestChain_deletingTxns(t *testing.T) {
 		},
 	}
 
-	var err error
+	// var err error
 
 	require.NoError(t, initDefaultPool())
 
@@ -390,13 +296,6 @@ func TestChain_deletingTxns(t *testing.T) {
 
 	ctx := context.Background()
 
-	_, err = client.PutClient(ctx, cl)
-	require.NoError(t, err)
-
-	require.NoError(t, client.PutClientCache(cl))
-
-	mc.RegisterClient()
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 
@@ -406,6 +305,14 @@ func TestChain_deletingTxns(t *testing.T) {
 				txn.PublicKey = cl.PublicKey
 				txn.ClientID = cl.ID
 				txn.Hash = txn.ComputeHash()
+
+				txnData, err := json.Marshal(struct {
+					name string
+				}{
+					name: "test",
+				})
+				require.NoError(t, err)
+				txn.TransactionData = string(txnData)
 
 				sig, err := txn.Sign(sigScheme)
 				require.NoError(t, err)

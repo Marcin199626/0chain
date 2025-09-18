@@ -8,16 +8,14 @@ import (
 	"testing"
 	"time"
 
-	"0chain.net/chaincore/currency"
+	config2 "0chain.net/core/config"
+	"github.com/0chain/common/core/currency"
 
 	chainstate "0chain.net/chaincore/chain/state"
 	"0chain.net/chaincore/chain/state/mocks"
 	sci "0chain.net/chaincore/smartcontractinterface"
 	"0chain.net/chaincore/transaction"
-	"0chain.net/smartcontract"
 	"github.com/stretchr/testify/mock"
-
-	configpkg "0chain.net/chaincore/config"
 
 	"github.com/stretchr/testify/require"
 )
@@ -63,13 +61,13 @@ func Test_config_validate(t *testing.T) {
 func configureConfig() (configured *config) {
 	const pfx = "smart_contracts.vestingsc."
 
-	configpkg.SmartContractConfig.Set(pfx+"min_lock", 100)
-	configpkg.SmartContractConfig.Set(pfx+"min_duration", 1*time.Second)
-	configpkg.SmartContractConfig.Set(pfx+"max_duration", 10*time.Hour)
-	configpkg.SmartContractConfig.Set(pfx+"max_destinations", 2)
-	configpkg.SmartContractConfig.Set(pfx+"max_description_length", 20)
-	configpkg.SmartContractConfig.Set(pfx+"owner_id", "1746b06bb09f55ee01b33b5e2e055d6cc7a900cb57c0a3a5eaabb8a0e7745802")
-	configpkg.SmartContractConfig.Set(pfx+"cost", "{\"1\":1, \"2\":2, \"3\":3}")
+	config2.SmartContractConfig.Set(pfx+"min_lock", 100)
+	config2.SmartContractConfig.Set(pfx+"min_duration", 1*time.Second)
+	config2.SmartContractConfig.Set(pfx+"max_duration", 10*time.Hour)
+	config2.SmartContractConfig.Set(pfx+"max_destinations", 2)
+	config2.SmartContractConfig.Set(pfx+"max_description_length", 20)
+	config2.SmartContractConfig.Set(pfx+"owner_id", "1746b06bb09f55ee01b33b5e2e055d6cc7a900cb57c0a3a5eaabb8a0e7745802")
+	config2.SmartContractConfig.Set(pfx+"cost", "{\"1\":1, \"2\":2, \"3\":3}")
 
 	return &config{
 		100e10,
@@ -85,8 +83,11 @@ func TestVestingSmartContract_getConfigHandler(t *testing.T) {
 		balances   = newTestBalances()
 		ctx        = context.Background()
 		configured = configureConfig()
-		resp, err  = vsc.getConfigHandler(ctx, nil, balances)
+		err        = InitConfig(balances)
 	)
+	require.NoError(t, err)
+
+	resp, err := vsc.getConfigHandler(ctx, nil, balances)
 	require.NoError(t, err)
 	require.EqualValues(t, configured.getConfigMap(), resp)
 }
@@ -122,13 +123,13 @@ func TestUpdateConfig(t *testing.T) {
 		var txn = &transaction.Transaction{
 			ClientID: p.client,
 		}
-		var inputObj = smartcontract.StringMap{
+		var inputObj = config2.StringMap{
 			Fields: p.input,
 		}
 		input, err := json.Marshal(&inputObj)
 		require.NoError(t, err)
 		prevConf := configureConfig()
-		balances.On("GetTrieNode", scConfigKey(vsc.ID),
+		balances.On("GetTrieNode", scConfigKey(ADDRESS),
 			mockSetValue(prevConf)).Return(nil).Once()
 		var conf config
 		// not testing for error here to allow entering bad data
@@ -156,7 +157,7 @@ func TestUpdateConfig(t *testing.T) {
 		fmt.Println("setExpectations conf", conf)
 		balances.On(
 			"InsertTrieNode",
-			scConfigKey(vsc.ID),
+			scConfigKey(ADDRESS),
 			mock.Anything,
 		).Return("", nil).Once()
 

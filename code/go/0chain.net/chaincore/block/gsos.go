@@ -8,7 +8,7 @@ import (
 
 	"0chain.net/chaincore/threshold/bls"
 	"0chain.net/core/encryption"
-	"0chain.net/core/util"
+	"github.com/0chain/common/core/util"
 )
 
 //go:generate msgp -io=false -tests=false -v
@@ -38,6 +38,12 @@ func (gsos *GroupSharesOrSigns) GetShares() map[string]*ShareOrSigns {
 		result[k] = v
 	}
 	return result
+}
+
+func (gsos *GroupSharesOrSigns) Delete(id string) {
+	gsos.mutex.Lock()
+	delete(gsos.Shares, id)
+	gsos.mutex.Unlock()
 }
 
 func (gsos *GroupSharesOrSigns) Encode() []byte {

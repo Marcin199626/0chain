@@ -13,8 +13,8 @@ import (
 	"0chain.net/chaincore/round"
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
-	"0chain.net/core/logging"
 	"0chain.net/core/memorystore"
+	"github.com/0chain/common/core/logging"
 	"go.uber.org/zap"
 )
 
@@ -32,9 +32,6 @@ var (
 	MinerNotarizedBlockSender node.EntitySendHandler
 	// DKGShareSender - Send dkg share to a node
 	DKGShareSender node.EntityRequestor
-	// MinerLatestFinalizedBlockRequestor - RequestHandler for latest finalized
-	// block to a node.
-	MinerLatestFinalizedBlockRequestor node.EntityRequestor
 )
 
 /*SetupM2MSenders - setup senders for miner to miner communication */
@@ -57,13 +54,16 @@ func SetupM2MSenders() {
 
 const (
 	vrfsShareRoundM2MV1Pattern = "/v1/_m2m/round/vrf_share"
+	blockNotarizationPattern   = "/v1/_m2m/block/notarization"
 )
 
 func x2mReceiversMap(c node.Chainer) map[string]func(http.ResponseWriter, *http.Request) {
 	reqRespHandlerfMap := map[string]common.ReqRespHandlerf{
-		vrfsShareRoundM2MV1Pattern: node.ToN2NReceiveEntityHandler(
-			VRFShareHandler,
-			nil,
+		vrfsShareRoundM2MV1Pattern: node.StopOnBlockSyncingHandler(c,
+			node.ToN2NReceiveEntityHandler(
+				VRFShareHandler,
+				nil,
+			),
 		),
 		"/v1/_m2m/block/verification_ticket": node.StopOnBlockSyncingHandler(c,
 			node.ToN2NReceiveEntityHandler(
@@ -71,19 +71,25 @@ func x2mReceiversMap(c node.Chainer) map[string]func(http.ResponseWriter, *http.
 				nil,
 			),
 		),
-		"/v1/_m2m/block/verify": node.ToN2NReceiveEntityHandler(
-			memorystore.WithConnectionEntityJSONHandler(
-				VerifyBlockHandler,
-				datastore.GetEntityMetadata("block")),
-			nil,
+		"/v1/_m2m/block/verify": node.StopOnBlockSyncingHandler(c,
+			node.ToN2NReceiveEntityHandler(
+				memorystore.WithConnectionEntityJSONHandler(
+					VerifyBlockHandler,
+					datastore.GetEntityMetadata("block")),
+				nil,
+			),
 		),
-		"/v1/_m2m/block/notarization": node.ToN2NReceiveEntityHandler(
-			NotarizationReceiptHandler,
-			nil,
+		blockNotarizationPattern: node.StopOnBlockSyncingHandler(c,
+			node.ToN2NReceiveEntityHandler(
+				NotarizationReceiptHandler,
+				nil,
+			),
 		),
-		"/v1/_m2m/block/notarized_block": node.ToN2NReceiveEntityHandler(
-			NotarizedBlockHandler,
-			nil,
+		"/v1/_m2m/block/notarized_block": node.StopOnBlockSyncingHandler(c,
+			node.ToN2NReceiveEntityHandler(
+				NotarizedBlockHandler,
+				nil,
+			),
 		),
 	}
 
@@ -123,21 +129,14 @@ func setupHandlers(handlers map[string]func(http.ResponseWriter, *http.Request))
 	}
 }
 
-/*SetupM2SRequestors - setup all requests to sharder by miner */
-func SetupM2SRequestors() {
-	options := &node.SendOptions{Timeout: node.TimeoutLargeMessage, CODEC: node.CODEC_MSGPACK, Compress: true}
-	blockEntityMetadata := datastore.GetEntityMetadata("block")
-	MinerLatestFinalizedBlockRequestor = node.RequestEntityHandler("/v1/_m2s/block/latest_finalized/get", options, blockEntityMetadata)
-}
-
 func SetupM2MRequestors() {
 	dkgShareEntityMetadata := datastore.GetEntityMetadata("dkg_share")
 	options := &node.SendOptions{Timeout: node.TimeoutSmallMessage, MaxRelayLength: 0, CurrentRelayLength: 0, Compress: false}
 	DKGShareSender = node.RequestEntityHandler("/v1/_m2m/dkg/share", options, dkgShareEntityMetadata)
 }
 
-// VRFShareHandler - handle the vrf share.
-func VRFShareHandler(ctx context.Context, entity datastore.Entity) (
+// vrfShareHandler - handle the vrf share.
+func vrfShareHandler(ctx context.Context, entity datastore.Entity) (
 	interface{}, error) {
 	vrfs, ok := entity.(*round.VRFShare)
 	if !ok {
@@ -447,8 +446,8 @@ func notarizationReceiptHandler(ctx context.Context, entity datastore.Entity) (i
 	return nil, nil
 }
 
-// NotarizedBlockHandler - handles a notarized block.
-func NotarizedBlockHandler(ctx context.Context, entity datastore.Entity) (
+// notarizedBlockHandler - handles a notarized block.
+func notarizedBlockHandler(ctx context.Context, entity datastore.Entity) (
 	resp interface{}, err error) {
 
 	var nb, ok = entity.(*block.Block)
@@ -461,7 +460,7 @@ func NotarizedBlockHandler(ctx context.Context, entity datastore.Entity) (
 	//reject cur_round -2 is a locked round, there can't be new notarization important for us
 	if nb.Round < mc.GetCurrentRound()-1 {
 		logging.Logger.Debug("notarized block handler (round older than the current round)",
-			zap.String("block", nb.Hash), zap.Any("round", nb.Round))
+			zap.String("block", nb.Hash), zap.Int64("round", nb.Round))
 		return
 	}
 
@@ -469,18 +468,6 @@ func NotarizedBlockHandler(ctx context.Context, entity datastore.Entity) (
 	if nb.Round <= lfb.Round {
 		return // doesn't need the not. block
 	}
-
-	//TODO in case there is no previous round create it, since notarization can't be rejected
-	if mc.GetMinerRound(nb.Round-1) == nil {
-		logging.Logger.Error("not. block handler -- no previous round (ignore)",
-			zap.Int64("round", nb.Round), zap.Int64("prev_round", nb.Round-1))
-		return // no previous round
-	}
-
-	//this check is not correct, we won't transit to the new round, but should save notarization block
-	//if mc.isAheadOfSharders(ctx, nb.Round) {
-	//	return
-	//}
 
 	mr := mc.GetMinerRound(nb.Round)
 	if mr != nil {

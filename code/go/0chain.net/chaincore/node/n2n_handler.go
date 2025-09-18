@@ -5,16 +5,15 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"net/http/httptrace"
 	"time"
 
-	"0chain.net/chaincore/config"
 	"0chain.net/core/common"
+	"0chain.net/core/config"
 	"0chain.net/core/datastore"
-	"0chain.net/core/logging"
+	"github.com/0chain/common/core/logging"
 	"go.uber.org/zap"
 )
 
@@ -31,17 +30,17 @@ func init() {
 	compDecomp = common.NewZStdCompDe()
 }
 
-//SetTimeoutSmallMessage - set the timeout for small message
+// SetTimeoutSmallMessage - set the timeout for small message
 func SetTimeoutSmallMessage(ts time.Duration) {
 	TimeoutSmallMessage = ts
 }
 
-//SetTimeoutLargeMessage - set the timeout for large message
+// SetTimeoutLargeMessage - set the timeout for large message
 func SetTimeoutLargeMessage(ts time.Duration) {
 	TimeoutLargeMessage = ts
 }
 
-//SetLargeMessageThresholdSize - set the size above which it is considered as a large message
+// SetLargeMessageThresholdSize - set the size above which it is considered as a large message
 func SetLargeMessageThresholdSize(size int) {
 	LargeMessageThreshold = size
 }
@@ -72,7 +71,7 @@ var (
 	HeaderNodeRequestSignature = "X-Node-Request-Signature"
 )
 
-//N2NTimeTolerance - only a message signed within this time is considered valid
+// N2NTimeTolerance - only a message signed within this time is considered valid
 const N2NTimeTolerance = 4 // in seconds
 
 const (
@@ -180,7 +179,7 @@ func getHashData(clientID datastore.Key, ts common.Timestamp, key datastore.Key)
 var NoDataErr = common.NewError("no_data", "No data")
 
 func readAndClose(reader io.ReadCloser) {
-	_, _ = io.Copy(ioutil.Discard, reader)
+	_, _ = io.Copy(io.Discard, reader)
 	_ = reader.Close()
 }
 

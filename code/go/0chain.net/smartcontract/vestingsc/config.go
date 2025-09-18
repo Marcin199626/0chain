@@ -11,18 +11,18 @@ import (
 	"strings"
 	"time"
 
-	"0chain.net/chaincore/currency"
+	config2 "0chain.net/core/config"
+	"github.com/0chain/common/core/currency"
 
 	"0chain.net/chaincore/smartcontractinterface"
 
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
-	"0chain.net/core/util"
-	"0chain.net/smartcontract"
+	"0chain.net/core/encryption"
+	"github.com/0chain/common/core/util"
 
 	chainstate "0chain.net/chaincore/chain/state"
-	configpkg "0chain.net/chaincore/config"
 )
 
 //go:generate msgp -io=false -tests=false -unexported=true -v
@@ -61,7 +61,7 @@ var (
 )
 
 func scConfigKey(scKey string) datastore.Key {
-	return scKey + ":configurations"
+	return scKey + encryption.Hash("vestingsc_config")
 }
 
 // config represents SC configurations ('vestingsc:' from sc.yaml)
@@ -103,7 +103,7 @@ func (c *config) Decode(b []byte) error {
 	return json.Unmarshal(b, c)
 }
 
-func (c *config) update(changes *smartcontract.StringMap) error {
+func (c *config) update(changes *config2.StringMap) error {
 	for key, value := range changes.Fields {
 		switch key {
 		case Settings[MinLock]:
@@ -111,10 +111,11 @@ func (c *config) update(changes *smartcontract.StringMap) error {
 				return fmt.Errorf("value %v cannot be converted to currency.Coin, "+
 					"failing to set config key %s", value, key)
 			} else {
-				c.MinLock, err = currency.MultFloat64(1e10, sbValue)
+				cMinLock, err := currency.MultFloat64(1e10, sbValue)
 				if err != nil {
 					return err
 				}
+				c.MinLock = cMinLock
 			}
 		case Settings[MinDuration]:
 			if dValue, err := time.ParseDuration(value); err != nil {
@@ -186,7 +187,7 @@ func (c *config) setCostValue(key, value string) error {
 	return fmt.Errorf("cost config setting %s not found", costKey)
 }
 
-func (c *config) getConfigMap() smartcontract.StringMap {
+func (c *config) getConfigMap() config2.StringMap {
 	fields := map[string]string{
 		Settings[MinLock]:              fmt.Sprintf("%v", float64(c.MinLock)/1e10),
 		Settings[MinDuration]:          fmt.Sprintf("%v", c.MinDuration),
@@ -200,7 +201,7 @@ func (c *config) getConfigMap() smartcontract.StringMap {
 		fields[fmt.Sprintf("cost.%s", key)] = fmt.Sprintf("%0v", c.Cost[strings.ToLower(key)])
 	}
 
-	return smartcontract.StringMap{
+	return config2.StringMap{
 		Fields: fields,
 	}
 }
@@ -222,7 +223,7 @@ func (vsc *VestingSmartContract) updateConfig(
 		return "", err
 	}
 
-	update := &smartcontract.StringMap{}
+	update := &config2.StringMap{}
 	if err = update.Decode(input); err != nil {
 		return "", common.NewError("update_config", err.Error())
 	}
@@ -231,7 +232,7 @@ func (vsc *VestingSmartContract) updateConfig(
 		return "", common.NewError("update_config", err.Error())
 	}
 
-	_, err = balances.InsertTrieNode(scConfigKey(vsc.ID), conf)
+	_, err = balances.InsertTrieNode(scConfigKey(ADDRESS), conf)
 	if err != nil {
 		return "", common.NewError("update_config", err.Error())
 	}
@@ -250,7 +251,7 @@ func getConfiguredConfig() (conf *config, err error) {
 	conf = new(config)
 
 	// short hand
-	var scconf = configpkg.SmartContractConfig
+	var scconf = config2.SmartContractConfig
 	conf.MinLock, err = currency.ParseZCN(scconf.GetFloat64(prefix + "min_lock"))
 	if err != nil {
 		return nil, err
@@ -291,35 +292,31 @@ func (vsc *VestingSmartContract) getConfig(
 	balances chainstate.StateContextI,
 ) (conf *config, err error) {
 	conf = new(config)
-	err = balances.GetTrieNode(scConfigKey(vsc.ID), conf)
-	switch err {
-	case nil:
-		return conf, nil
-	case util.ErrValueNotPresent:
-		return vsc.setupConfig(balances)
-	default:
-		return nil, err
-	}
-}
-
-func (vsc *VestingSmartContract) setupConfig(
-	balances chainstate.StateContextI,
-) (conf *config, err error) {
-
-	if conf, err = getConfiguredConfig(); err != nil {
-		return
-	}
-	_, err = balances.InsertTrieNode(scConfigKey(vsc.ID), conf)
+	err = balances.GetTrieNode(scConfigKey(ADDRESS), conf)
 	if err != nil {
 		return nil, err
 	}
-	return
+	return conf, nil
+}
+
+func InitConfig(balances chainstate.StateContextI) error {
+	err := balances.GetTrieNode(scConfigKey(ADDRESS), &config{})
+	if err == util.ErrValueNotPresent {
+		conf, err := getConfiguredConfig()
+		if err != nil {
+			return err
+		}
+		_, err = balances.InsertTrieNode(scConfigKey(ADDRESS), conf)
+		return err
+	}
+	return err
 }
 
 //
 // REST-handler
 //
 
+//nolint:unused
 func (vsc *VestingSmartContract) getConfigHandler(
 	ctx context.Context,
 	params url.Values,

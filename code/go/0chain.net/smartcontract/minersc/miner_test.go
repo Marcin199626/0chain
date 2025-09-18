@@ -1,10 +1,13 @@
-package minersc_test
+package minersc
 
 import (
 	"strconv"
 	"testing"
 
-	"0chain.net/chaincore/currency"
+	"0chain.net/smartcontract/provider"
+
+	"github.com/0chain/common/core/currency"
+	"github.com/0chain/common/core/statecache"
 
 	"0chain.net/smartcontract/stakepool"
 	"0chain.net/smartcontract/stakepool/spenum"
@@ -15,9 +18,8 @@ import (
 	sci "0chain.net/chaincore/smartcontractinterface"
 	"0chain.net/chaincore/state"
 	"0chain.net/chaincore/transaction"
-	"0chain.net/core/datastore"
-	"0chain.net/core/util"
-	. "0chain.net/smartcontract/minersc"
+
+	"github.com/0chain/common/core/util"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -56,7 +58,6 @@ func TestDeleteMiner(t *testing.T) {
 			mn.Pools[id] = &dp
 		}
 		for i, amount := range p.pendingPools {
-			id := "pending pool " + strconv.Itoa(i)
 			delegateId := "delegate " + strconv.Itoa(i)
 			var dp stakepool.DelegatePool
 			dp.Status = spenum.Pending
@@ -67,19 +68,7 @@ func TestDeleteMiner(t *testing.T) {
 				ToClientID: delegateId,
 				Amount:     dp.Balance,
 			}).Return(nil).Once()
-
-			var un stakepool.UserStakePools
-			un.Pools = map[datastore.Key][]datastore.Key{mn.ID: {id}}
-			balances.On("GetTrieNode", stakepool.UserStakePoolsKey(spenum.Miner, id), mock.MatchedBy(func(n *stakepool.UserStakePools) bool {
-				return true
-			})).Return(nil).Once()
-			balances.On("DeleteTrieNode", stakepool.UserStakePoolsKey(spenum.Miner, id)).Return("", nil).Once()
 		}
-
-		balances.On(
-			"DeleteTrieNode",
-			stakepool.UserStakePoolsKey(spenum.Miner, mn.Settings.DelegateWallet),
-		).Return("", nil).Once()
 
 		balances.On("GetTrieNode", mn.GetKey(), mock.MatchedBy(func(n *MinerNode) bool {
 			*n = *mn
@@ -94,6 +83,8 @@ func TestDeleteMiner(t *testing.T) {
 			}),
 		).Return("", nil).Once()
 
+		balances.On("Cache").Return(statecache.NewEmpty())
+
 		pn := &PhaseNode{}
 		balances.On("GetTrieNode", pn.GetKey(), mock.AnythingOfType("*minersc.PhaseNode")).Return(util.ErrValueNotPresent).Once()
 		mockBlock := &block.Block{}
@@ -103,7 +94,10 @@ func TestDeleteMiner(t *testing.T) {
 
 		mnInput := &MinerNode{
 			SimpleNode: &SimpleNode{
-				ID: mockDeletedMinerId,
+				Provider: provider.Provider{
+					ID:           mockDeletedMinerId,
+					ProviderType: spenum.Miner,
+				},
 			},
 		}
 		return args{
@@ -158,4 +152,51 @@ func TestDeleteMiner(t *testing.T) {
 			require.True(t, mock.AssertExpectationsForObjects(t, args.balances))
 		})
 	}
+}
+
+func TestAddMiner(t *testing.T) {
+	const stakeVal, stakeHolders = 10e10, 5
+
+	var (
+		balances = newTestBalances()
+		msc      = newTestMinerSC()
+		now      int64
+
+		miners []*miner
+	)
+
+	setConfig(t, balances)
+
+	for i := 0; i < 10; i++ {
+		mn, err := addMiner(t, msc, now, true, balances)
+		require.NoError(t, err)
+		miners = append(miners, mn)
+		now += 10
+	}
+
+	// check miners are added successfully
+	ids, err := getNodeIDs(balances, AllMinersKey)
+	require.NoError(t, err)
+
+	for i := 0; i < len(miners); i++ {
+		require.Equal(t, ids[i], miners[i].miner.id)
+	}
+
+	t.Run("add miner not in magic block", func(t *testing.T) {
+		_, err = addMiner(t, msc, now, false, balances)
+		require.EqualError(t, err, "add_miner: failed to add new miner: Not in magic block")
+	})
+
+	t.Run("add miner already exist", func(t *testing.T) {
+		m := miners[0]
+		_, err := m.execAddMinerTxn(msc, now, balances)
+		require.NoError(t, err) // no error expected
+	})
+
+	t.Run("duplicate n2n host", func(t *testing.T) {
+		m := newMiner(t, true, balances)
+		m.node.N2NHost = miners[0].node.N2NHost
+		_, err := m.execAddMinerTxn(msc, now, balances)
+		require.ErrorContains(t, err, "add_miner: n2nhost:port already exists") // no error expected
+	})
 }

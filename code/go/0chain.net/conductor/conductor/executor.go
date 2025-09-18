@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +16,9 @@ import (
 	"0chain.net/conductor/config"
 	"0chain.net/conductor/config/cases"
 	"0chain.net/conductor/dirs"
+	"0chain.net/conductor/services"
+	"0chain.net/conductor/types"
+	"0chain.net/conductor/utils"
 )
 
 //
@@ -24,7 +28,7 @@ import (
 func (r *Runner) setupTimeout(tm time.Duration) {
 	r.timer = time.NewTimer(tm)
 	if tm <= 0 {
-		<-r.timer.C // drain zero timeout
+		<-r.timer.C // drain zero timeout so that wherever it is waited upon it waits indefinitely
 	}
 }
 
@@ -48,6 +52,8 @@ func (r *Runner) doStart(name NodeName, lock, errIfAlreadyStarted bool) (err err
 	if err := n.Start(r.conf.Logs, r.conf.Env); err != nil {
 		return fmt.Errorf("starting %s: %v", n.Name, err)
 	}
+
+	r.nodeHistory[n.Name] = n
 	return nil
 }
 
@@ -118,6 +124,15 @@ func (r *Runner) SetEnv(env map[string]string) (err error) {
 //
 // control nodes
 //
+
+func (r *Runner) GetNodes() map[config.NodeName]config.NodeID {
+	m := make(map[config.NodeName]config.NodeID)
+	for _, n := range r.conf.Nodes {
+		m[n.Name] = n.ID
+	}
+
+	return m
+}
 
 // Start nodes, or start and lock them.
 func (r *Runner) Start(names []NodeName, lock bool,
@@ -301,22 +316,31 @@ func (r *Runner) WaitShareSignsOrShares(ssos config.WaitShareSignsOrShares,
 }
 
 func (r *Runner) WaitAdd(wadd config.WaitAdd, tm time.Duration) (err error) {
-
 	if r.verbose {
-		log.Printf(" [INF] wait add miners: %s, sharders: %s, blobbers: %s",
-			wadd.Miners, wadd.Sharders, wadd.Blobbers)
+		log.Printf(" [INF] wait add miners: %s, sharders: %s, blobbers: %s, validators: %s, authorizers %s",
+			wadd.Miners, wadd.Sharders, wadd.Blobbers, wadd.Validators, wadd.Authorizers)
 	}
 
 	r.setupTimeout(tm)
 	r.waitAdd = wadd
 	if wadd.Start {
 		// start nodes that haven't been started yet
-		for _, name := range append(wadd.Sharders, append(wadd.Miners, wadd.Blobbers...)...) {
+		allNodes := append(wadd.Sharders, wadd.Miners...)
+		allNodes = append(allNodes, wadd.Blobbers...)
+		allNodes = append(allNodes, wadd.Validators...)
+		allNodes = append(allNodes, wadd.Authorizers...)
+		allNodes = append(allNodes, wadd.Validators...)
+
+		for _, name := range allNodes {
 			if err := r.doStart(name, false, false); err != nil {
 				return err
 			}
 		}
 	}
+
+	// it is not necessary to wait for authorizers because they are registered previously
+	r.waitAdd.Authorizers = []config.NodeName{}
+
 	return
 }
 
@@ -340,6 +364,178 @@ func (r *Runner) WaitNoProgress(wait time.Duration) (err error) {
 	r.waitNoProgress = config.WaitNoProgress{Start: time.Now().Add(noProgressSeconds * time.Second), Until: time.Now().Add(wait)}
 	r.setupTimeout(wait)
 	return
+}
+
+func (r *Runner) WaitMinerGeneratesBlock(wmgb config.WaitMinerGeneratesBlock, timeout time.Duration) (err error) {
+	if r.verbose {
+		log.Printf("[INF] start waiting until miner generates block: %s", wmgb.MinerName)
+	}
+
+	r.setupTimeout(timeout)
+
+	err = r.SetServerState(&config.NotifyOnBlockGeneration{
+		Enable: true,
+	})
+	if err != nil {
+		return
+	}
+
+	r.waitMinerGeneratesBlock = wmgb
+	return
+}
+
+func (r *Runner) WaitSharderLFB(conf config.WaitSharderLFB, timeout time.Duration) (err error) {
+	if r.verbose {
+		log.Printf(" [INF] Watching for sharders blocks to check LFB for %v\n", conf.Target)
+	}
+
+	r.setupTimeout(timeout)
+
+	err = r.SetServerState(&config.NotifyOnBlockGeneration{
+		Enable: true,
+	})
+	if err != nil {
+		return
+	}
+
+	r.waitSharderLFB = conf
+	return
+}
+
+func (r *Runner) WaitShardersFinalizeNearBlocks(command config.WaitShardersFinalizeNearBlocks, timeout time.Duration) {
+	if r.verbose {
+		log.Printf(" [INF] Watching for sharders blocks to check LFB for %v\n", command.Sharders)
+	}
+
+	r.setupTimeout(timeout)
+
+	err := r.SetServerState(&config.NotifyOnBlockGeneration{
+		Enable: true,
+	})
+	if err != nil {
+		return
+	}
+
+	r.waitShardersFinalizeNearBlocks = command
+}
+
+func (r *Runner) GenerateChallenge(c *config.GenerateChallege) error {
+	if r.verbose {
+		log.Print(" [INF] setting generate challenge info")
+	}
+
+	r.chalConf = c
+	return nil
+}
+
+func (r *Runner) WaitForChallengeGeneration(timeout time.Duration) {
+	if r.verbose {
+		log.Print(" [INF] waiting for blockchain to generate challenge")
+	}
+
+	if r.chalConf == nil {
+		log.Printf(" [ERR] challenge config is not set")
+		return
+	}
+
+	r.setupTimeout(timeout)
+	r.chalConf.WaitOnChallengeGeneration = true
+}
+
+func (r *Runner) WaitOnBlobberCommit(timeout time.Duration) {
+	if r.verbose {
+		log.Print(" [INF] waiting for blobber to commit writemarker")
+	}
+
+	if r.chalConf == nil {
+		log.Printf(" [ERR] challenge config is not set")
+		return
+	}
+
+	r.setupTimeout(timeout)
+	r.chalConf.WaitOnBlobberCommit = true
+}
+
+func (r *Runner) WaitForChallengeStatus(timeout time.Duration) {
+	if r.verbose {
+		log.Print(" [INF] waiting for challenge status from chain")
+	}
+
+	if r.chalConf == nil {
+		log.Printf(" [ERR] challenge config is not set")
+		return
+	}
+
+	r.setupTimeout(timeout)
+	r.chalConf.WaitForChallengeStatus = true
+}
+
+func (r *Runner) WaitValidatorTicket(wvt config.WaitValidatorTicket, timeout time.Duration) {
+	validator, ok := r.conf.Nodes.NodeByName(config.NodeName(wvt.ValidatorName))
+	if !ok {
+		log.Printf("[ERR] Validator with name %v not found", wvt.ValidatorName)
+	}
+
+	if r.verbose {
+		log.Printf(" [INF] waiting for ticket from validator %v (%v)", wvt.ValidatorName, validator.ID)
+	}
+
+	err := r.SetServerState(config.NotifyOnValidationTicketGeneration(true))
+	if err != nil {
+		log.Printf("[ERR] setting notify on validation ticket generation: %v", err)
+	}
+
+	r.setupTimeout(timeout)
+	r.waitValidatorTicket.ValidatorName = wvt.ValidatorName
+	r.waitValidatorTicket.ValidatorId = string(validator.ID)
+}
+
+func (r *Runner) WaitForFileMetaRoot() {
+	if r.verbose {
+		log.Print(" [INF] waiting for file meta root")
+	}
+	count := 0
+	for name := range r.server.Nodes() {
+		if strings.Contains(string(name), "blobber") {
+			count++
+		}
+	}
+
+	f := fileMetaRoot{
+		shouldWait:   true,
+		totalBlobers: count,
+	}
+	r.fileMetaRoot = f
+}
+
+func (r *Runner) CheckFileMetaRoot(cfg *config.CheckFileMetaRoot) error {
+	if r.verbose {
+		log.Print(" [INF] checking file meta root")
+	}
+
+	var fmrs []string
+	for _, fmr := range r.fileMetaRoot.fmrs {
+		fmrs = append(fmrs, fmr)
+	}
+
+	curFmr := fmrs[0]
+	allEqual := true
+	for i := 1; i < len(fmrs); i++ {
+		allEqual = allEqual && curFmr == fmrs[i]
+		curFmr = fmrs[i]
+	}
+
+	fmt.Printf("RequiredSameRoot = %v, allEqual = %v\n", cfg.RequireSameRoot, allEqual)
+
+	if cfg.RequireSameRoot && !allEqual {
+		return fmt.Errorf("required all file meta root to be same")
+	}
+
+	if !cfg.RequireSameRoot && allEqual {
+		return fmt.Errorf("required some file meta root to be different")
+	}
+
+	return nil
 }
 
 //
@@ -438,6 +634,30 @@ func (r *Runner) WrongBlockHash(wbh *config.Bad) (err error) {
 	})
 	if err != nil {
 		return fmt.Errorf("setting 'wrong block hash': %v", err)
+	}
+	return
+}
+
+func (r *Runner) WrongBlockRandomSeed(wb *config.Bad) (err error) {
+	r.verbosePrintByGoodBad("wrong block random seed", wb)
+
+	err = r.server.UpdateStates(wb.By, func(state *conductrpc.State) {
+		state.WrongBlockRandomSeed = wb
+	})
+	if err != nil {
+		return fmt.Errorf("setting 'wrong block random seed': %v", err)
+	}
+	return
+}
+
+func (r *Runner) WrongBlockDDoS(wb *config.Bad) (err error) {
+	r.verbosePrintByGoodBad("wrong block ddos", wb)
+
+	err = r.server.UpdateStates(wb.By, func(state *conductrpc.State) {
+		state.WrongBlockDDoS = wb
+	})
+	if err != nil {
+		return fmt.Errorf("setting 'wrong block ddos': %v", err)
 	}
 	return
 }
@@ -667,28 +887,55 @@ func (r *Runner) WaitNoViewChainge(wnvc config.WaitNoViewChainge,
 }
 
 // Command executing.
-func (r *Runner) Command(name string, tm time.Duration) {
+func (r *Runner) Command(name string, params map[string]interface{}, retryCount int, failureThreshold, tm time.Duration) {
 	r.setupTimeout(tm)
 
 	if r.verbose {
 		log.Printf(" [INF] command %q", name)
 	}
 
-	r.waitCommand = r.asyncCommand(name)
+	stringParams := make(map[string]string, len(params))
+	for k, v := range params {
+		switch tv := v.(type) {
+		case string, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, bool:
+			stringParams[k] = fmt.Sprintf("%v", tv)
+		case []interface{}:
+			stringSlice, err := utils.StringSlice(tv)
+			if err != nil {
+				r.waitCommand = make(chan error)
+				r.waitCommand <- err
+				return
+			}
+			stringParams[k] = strings.Join(stringSlice, ",")
+		}
+	}
+
+	r.waitCommand = r.asyncCommand(name, stringParams, retryCount, failureThreshold)
 }
 
-func (r *Runner) asyncCommand(name string) (reply chan error) {
+func (r *Runner) asyncCommand(name string, params map[string]string, retryCount int, failureThreshold time.Duration) (reply chan error) {
 	reply = make(chan error)
-	go r.runAsyncCommand(reply, name)
+	fmt.Println("async command")
+	go r.runAsyncCommand(reply, name, params, retryCount, failureThreshold)
 	return
 }
 
-func (r *Runner) runAsyncCommand(reply chan error, name string) {
-	var err = r.conf.Execute(name)
-	if err != nil {
-		err = fmt.Errorf("%q: %v", name, err)
+func (r *Runner) runAsyncCommand(reply chan error, name string, params map[string]string, retryCount int, failureThreshold time.Duration) {
+	var err error
+	if retryCount == 0 {
+		retryCount = 1
 	}
-	reply <- err // nil or error
+	
+	for i := 0; i < retryCount; i++ {
+		err = r.conf.Execute(name, params, failureThreshold)
+		if err == nil {
+			reply <- nil
+			return
+		}
+		log.Printf(" [ERR] command %q failed: %v", name, err)
+	}
+	
+	reply <- err // nil or error (of the latest run)
 }
 
 //
@@ -837,6 +1084,15 @@ func (r *Runner) ConfigureTestCase(configurator cases.TestCaseConfigurator) erro
 		case *cases.MissingLFBTickets:
 			state.MissingLFBTicket = cfg
 
+		case *cases.CheckChallengeIsValid:
+			state.CheckChallengeIsValid = cfg
+
+		case *cases.RoundHasFinalized:
+			state.RoundHasFinalizedConfig = cfg
+
+		case *cases.RoundRandomSeed:
+			state.RoundRandomSeed = cfg
+
 		default:
 			log.Panicf("unknown test case name: %s", configurator.Name())
 		}
@@ -847,6 +1103,11 @@ func (r *Runner) ConfigureTestCase(configurator cases.TestCaseConfigurator) erro
 
 	r.server.CurrentTest = configurator.TestCase()
 	r.currTestCaseName = configurator.Name()
+
+	switch cfg := configurator.(type) {
+	case *cases.RoundHasFinalized:
+		_ = r.server.CurrentTest.Configure([]byte(strconv.Itoa(cfg.Round)))
+	}
 
 	return nil
 }
@@ -871,4 +1132,225 @@ func (r *Runner) MakeTestCaseCheck(cfg *config.TestCaseCheck) error {
 		return errors.New("check failed")
 	}
 	return nil
+}
+
+// SetServerState implements config.Executor interface.
+func (r *Runner) SetServerState(update interface{}) error {
+	err := r.server.UpdateAllStates(func(state *conductrpc.State) {
+		switch update := update.(type) {
+		case *config.BlobberList:
+			state.BlobberList = update
+		case *config.BlobberDownload:
+			state.BlobberDownload = update
+		case *config.BlobberUpload:
+			state.BlobberUpload = update
+		case *config.BlobberDelete:
+			state.BlobberDelete = update
+		case *config.AdversarialValidator:
+			state.AdversarialValidator = update
+		case *config.LockNotarizationAndSendNextRoundVRF:
+			state.LockNotarizationAndSendNextRoundVRF = update
+		case *config.CollectVerificationTicketsWhenMissedVRF:
+			state.CollectVerificationTicketsWhenMissedVRF = update
+		case *config.AdversarialAuthorizer:
+			state.AdversarialAuthorizer = update
+		case *config.NotifyOnBlockGeneration:
+			state.NotifyOnBlockGeneration = update.Enable
+		case config.StopChallengeGeneration:
+			state.StopChallengeGeneration = bool(update)
+		case config.StopWMCommit:
+			state.StopWMCommit = true
+		case config.BlobberCommittedWM:
+			state.BlobberCommittedWM = true
+		case *config.GenerateChallege:
+			state.GenerateChallenge = update
+		case config.GetFileMetaRoot:
+			state.GetFileMetaRoot = bool(update)
+		case config.GenerateAllChallenges:
+			state.GenerateAllChallenges = bool(update)
+		case *config.RenameCommitControl:
+			if update.Fail {
+				state.FailRenameCommit = utils.SliceUnion(state.FailRenameCommit, update.Nodes)
+			} else {
+				state.FailRenameCommit = utils.SliceDifference(state.FailRenameCommit, update.Nodes)
+			}
+			fmt.Printf("state.FailRenameCommit = %v\n", state.FailRenameCommit)
+		case *config.UploadCommitControl:
+			if update.Fail {
+				state.FailUploadCommit = utils.SliceUnion(state.FailUploadCommit, update.Nodes)
+			} else {
+				state.FailUploadCommit = utils.SliceDifference(state.FailUploadCommit, update.Nodes)
+			}
+			fmt.Printf("state.FailUploadCommit = %v\n", state.FailUploadCommit)
+		case config.NotifyOnValidationTicketGeneration:
+			state.NotifyOnValidationTicketGeneration = bool(update)
+		case config.MissUpDownload:
+			state.MissUpDownload = bool(update)
+		}
+	})
+
+	return err
+}
+
+// SetMagicBlock implements config.Executor interface.
+func (r *Runner) SetMagicBlock(configFile string) error {
+	if r.verbose {
+		log.Print(" [INF] Setting magic block configuration file ", configFile)
+	}
+
+	r.server.SetMagicBlock(configFile)
+
+	return nil
+}
+
+func (r *Runner) SyncLatestAggregates(cfg *config.SyncAggregates) error {
+	if r.verbose {
+		log.Printf("[INF] syncing aggregates, %+v\n", cfg)
+	}
+
+	aggService := services.NewAggregateService(r.conf.AggregatesBaseUrl)
+
+	if len(cfg.MinerIds) > 0 {
+		err := aggService.SyncLatestAggregates(types.Miner, cfg.MinerIds)
+		if err != nil && cfg.Required {
+			return fmt.Errorf("error syncing miner aggregates: %v", err)
+		}
+	}
+
+	if len(cfg.SharderIds) > 0 {
+		err := aggService.SyncLatestAggregates(types.Sharder, cfg.SharderIds)
+		if err != nil && cfg.Required {
+			return fmt.Errorf("error syncing sharder aggregates: %v", err)
+		}
+	}
+
+	if len(cfg.BlobberIds) > 0 {
+		err := aggService.SyncLatestAggregates(types.Blobber, cfg.BlobberIds)
+		if err != nil && cfg.Required {
+			return fmt.Errorf("error syncing blobber aggregates: %v", err)
+		}
+	}
+
+	if len(cfg.ValidatorIds) > 0 {
+		err := aggService.SyncLatestAggregates(types.Validator, cfg.ValidatorIds)
+		if err != nil && cfg.Required {
+			return fmt.Errorf("error syncing validator aggregates: %v", err)
+		}
+	}
+
+	if len(cfg.AuthorizerIds) > 0 {
+		err := aggService.SyncLatestAggregates(types.Authorizer, cfg.AuthorizerIds)
+		if err != nil && cfg.Required {
+			return fmt.Errorf("error syncing authorizer aggregates: %v", err)
+		}
+	}
+
+	if len(cfg.UserIds) > 0 {
+		err := aggService.SyncLatestAggregates(types.User, cfg.UserIds)
+		if err != nil && cfg.Required {
+			return fmt.Errorf("error syncing user aggregates: %v", err)
+		}
+	}
+
+	if cfg.MonitorGlobal {
+		err := aggService.SyncLatestAggregates(types.Global, []string{})
+		if err != nil && cfg.Required {
+			return fmt.Errorf("error syncing monitor aggregates: %v", err)
+		}
+	}
+
+	return nil
+}
+
+func (r *Runner) CheckAggregateValueChange(cfg *config.CheckAggregateChange, tm time.Duration) error {
+	if r.verbose {
+		log.Printf("[INF] checking aggregate value change: %+v", cfg)
+	}
+
+	aggService := services.NewAggregateService(r.conf.AggregatesBaseUrl)
+
+	check, err := aggService.CheckAggregateValueChange(cfg.ProviderType, cfg.ProviderId, cfg.Key, cfg.Monotonicity, tm)
+	if err != nil {
+		return err
+	}
+
+	if !check {
+		return fmt.Errorf("aggregate value not changed: %v", cfg)
+	}
+
+	return nil
+}
+
+func (r *Runner) CheckAggregateValueComparison(cfg *config.CheckAggregateComparison, tm time.Duration) error {
+	if r.verbose {
+		log.Printf("[INF] checking aggregate value comparison: %+v", cfg)
+	}
+
+	aggService := services.NewAggregateService(r.conf.AggregatesBaseUrl)
+
+	check, err := aggService.CompareAggregateValue(cfg.ProviderType, cfg.ProviderId, cfg.Key, cfg.Comparison, cfg.RValue, tm)
+	if err != nil {
+		return err
+	}
+
+	if !check {
+		return fmt.Errorf("aggregate comparison failed: %v", cfg)
+	}
+
+	return nil
+}
+
+func (r *Runner) CheckRollbackTokenomicsComparison() error {
+	if r.verbose {
+		log.Printf("[INF] checking rollback tokenomics comparison")
+	}
+
+	allocationService := services.NewAllocationService(r.conf.Sharder1BaseURL)
+
+	check, err := allocationService.CompareRollBackTokens()
+	if err != nil {
+		return err
+	}
+
+	if !check {
+		return fmt.Errorf("aggregate comparison failed")
+	}
+
+	return nil
+}
+
+func (r *Runner) StoreAllocationsData() error {
+	if r.verbose {
+		log.Printf("[INF] storing allocations data : " + r.conf.Sharder1BaseURL)
+	}
+
+	allocationService := services.NewAllocationService(r.conf.Sharder1BaseURL)
+
+	err := allocationService.StoreAllocationsData()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (r *Runner) SetNodeCustomConfig(cfg *config.NodeCustomConfig) error {
+	if r.verbose {
+		log.Printf("[INF] setting node custom config: %+v", cfg)
+	}
+
+	node, ok := r.conf.Nodes.NodeByName(cfg.NodeName)
+	if !ok {
+		return fmt.Errorf("node not found: %v", cfg.NodeName)
+	}
+
+	return r.server.SetNodeConfig(node.ID, cfg.Config)
+}
+
+func (r *Runner) SetMissUpDownload(cfg config.MissUpDownload) error {
+	if r.verbose {
+		log.Printf("[INF] setting miss up download: %+v", cfg)
+	}
+
+	return r.SetServerState(cfg)
 }

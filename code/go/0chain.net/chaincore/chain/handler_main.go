@@ -11,8 +11,14 @@ import (
 	"0chain.net/core/common"
 )
 
-/*LatestFinalizedBlockHandler - provide the latest finalized block by this miner */
-func LatestFinalizedBlockHandler(ctx context.Context, r *http.Request) (interface{}, error) {
+// swagger:route GET /v1/block/get/latest_finalized miner sharder GetLatestFinalizedBlock
+// Get latest finalized block.
+// Retrieves the latest finalized block. No parameters needed.
+//
+// responses:
+//  200: BlockSummary
+/*LatestFinalizedBlockHandlerSummary - provide the latest finalized block by this miner */
+func LatestFinalizedBlockHandlerSummary(ctx context.Context, r *http.Request) (interface{}, error) {
 	return GetServerChain().GetLatestFinalizedBlockSummary(), nil
 }
 
@@ -41,9 +47,4 @@ func LatestFinalizedMagicBlockSummaryHandler(ctx context.Context, r *http.Reques
 	}
 
 	return nil, errors.New("could not find latest finalized magic block")
-}
-
-// SetupHandlers sets up the necessary API end points.
-func SetupHandlers(c Chainer) {
-	setupHandlers(handlersMap(c))
 }

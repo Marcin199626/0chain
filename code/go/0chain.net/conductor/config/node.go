@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,7 +23,8 @@ type Node struct {
 	StartCommand string `json:"start_command" yaml:"start_command" mapstructure:"start_command"`
 	// StopCommand to start the node.
 	StopCommand string `json:"stop_command" yaml:"stop_command" mapstructure:"stop_command"`
-
+	// LogsDir is the directory where logs of this node is stored. Should be relative its "work_dir".
+	LogsDir string `json:"logs_dir" yaml:"logs_dir" mapstructure:"logs_dir"`
 	// internals
 	Command *exec.Cmd `json:"-" yaml:"-" mapstructure:"-"`
 }
@@ -43,7 +45,7 @@ func (n *Node) Start(logsDir string, env map[string]string) (err error) {
 	var cmd = exec.Command(command, ss[1:]...)
 	cmd.Dir = n.WorkDir
 	if n.Env != "" {
-		cmd.Env = append(os.Environ(), n.Env)
+		cmd.Env = append(os.Environ(), strings.Split(n.Env, ",")...)
 	}
 
 	for key, value := range env {
@@ -130,16 +132,27 @@ func (n *Node) Stop() (err error) {
 	)
 	command = ss[0]
 	var cmd = exec.Command(command, ss[1:]...)
+
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("stop command %v: failed creating error pipe: %+v", n.Name, err)
+	}
+
 	cmd.Dir = n.WorkDir
 	if n.Env != "" {
-		cmd.Env = append(os.Environ(), n.Env)
+		cmd.Env = append(os.Environ(), strings.Split(n.Env, ",")...)
 	}
 
 	if err = cmd.Start(); err != nil {
-		return fmt.Errorf("stop command %v: run: %v", n.Name, err)
+		return fmt.Errorf("stop command %v: run: %+v", n.Name, err)
 	}
+
 	if err = cmd.Wait(); err != nil {
-		return fmt.Errorf("stop command %v: wait: %v", n.Name, err)
+		slurp, _ := io.ReadAll(stderr)
+		if slurp != nil {
+			fmt.Printf("%s\n", slurp)
+		}
+		return fmt.Errorf("stop command %v: wait: %+v", n.Name, err)
 	}
 	return // nil or error
 }

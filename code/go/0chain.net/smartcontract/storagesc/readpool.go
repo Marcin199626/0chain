@@ -2,17 +2,19 @@ package storagesc
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	cstate "0chain.net/chaincore/chain/state"
-	"0chain.net/chaincore/currency"
 	"0chain.net/chaincore/state"
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
-	"0chain.net/core/util"
+	"0chain.net/smartcontract/dbs/event"
 	"0chain.net/smartcontract/stakepool"
 	"0chain.net/smartcontract/stakepool/spenum"
+	"github.com/0chain/common/core/currency"
+	"github.com/0chain/common/core/util"
 )
 
 //msgp:ignore readPoolRedeem
@@ -29,7 +31,6 @@ func readPoolKey(scKey, clientID string) datastore.Key {
 // readPool represents new trimmed down readPool consisting of two balances,
 // one for the allocations that the client (client_id) owns
 // and the other for the allocations that the client (client_id) doesn't own
-// swagger:model readPool
 type readPool struct {
 	Balance currency.Coin `json:"balance"`
 }
@@ -109,11 +110,7 @@ func (rp *readPool) moveToBlobber(allocID, blobID string,
 	var moved currency.Coin
 	currentBalance := rp.Balance
 
-	if currentBalance == 0 {
-		return "", fmt.Errorf("no tokens in read pool for allocation: %s,"+
-			" blobber: %s", allocID, blobID)
-	}
-	if value >= currentBalance {
+	if value > currentBalance {
 		return "", fmt.Errorf("not enough tokens in read pool for "+
 			"allocation: %s, blobber: %s", allocID, blobID)
 	} else {
@@ -127,7 +124,7 @@ func (rp *readPool) moveToBlobber(allocID, blobID string,
 
 	rp.Balance = currentBalance
 
-	err = sp.DistributeRewards(value, blobID, spenum.Blobber, balances)
+	err = sp.DistributeRewards(value, blobID, spenum.Blobber, spenum.FileDownloadReward, balances, allocID)
 	if err != nil {
 		return "", fmt.Errorf("can't move tokens to blobber: %v", err)
 	}
@@ -139,24 +136,6 @@ func (rp *readPool) moveToBlobber(allocID, blobID string,
 //
 // smart contract methods
 //
-
-// lock tokens for read pool of transaction's client
-func (ssc *StorageSmartContract) newReadPool(t *transaction.Transaction,
-	_ []byte, balances cstate.StateContextI) (resp string, err error) {
-	_, err = ssc.getReadPool(t.ClientID, balances)
-	if err == nil {
-		return "", common.NewError("new_read_pool_failed", "already exist")
-	} else if err != util.ErrValueNotPresent {
-		return "", common.NewError("new_read_pool_failed", err.Error())
-	}
-
-	rp := new(readPool)
-	if err = rp.save(ssc.ID, t.ClientID, balances); err != nil {
-		return "", common.NewError("new_read_pool_failed", err.Error())
-	}
-
-	return string(rp.Encode()), nil
-}
 
 func (ssc *StorageSmartContract) readPoolLock(txn *transaction.Transaction, input []byte, balances cstate.StateContextI) (string, error) {
 	conf, err := ssc.getReadPoolConfig(balances, true)
@@ -184,57 +163,74 @@ func (ssc *StorageSmartContract) readPoolLock(txn *transaction.Transaction, inpu
 		req.TargetId = txn.ClientID
 	}
 
-	return ssc.readPoolLockInternal(txn, txn.Value, false, req.TargetId, balances)
+	return ssc.readPoolLockInternal(txn, NewTokenTransfer(txn.Value, txn.ClientID, txn.ToClientID, false), req.TargetId, balances)
 }
 
-func (ssc *StorageSmartContract) readPoolLockInternal(txn *transaction.Transaction, toLock currency.Coin, mint bool, targetId string, balances cstate.StateContextI) (string, error) {
-	if !mint {
+func (ssc *StorageSmartContract) readPoolLockInternal(txn *transaction.Transaction, transfer *Transfer, targetId string, balances cstate.StateContextI) (string, error) {
+	if !transfer.isMint {
 		// check client balance
-		if err := stakepool.CheckClientBalance(txn.ClientID, toLock, balances); err != nil {
+		if err := stakepool.CheckClientBalance(txn.ClientID, transfer.value, balances); err != nil {
 			return "", common.NewError("read_pool_lock_failed", err.Error())
 		}
 		// transfer balance from client to smart contract
-		transfer := state.NewTransfer(txn.ClientID, txn.ToClientID, currency.Coin(txn.Value))
-		if err := balances.AddTransfer(transfer); err != nil {
+		t := state.NewTransfer(transfer.clientId, transfer.toClientId, transfer.value)
+		if err := balances.AddTransfer(t); err != nil {
 			return "", common.NewError("read_pool_lock_failed", err.Error())
 		}
-	} else {
-		if err := balances.AddMint(&state.Mint{
-			Minter:     ADDRESS,
-			ToClientID: ADDRESS,
-			Amount:     toLock,
-		}); err != nil {
-			return "", common.NewError("read_pool_lock_failed", err.Error())
-		}
-	}
 
+		i, _ := txn.Value.Int64()
+		// updates the snapshot table
+		balances.EmitEvent(event.TypeStats, event.TagLockReadPool, txn.ClientID, event.ReadPoolLock{
+			Client: txn.ClientID,
+			PoolId: targetId,
+			Amount: i,
+			IsMint: transfer.isMint,
+		})
+
+	} // when mint is true, we don't need to do anything but add tokens to the pool, the tokens will be transfered from SC to client when collecting rewards
+
+	var newReadPool = false
 	rp, err := ssc.getReadPool(targetId, balances)
 	if err != nil {
-		if err != util.ErrValueNotPresent {
+		if !errors.Is(err, util.ErrValueNotPresent) {
 			return "", common.NewError("read_pool_lock_failed", err.Error())
 		} else {
 			rp = new(readPool)
+			newReadPool = true
 		}
 	}
 
 	//add to read pool balance
-	if err = rp.add(toLock); err != nil {
+	if err = rp.add(transfer.value); err != nil {
 		return "", common.NewError("read_pool_lock_failed", err.Error())
 	}
 
-	// save read pool
+	// Save read pool
 	if err = rp.save(ssc.ID, targetId, balances); err != nil {
 		return "", common.NewError("read_pool_lock_failed", err.Error())
+	}
+
+	if newReadPool {
+		balances.EmitEvent(event.TypeStats, event.TagInsertReadpool, txn.ClientID, event.ReadPool{
+			UserID:  txn.ClientID,
+			Balance: rp.Balance,
+		})
+	} else {
+		// updates the readpool table
+		balances.EmitEvent(event.TypeStats, event.TagUpdateReadpool, txn.ClientID, event.ReadPool{
+			UserID:  txn.ClientID,
+			Balance: rp.Balance,
+		})
 	}
 
 	return "", nil
 }
 
 // unlock tokens if expired
-func (ssc *StorageSmartContract) readPoolUnlock(txn *transaction.Transaction, input []byte, balances cstate.StateContextI) (string, error) {
+func (ssc *StorageSmartContract) readPoolUnlock(txn *transaction.Transaction, _ []byte, balances cstate.StateContextI) (string, error) {
 	rp, err := ssc.getReadPool(txn.ClientID, balances)
 	if err != nil {
-		return "", common.NewError("read_pool_unlock_failed", "no read pool found for clientID to unlock token")
+		return "", common.NewErrorf("read_pool_unlock_failed", "no read pool found for clientID to unlock token: %v", err)
 	}
 
 	// adjust balance
@@ -245,10 +241,26 @@ func (ssc *StorageSmartContract) readPoolUnlock(txn *transaction.Transaction, in
 		return "", common.NewError("read_pool_unlock_failed", err.Error())
 	}
 
-	// save read pool
+	// Save read pool
 	if err = rp.save(ssc.ID, txn.ClientID, balances); err != nil {
 		return "", common.NewError("read_pool_unlock_failed", err.Error())
 	}
+
+	i, _ := balance.Int64()
+	key := readPoolKey(ssc.ID, txn.ClientID)
+
+	// updates the snapshot table
+	balances.EmitEvent(event.TypeStats, event.TagUnlockReadPool, key, event.ReadPoolLock{
+		Client: txn.ClientID,
+		PoolId: key,
+		Amount: i,
+	})
+
+	// updates the readpool table
+	balances.EmitEvent(event.TypeStats, event.TagUpdateReadpool, txn.ClientID, event.ReadPool{
+		UserID:  txn.ClientID,
+		Balance: rp.Balance,
+	})
 
 	return "", nil
 }

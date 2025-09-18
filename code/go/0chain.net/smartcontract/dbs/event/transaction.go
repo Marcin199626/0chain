@@ -1,98 +1,275 @@
 package event
 
 import (
-	"0chain.net/chaincore/currency"
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
 	"0chain.net/smartcontract/common"
-	"gorm.io/gorm"
+	"0chain.net/smartcontract/dbs/model"
+	"github.com/0chain/common/core/currency"
+	"github.com/0chain/common/core/logging"
+	"go.uber.org/zap"
 	"gorm.io/gorm/clause"
 )
 
 // Transaction model to save the transaction data
 // swagger:model Transaction
 type Transaction struct {
-	gorm.Model
-	Hash              string `gorm:"uniqueIndex:idx_thash"`
-	BlockHash         string `gorm:"index:idx_tblock_hash"`
-	Version           string
-	ClientId          string `gorm:"index:idx_tclient_id"`
-	ToClientId        string `gorm:"index:idx_tto_client_id"`
-	TransactionData   string
-	Value             currency.Coin
-	Signature         string
-	CreationDate      int64 `gorm:"index:idx_tcreation_date"`
-	Fee               currency.Coin
-	TransactionType   int
-	TransactionOutput string
-	OutputHash        string
-	Status            int
-
-	//ref
-	ReadMarkers []ReadMarker  `gorm:"foreignKey:TransactionID;references:Hash"`
-	WriteMarker []WriteMarker `gorm:"foreignKey:TransactionID;references:Hash"`
+	model.ImmutableModel
+	Hash              string        `json:"hash" gorm:"uniqueIndex:idx_thash;index:idx_tround_thash, priority:2"`
+	BlockHash         string        `json:"block_hash" gorm:"index:idx_tblock_hash"`
+	Round             int64         `json:"round" gorm:"index:idx_tround;index:idx_tround_thash, priority:1"`
+	Version           string        `json:"version"`
+	ClientId          string        `json:"client_id" gorm:"index:idx_tclient_id"`
+	ToClientId        string        `json:"to_client_id" gorm:"index:idx_tto_client_id"`
+	TransactionData   string        `json:"transaction_data"`
+	Value             currency.Coin `json:"value"`
+	Signature         string        `json:"signature"`
+	CreationDate      int64         `json:"creation_date"`
+	Fee               currency.Coin `json:"fee"`
+	Nonce             int64         `json:"nonce"`
+	TransactionType   int           `json:"transaction_type"`
+	TransactionOutput string        `json:"transaction_output"`
+	OutputHash        string        `json:"output_hash"`
+	Status            int           `json:"status"`
 }
 
-func (edb *EventDb) addTransaction(transaction Transaction) error {
-	res := edb.Store.Get().Create(&transaction)
-	return res.Error
+type TransactionErrors struct {
+	TransactionOutput string `json:"transaction_output"`
+	Count             int    `json:"count"`
+}
+
+func (edb *EventDb) addTransactions(txns []Transaction) error {
+	return edb.Store.Get().Create(&txns).Error
+}
+
+func mergeAddTransactionsEvents() *eventsMergerImpl[Transaction] {
+	return newEventsMerger[Transaction](TagAddTransactions, withUniqueEventOverwrite())
 }
 
 // GetTransactionByHash finds the transaction record by hash
+// Used Index: idx_thash
 func (edb *EventDb) GetTransactionByHash(hash string) (Transaction, error) {
-	tr := Transaction{}
-	res := edb.Store.Get().Model(Transaction{}).Where(Transaction{Hash: hash}).First(&tr)
+	var tr Transaction
+	res := edb.Store.Get().
+		Where(&Transaction{Hash: hash}).
+		Find(&tr)
+	if res.RowsAffected == 0 {
+		return tr, errors.New("record not found")
+	}
 	return tr, res.Error
 }
 
 // GetTransactionByClientId searches for transaction by clientID
+// Used Index: idx_tclient_id
 func (edb *EventDb) GetTransactionByClientId(clientID string, limit common.Pagination) ([]Transaction, error) {
+	userExist := edb.Store.Get().Model(&User{}).Find(&User{
+		UserID: clientID,
+	})
+
+	if userExist.RowsAffected == 0 {
+		return nil, errors.New("user not found")
+	}
+
 	var tr []Transaction
-	res := edb.Store.Get().Model(Transaction{}).Where(Transaction{ClientId: clientID}).Offset(limit.Offset).Limit(limit.Limit).Order(clause.OrderByColumn{
-		Column: clause.Column{Name: "creation_date"},
-		Desc:   limit.IsDescending,
-	}).Scan(&tr)
+	res := edb.Store.
+		Get().
+		Model(&Transaction{}).
+		Where(Transaction{ClientId: clientID}).
+		Offset(limit.Offset).
+		Limit(limit.Limit).
+		Order(clause.OrderByColumn{
+			Column: clause.Column{Name: "round"},
+			Desc:   limit.IsDescending,
+		}).
+		Order(clause.OrderByColumn{
+			Column: clause.Column{Name: "hash"},
+			Desc:   limit.IsDescending,
+		}).
+		Scan(&tr)
 	return tr, res.Error
 }
 
 // GetTransactionByToClientId searches for transaction by toClientID
+// Used Index: idx_tto_client_id
 func (edb *EventDb) GetTransactionByToClientId(toClientID string, limit common.Pagination) ([]Transaction, error) {
 	var tr []Transaction
-	res := edb.Store.Get().Model(Transaction{}).Where(Transaction{ToClientId: toClientID}).Offset(limit.Offset).Limit(limit.Limit).Order(clause.OrderByColumn{
-		Column: clause.Column{Name: "creation_date"},
-		Desc:   limit.IsDescending,
-	}).Scan(&tr)
+	res := edb.Store.
+		Get().
+		Model(&Transaction{}).
+		Where(Transaction{ToClientId: toClientID}).
+		Offset(limit.Offset).
+		Limit(limit.Limit).
+		Order(clause.OrderByColumn{
+			Column: clause.Column{Name: "round"},
+			Desc:   limit.IsDescending,
+		}).
+		Order(clause.OrderByColumn{
+			Column: clause.Column{Name: "hash"},
+			Desc:   limit.IsDescending,
+		}).
+		Scan(&tr)
 	return tr, res.Error
 }
 
+// GetTransactionByClientIDAndToClientID searches for transaction by clientID and toClientID
+// Used Index: idx_tclient_id
+func (edb *EventDb) GetTransactionByClientIDAndToClientID(clientID, toClientID string, limit common.Pagination) ([]Transaction, error) {
+	var tr []Transaction
+	res := edb.Store.
+		Get().
+		Model(&Transaction{}).
+		Where(Transaction{ClientId: clientID, ToClientId: toClientID}).
+		Offset(limit.Offset).
+		Limit(limit.Limit).
+		Order(clause.OrderByColumn{
+			Column: clause.Column{Name: "round"},
+			Desc:   limit.IsDescending,
+		}).
+		Order(clause.OrderByColumn{
+			Column: clause.Column{Name: "hash"},
+			Desc:   limit.IsDescending,
+		}).
+		Scan(&tr)
+	return tr, res.Error
+}
+
+// GetTransactionByBlockHash finds the transaction record by block hash
+// Used Index: idx_tblock_hash
 func (edb *EventDb) GetTransactionByBlockHash(blockHash string, limit common.Pagination) ([]Transaction, error) {
 	var tr []Transaction
-	res := edb.Store.Get().Model(Transaction{}).Where(Transaction{BlockHash: blockHash}).Offset(limit.Offset).Limit(limit.Limit).Scan(&tr)
+	res := edb.Store.
+		Get().
+		Model(&Transaction{}).
+		Where(Transaction{BlockHash: blockHash}).
+		Offset(limit.Offset).
+		Limit(limit.Limit).
+		Scan(&tr)
 	return tr, res.Error
 }
 
 // GetTransactions finds the transaction
 func (edb *EventDb) GetTransactions(limit common.Pagination) ([]Transaction, error) {
 	tr := []Transaction{}
-	res := edb.Store.Get().Model(&Transaction{}).Offset(limit.Offset).Limit(limit.Limit).Order(clause.OrderByColumn{
-		Column: clause.Column{Name: "creation_date"},
-		Desc:   limit.IsDescending,
-	}).Find(&tr)
+	res := edb.Store.
+		Get().
+		Model(&Transaction{}).
+		Offset(limit.Offset).
+		Limit(limit.Limit).
+		Order(clause.OrderByColumn{
+			Column: clause.Column{Name: "round"},
+			Desc:   limit.IsDescending,
+		}).
+		Order(clause.OrderByColumn{
+			Column: clause.Column{Name: "hash"},
+			Desc:   limit.IsDescending,
+		}).
+		Find(&tr)
 
 	return tr, res.Error
 }
 
 // GetTransactionByBlockNumbers finds the transaction record between two block numbers
-func (edb *EventDb) GetTransactionByBlockNumbers(blockStart, blockEnd int, limit common.Pagination) ([]Transaction, error) {
+func (edb *EventDb) GetTransactionByBlockNumbers(blockStart, blockEnd int64, limit common.Pagination) ([]Transaction, error) {
 	tr := []Transaction{}
 	res := edb.Store.Get().
-		Model(Transaction{}).
-		Joins("INNER JOIN blocks on blocks.round >= ? AND blocks.round <= ? AND blocks.hash = transactions.block_hash", blockStart, blockEnd).
-		Offset(limit.Limit).
-		Limit(limit.Offset).
+		Model(&Transaction{}).
+		Where("round >= ? AND round < ?", blockStart, blockEnd).
+		Offset(limit.Offset).
+		Limit(limit.Limit).
 		Order(clause.OrderByColumn{
-			Column: clause.Column{Name: "creation_date"},
+			Column: clause.Column{Name: "round"},
 			Desc:   limit.IsDescending,
 		}).
-		Scan(&tr)
-
+		Order(clause.OrderByColumn{
+			Column: clause.Column{Name: "hash"},
+			Desc:   limit.IsDescending,
+		}).
+		Find(&tr)
 	return tr, res.Error
+}
+
+// GetTransactionsForBlocks finds the transaction record between two block numbers
+func (edb *EventDb) GetTransactionsForBlocks(blockStart, blockEnd int64) ([]Transaction, error) {
+	tr := []Transaction{}
+	res := edb.Store.Get().
+		Model(&Transaction{}).
+		Where("round >= ? AND round < ?", blockStart, blockEnd).
+		Order("round asc").
+		Order("hash desc").
+		Find(&tr)
+	return tr, res.Error
+}
+
+func (edb *EventDb) UpdateTransactionErrors(current int64) error {
+	from := (current) * edb.settings.PermanentPartitionChangePeriod
+	to := (current + 1) * edb.settings.PermanentPartitionChangePeriod
+
+	lastPartition := edb.partTableName("transactions", from, to)
+
+	db := edb.Get()
+
+	// created_at for last day from now
+	lastDay := time.Now().AddDate(0, 0, -1)
+	// convert to string
+	lastDayString := lastDay.Format("2006-01-02 15:04:05")
+
+	// clean up the transaction error table
+	err := db.Exec("TRUNCATE TABLE transaction_errors").Error
+	if err != nil {
+		return err
+	}
+
+	timeout, cancelFunc := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelFunc()
+
+	logging.Logger.Info("Inserting transactions in transaction error table", zap.Any("lastPartition", lastPartition), zap.Any("lastDayString", lastDayString))
+
+	if dbTxn := db.WithContext(timeout).Exec(fmt.Sprintf("INSERT INTO transaction_errors (transaction_output, count) "+
+		"SELECT transaction_output, count(*) as count FROM %s WHERE status = 2 and created_at > '%s' "+
+		"GROUP BY transaction_output", lastPartition, lastDayString)); dbTxn.Error != nil {
+
+		logging.Logger.Error("Error while inserting transactions in transaction error table", zap.Any("error", dbTxn.Error))
+		return dbTxn.Error
+	}
+
+	return nil
+}
+
+func (edb *EventDb) GetTransactionErrors() (map[string][]TransactionErrors, error) {
+	var txnErrors []TransactionErrors
+
+	err := edb.Get().Model(&TransactionErrors{}).Find(&txnErrors).Order("count desc")
+
+	if err.Error != nil {
+		return nil, err.Error
+	}
+
+	transactionErrors := categorizeOnSubstring(txnErrors)
+
+	return transactionErrors, nil
+}
+
+func categorizeOnSubstring(input []TransactionErrors) map[string][]TransactionErrors {
+	categorized := make(map[string][]TransactionErrors)
+
+	for _, err := range input {
+		// Find the index of the first colon in the transaction output
+		colonIndex := strings.Index(err.TransactionOutput, ":")
+
+		if colonIndex != -1 {
+			// Extract the substring before the first colon
+			category := err.TransactionOutput[:colonIndex]
+
+			// Append the error to the corresponding category in the map
+			categorized[category] = append(categorized[category], err)
+		} else {
+			categorized[err.TransactionOutput] = append(categorized[err.TransactionOutput], err)
+		}
+	}
+
+	return categorized
 }

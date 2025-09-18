@@ -3,7 +3,7 @@ package chain
 import (
 	"bytes"
 
-	"0chain.net/chaincore/config"
+	"0chain.net/core/config"
 	"0chain.net/smartcontract/minersc"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/require"
@@ -195,7 +195,7 @@ server_chain:
     proximity_scan:
       enabled: true
       settle_secs: 30
-      window: 100000 #number of blocks, Do not make 0 with minio ON, Should be less than minio old block round range
+      window: 100000 
       repeat_interval_mins: 1m #minutes
       report_status_mins: 1m #minutes
       batch_size: 50

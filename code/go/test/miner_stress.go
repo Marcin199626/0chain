@@ -1,18 +1,15 @@
 package main
 
 import (
+	"0chain.net/core/encryption"
 	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/rand"
 	"net/http"
 	"time"
-
-	"0chain.net/core/common"
-	"0chain.net/encryption"
 )
 
 func GetClient(maxConnections int) *http.Client {
@@ -44,13 +41,16 @@ func SendRequest(httpclient *http.Client, url string, entity interface{}) bool {
 		fmt.Printf("error: %v\n", msg)
 		return false
 	}
-	if resp.StatusCode != http.StatusOK || resp.StatusCode == 400 || resp.StatusCode == 500 {
-		bodyBytes, _ := ioutil.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
 		bodyString := string(bodyBytes)
 		fmt.Printf("resp code: %v: %v\n", resp.StatusCode, bodyString)
 		return false
 	}
-	io.Copy(ioutil.Discard, resp.Body)
+	_, err = io.Copy(io.Discard, resp.Body)
+	if err != nil {
+		return false
+	}
 	return true
 }
 
@@ -74,13 +74,6 @@ func CreateClients(numClients int) []Client {
 		client["public_key"] = publicKey
 		clientID := encryption.Hash(publicKey)
 		client["id"] = clientID
-		for true {
-			ok := SendRequest(httpclient, GetURL("/v1/client/put"), client)
-			if ok {
-				time.Sleep(5 * time.Millisecond)
-				break
-			}
-		}
 		clients[i] = Client{publicKey, clientID, privateKey}
 	}
 	return clients

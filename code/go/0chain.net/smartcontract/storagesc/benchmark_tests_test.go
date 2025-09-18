@@ -1,14 +1,15 @@
 package storagesc
 
 import (
+	"testing"
+
 	"0chain.net/smartcontract/benchmark"
 	"0chain.net/smartcontract/benchmark/mocks"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
-	"testing"
 )
 
-const extraStats = 7
+const extraStats = 5
 
 func TestStorageBenchmarkTests(t *testing.T) {
 	mockSigScheme := &mocks.SignatureScheme{}
@@ -17,6 +18,11 @@ func TestStorageBenchmarkTests(t *testing.T) {
 	mockSigScheme.On("Sign", mock.Anything).Return("", nil)
 
 	ssc := NewStorageSmartContract()
+
+	a := ssc.GetExecutionStats()
+	b := BenchmarkTests(benchmark.MockBenchData, mockSigScheme).Benchmarks
+
+	require.NotEqual(t, a, b)
 
 	require.EqualValues(
 		t,

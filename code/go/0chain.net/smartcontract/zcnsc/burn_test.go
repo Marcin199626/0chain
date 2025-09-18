@@ -1,18 +1,23 @@
 package zcnsc_test
 
 import (
+	"context"
 	"math/rand"
 	"testing"
 	"time"
 
-	"0chain.net/core/logging"
+	"0chain.net/core/common"
+	"0chain.net/core/config"
+	"0chain.net/smartcontract/dbs/event"
 	. "0chain.net/smartcontract/zcnsc"
+	"github.com/0chain/common/core/logging"
 	"go.uber.org/zap"
 
 	"github.com/stretchr/testify/require"
 )
 
 func init() {
+	common.SetupRootContext(context.Background())
 	rand.Seed(time.Now().UnixNano())
 	logging.Logger = zap.NewNop()
 }
@@ -31,6 +36,21 @@ func Test_FuzzyBurnTest(t *testing.T) {
 	contract := CreateZCNSmartContract()
 	ctx := MakeMockStateContext()
 
+	eventDb, err := event.NewInMemoryEventDb(config.DbAccess{}, config.DbSettings{
+		Debug:                 true,
+		PartitionChangePeriod: 1,
+	})
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		err = eventDb.Drop()
+		require.NoError(t, err)
+
+		eventDb.Close()
+	})
+
+	ctx.SetEventDb(eventDb)
+
 	burn, err := contract.Burn(tr, payload.Encode(), ctx)
 	require.NoError(t, err)
 	require.NotNil(t, burn)
@@ -43,7 +63,22 @@ func Test_BurnPayloadNonceShouldBeHigherByOneThanUserNonce(t *testing.T) {
 	contract := CreateZCNSmartContract()
 	ctx := MakeMockStateContext()
 
-	node, err := GetUserNode(defaultClient, ctx)
+	eventDb, err := event.NewInMemoryEventDb(config.DbAccess{}, config.DbSettings{
+		Debug:                 true,
+		PartitionChangePeriod: 1,
+	})
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		err = eventDb.Drop()
+		require.NoError(t, err)
+
+		eventDb.Close()
+	})
+
+	ctx.SetEventDb(eventDb)
+
+	node, err := GetUserNode(ETH_ADDRESS, ctx)
 	require.NoError(t, err)
 	require.NotNil(t, node)
 	require.NoError(t, node.Save(ctx))
@@ -59,8 +94,23 @@ func Test_BurnNonceShouldIncrementBurnNonceBy1(t *testing.T) {
 	contract := CreateZCNSmartContract()
 	ctx := MakeMockStateContext()
 
+	eventDb, err := event.NewInMemoryEventDb(config.DbAccess{}, config.DbSettings{
+		Debug:                 true,
+		PartitionChangePeriod: 1,
+	})
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		err = eventDb.Drop()
+		require.NoError(t, err)
+
+		eventDb.Close()
+	})
+
+	ctx.SetEventDb(eventDb)
+
 	// Save initial user node
-	node, err := GetUserNode(defaultClient, ctx)
+	node, err := GetUserNode(ETH_ADDRESS, ctx)
 	require.NoError(t, err)
 	require.NotNil(t, node)
 	require.NoError(t, node.Save(ctx))
@@ -72,7 +122,7 @@ func Test_BurnNonceShouldIncrementBurnNonceBy1(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, burn)
 
-	node, err = GetUserNode(defaultClient, ctx)
+	node, err = GetUserNode(ETH_ADDRESS, ctx)
 	require.Equal(t, int64(1), node.BurnNonce, "Nonce should be incremented to 1")
 	require.NoError(t, err)
 	require.NotNil(t, node)
@@ -82,7 +132,7 @@ func Test_BurnNonceShouldIncrementBurnNonceBy1(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, burn)
 	require.Contains(t, burn, "\"nonce\":2")
-	node, err = GetUserNode(defaultClient, ctx)
+	node, err = GetUserNode(ETH_ADDRESS, ctx)
 	require.Equal(t, int64(2), node.BurnNonce, "Nonce should be incremented to 2")
 }
 
@@ -95,6 +145,21 @@ func Test_EthereumAddressShouldBeFilled(t *testing.T) {
 	tr := CreateDefaultTransactionToZcnsc()
 	contract := CreateZCNSmartContract()
 	ctx := MakeMockStateContext()
+
+	eventDb, err := event.NewInMemoryEventDb(config.DbAccess{}, config.DbSettings{
+		Debug:                 true,
+		PartitionChangePeriod: 1,
+	})
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		err = eventDb.Drop()
+		require.NoError(t, err)
+
+		eventDb.Close()
+	})
+
+	ctx.SetEventDb(eventDb)
 
 	burn, err := contract.Burn(tr, payload.Encode(), ctx)
 	require.Error(t, err)
@@ -122,7 +187,22 @@ func Test_BurnNonceShouldIncrementDuringBurn(t *testing.T) {
 	contract := CreateZCNSmartContract()
 	tr := CreateAddAuthorizerTransaction(defaultClient, ctx)
 
-	node, err := GetUserNode(defaultClient, ctx)
+	eventDb, err := event.NewInMemoryEventDb(config.DbAccess{}, config.DbSettings{
+		Debug:                 true,
+		PartitionChangePeriod: 1,
+	})
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		err = eventDb.Drop()
+		require.NoError(t, err)
+
+		eventDb.Close()
+	})
+
+	ctx.SetEventDb(eventDb)
+
+	node, err := GetUserNode(ETH_ADDRESS, ctx)
 	require.NoError(t, err)
 	require.NotNil(t, node)
 
@@ -133,7 +213,7 @@ func Test_BurnNonceShouldIncrementDuringBurn(t *testing.T) {
 	require.NotNil(t, burn)
 	require.NotEmpty(t, burn)
 
-	node, err = GetUserNode(defaultClient, ctx)
+	node, err = GetUserNode(ETH_ADDRESS, ctx)
 	require.NoError(t, err)
 	require.NotNil(t, node)
 
@@ -142,7 +222,7 @@ func Test_BurnNonceShouldIncrementDuringBurn(t *testing.T) {
 
 func Test_UserNodeSaveTest(t *testing.T) {
 	ctx := MakeMockStateContext()
-	node, err := GetUserNode(defaultClient, ctx)
+	node, err := GetUserNode(ETH_ADDRESS, ctx)
 	require.NoError(t, err)
 	require.NotNil(t, node)
 
@@ -150,7 +230,7 @@ func Test_UserNodeSaveTest(t *testing.T) {
 	err = node.Save(ctx)
 	require.NoError(t, err)
 
-	node2, err := GetUserNode(defaultClient, ctx)
+	node2, err := GetUserNode(ETH_ADDRESS, ctx)
 	require.NoError(t, err)
 	require.NotNil(t, node)
 
@@ -159,7 +239,7 @@ func Test_UserNodeSaveTest(t *testing.T) {
 
 func Test_UserNodeEncode_Decode(t *testing.T) {
 	ctx := MakeMockStateContext()
-	node, err := GetUserNode(defaultClient, ctx)
+	node, err := GetUserNode(ETH_ADDRESS, ctx)
 	actual := UserNode{}
 	err = actual.Decode(node.Encode())
 	require.NoError(t, err)
@@ -172,6 +252,21 @@ func Test_Burn_should_return_encoded_payload(t *testing.T) {
 	tr := CreateDefaultTransactionToZcnsc()
 	contract := CreateZCNSmartContract()
 	ctx := MakeMockStateContext()
+
+	eventDb, err := event.NewInMemoryEventDb(config.DbAccess{}, config.DbSettings{
+		Debug:                 true,
+		PartitionChangePeriod: 1,
+	})
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		err = eventDb.Drop()
+		require.NoError(t, err)
+
+		eventDb.Close()
+	})
+
+	ctx.SetEventDb(eventDb)
 
 	resp, err := contract.Burn(tr, payload.Encode(), ctx)
 	require.NoError(t, err)
@@ -189,6 +284,21 @@ func Test_Should_Have_Added_TransferAfter_Burn(t *testing.T) {
 	contract := CreateZCNSmartContract()
 	ctx := MakeMockStateContext()
 
+	eventDb, err := event.NewInMemoryEventDb(config.DbAccess{}, config.DbSettings{
+		Debug:                 true,
+		PartitionChangePeriod: 1,
+	})
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		err = eventDb.Drop()
+		require.NoError(t, err)
+
+		eventDb.Close()
+	})
+
+	ctx.SetEventDb(eventDb)
+
 	resp, err := contract.Burn(tr, payload.Encode(), ctx)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
@@ -203,5 +313,42 @@ func Test_Should_Have_Added_TransferAfter_Burn(t *testing.T) {
 	transfer := transfers[0]
 	require.Equal(t, transfer.Amount, tr.Value)
 	require.Equal(t, transfer.ClientID, tr.ClientID)
-	require.Equal(t, transfer.ToClientID, gn.BurnAddress)
+	require.Equal(t, transfer.ToClientID, ADDRESS)
+}
+
+func Test_Should_Have_Added_BurnTicketAfter_Burn(t *testing.T) {
+	ctx := MakeMockStateContext()
+	tr := CreateDefaultTransactionToZcnsc()
+	eventDb, err := event.NewInMemoryEventDb(config.DbAccess{}, config.DbSettings{
+		Debug:                 true,
+		PartitionChangePeriod: 1,
+	})
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		err = eventDb.Drop()
+		require.NoError(t, err)
+
+		eventDb.Close()
+	})
+
+	ctx.SetEventDb(eventDb)
+
+	payload := createBurnPayload()
+	contract := CreateZCNSmartContract()
+
+	resp, err := contract.Burn(tr, payload.Encode(), ctx)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.NotEmpty(t, resp)
+
+	require.Equal(t, 1, len(burnTicketEvents))
+
+	burnTicketEvent, ok := burnTicketEvents[payload.EthereumAddress]
+	require.True(t, ok)
+
+	burnTicket := burnTicketEvent[0]
+	require.Equal(t, payload.EthereumAddress, burnTicket.EthereumAddress)
+	require.Equal(t, tr.Hash, burnTicket.Hash)
+	require.Equal(t, int64(1), burnTicket.Nonce)
 }

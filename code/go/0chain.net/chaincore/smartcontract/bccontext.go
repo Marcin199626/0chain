@@ -5,7 +5,7 @@ import (
 
 	"0chain.net/chaincore/node"
 
-	"0chain.net/core/logging"
+	"github.com/0chain/common/core/logging"
 	"go.uber.org/zap"
 )
 
@@ -40,7 +40,7 @@ func (bc *BCContext) GetNodepoolInfo() interface{} {
 		pm.Port = strconv.Itoa(n.Port)
 		typename, err := node.GetNodeTypeName(n)
 		if err != nil {
-			logging.Logger.Info(err.Error())
+			logging.Logger.Error(err.Error())
 		} else {
 			pm.Type = typename
 		}

@@ -4,27 +4,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
-
-	"0chain.net/chaincore/config"
-	"0chain.net/chaincore/currency"
-
-	"0chain.net/core/logging"
+	"github.com/0chain/common/core/logging"
 	"go.uber.org/zap"
 
-	"0chain.net/smartcontract/dbs"
-	"0chain.net/smartcontract/stakepool/spenum"
-
+	"0chain.net/chaincore/state"
+	"0chain.net/core/maths"
 	"0chain.net/smartcontract/dbs/event"
+	"0chain.net/smartcontract/stakepool/spenum"
+	"github.com/0chain/common/core/currency"
 
 	"0chain.net/smartcontract/stakepool"
 
 	chainstate "0chain.net/chaincore/chain/state"
-	"0chain.net/chaincore/state"
+	cstate "0chain.net/chaincore/chain/state"
 	"0chain.net/chaincore/transaction"
-	"0chain.net/core/common"
 	"0chain.net/core/datastore"
-	"0chain.net/core/util"
+	"github.com/0chain/common/core/util"
 )
 
 //msgp:ignore unlockResponse stakePoolStat stakePoolRequest delegatePoolStat rewardsStat
@@ -33,11 +28,8 @@ import (
 func validateStakePoolSettings(
 	sps stakepool.Settings,
 	conf *Config,
+	balances chainstate.StateContextI,
 ) error {
-	err := conf.validateStakeRange(sps.MinStake, sps.MaxStake)
-	if err != nil {
-		return err
-	}
 	if sps.ServiceChargeRatio < 0.0 {
 		return errors.New("negative service charge")
 	}
@@ -48,30 +40,35 @@ func validateStakePoolSettings(
 	if sps.MaxNumDelegates <= 0 {
 		return errors.New("num_delegates <= 0")
 	}
+
+	if sps.MaxNumDelegates > conf.MaxDelegates {
+		return fmt.Errorf("num_delegates (%d) is greater than"+
+			" max allowed by SC (%d)", sps.MaxNumDelegates, conf.MaxDelegates)
+	}
+
 	return nil
 }
 
 // stake pool of a blobber
 
 type stakePool struct {
-	stakepool.StakePool
+	*stakepool.StakePool
 	// TotalOffers represents tokens required by currently
 	// open offers of the blobber. It's allocation_id -> {lock, expire}
-	TotalOffers currency.Coin `json:"total_offers"`
-	// Total amount to be un staked
-	TotalUnStake currency.Coin `json:"total_un_stake"`
+	TotalOffers    currency.Coin `json:"total_offers"`
+	IsOfferChanged bool          `json:"-" msg:"-"`
 }
 
 func newStakePool() *stakePool {
 	bsp := stakepool.NewStakePool()
 	return &stakePool{
-		StakePool: *bsp,
+		StakePool: bsp,
 	}
 }
 
 // stake pool key for the storage SC and  blobber
-func stakePoolKey(scKey, blobberID string) datastore.Key {
-	return scKey + ":stakepool:" + blobberID
+func stakePoolKey(providerType spenum.Provider, providerID string) datastore.Key {
+	return providerType.String() + ":stakepool:" + providerID
 }
 
 // Encode to []byte
@@ -88,37 +85,32 @@ func (sp *stakePool) Decode(input []byte) error {
 	return json.Unmarshal(input, sp)
 }
 
-// save the stake pool
-func (sp *stakePool) save(sscKey, blobberID string,
-	balances chainstate.StateContextI) (err error) {
-
-	r, err := balances.InsertTrieNode(stakePoolKey(sscKey, blobberID), sp)
-	logging.Logger.Debug("after stake pool save", zap.String("root", r))
-
-	data := dbs.DbUpdates{
-		Id: blobberID,
-		Updates: map[string]interface{}{
-			"offers_total": int64(sp.TotalOffers),
-		},
-	}
-	balances.EmitEvent(event.TypeStats, event.TagUpdateBlobber, blobberID, data)
-
-	return
-}
-
-// The cleanStake() is stake amount without delegate pools want to unstake.
-func (sp *stakePool) cleanStake() (stake currency.Coin, err error) {
-	staked, err := sp.stake()
+// Save the stake pool
+func (sp *stakePool) Save(providerType spenum.Provider, providerID string,
+	balances chainstate.StateContextI) error {
+	_, err := balances.InsertTrieNode(stakePoolKey(providerType, providerID), sp)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	return staked - sp.TotalUnStake, nil
+
+	if sp.IsOfferChanged {
+		switch providerType {
+		case spenum.Blobber:
+			tag, data := event.NewUpdateBlobberTotalOffersEvent(providerID, sp.TotalOffers)
+			balances.EmitEvent(event.TypeStats, tag, providerID, data)
+			sp.IsOfferChanged = false
+		case spenum.Validator:
+			// TODO: perhaps implement validator stake update events
+		}
+	}
+
+	return nil
 }
 
 // The stake() returns total stake size including delegate pools want to unstake.
 func (sp *stakePool) stake() (stake currency.Coin, err error) {
 	var newStake currency.Coin
-	for _, dp := range sp.Pools {
+	for _, dp := range sp.GetOrderedPools() {
 		newStake, err = currency.AddCoin(stake, dp.Balance)
 		if err != nil {
 			return
@@ -129,64 +121,45 @@ func (sp *stakePool) stake() (stake currency.Coin, err error) {
 }
 
 // empty a delegate pool if possible, call update before the empty
-func (sp *stakePool) empty(
+func (sp *stakePool) Empty(
 	sscID,
 	poolID,
 	clientID string,
 	balances chainstate.StateContextI,
-) (bool, error) {
+) error {
 	var dp, ok = sp.Pools[poolID]
 	if !ok {
-		return false, fmt.Errorf("no such delegate pool: %q", poolID)
+		return fmt.Errorf("no such delegate pool: %q", poolID)
 	}
 
 	if dp.DelegateID != clientID {
-		return false, errors.New("trying to unlock not by delegate pool owner")
+		return errors.New("trying to unlock not by delegate pool owner")
 	}
 
-	// If insufficient funds in stake pool left after unlock,
-	// we can't do an immediate unlock.
-	// Instead we mark as unstake to prevent being used for further allocations.
-
-	totalBalance, err := currency.AddCoin(sp.TotalOffers, dp.Balance)
+	requiredBalance, err := currency.AddCoin(sp.TotalOffers, dp.Balance)
 	if err != nil {
-		return false, err
+		return err
 	}
 
 	staked, err := sp.stake()
 	if err != nil {
-		return false, err
-	}
-	if staked < totalBalance {
-		if dp.Status != spenum.Unstaking {
-			totalUnStake, err := currency.AddCoin(sp.TotalUnStake, dp.Balance)
-			if err != nil {
-				return false, err
-			}
-			sp.TotalUnStake = totalUnStake
-
-			dp.Status = spenum.Unstaking
-		}
-		return true, nil
+		return err
 	}
 
-	if dp.Status == spenum.Unstaking {
-		totalUnstake, err := currency.MinusCoin(sp.TotalUnStake, dp.Balance)
-		if err != nil {
-			return false, err
-		}
-		sp.TotalUnStake = totalUnstake
+	if staked < requiredBalance {
+		return fmt.Errorf("insufficent stake to cover offers: existing stake %d, unlock balance %d, offers %d",
+			staked, dp.Balance, sp.TotalOffers)
 	}
 
 	transfer := state.NewTransfer(sscID, clientID, dp.Balance)
 	if err := balances.AddTransfer(transfer); err != nil {
-		return false, err
+		return err
 	}
 
 	sp.Pools[poolID].Balance = 0
-	sp.Pools[poolID].Status = spenum.Deleting
+	sp.Pools[poolID].Status = spenum.Deleted
 
-	return true, nil
+	return nil
 }
 
 // add offer of an allocation related to blobber owns this stake pool
@@ -196,25 +169,35 @@ func (sp *stakePool) addOffer(amount currency.Coin) error {
 		return err
 	}
 	sp.TotalOffers = newTotalOffers
+	sp.IsOfferChanged = true
 	return nil
 }
 
 // add offer of an allocation related to blobber owns this stake pool
-func (sp *stakePool) reduceOffer(amount currency.Coin) error {
+func (sp *stakePool) reduceOffer(balances cstate.StateContextI, amount currency.Coin) error {
+	returnNil := false
+	if actErr := cstate.WithActivation(balances, "hercules", func() error {
+		return nil
+	}, func() error {
+		if sp.TotalOffers == 0 { // If total offers is already 0 which is the case for killed and shutdowned blobber we return nil
+			logging.Logger.Debug("reduceOffer: no offers to reduce", zap.Any("sp", sp))
+			returnNil = true
+		}
+		return nil
+	}); actErr != nil {
+		return actErr
+	}
+
+	if returnNil {
+		return nil
+	}
+
 	newTotalOffers, err := currency.MinusCoin(sp.TotalOffers, amount)
 	if err != nil {
 		return err
 	}
 	sp.TotalOffers = newTotalOffers
-	return nil
-}
-
-// remove offer of an allocation related to blobber owns this stake pool
-func (sp *stakePool) removeOffer(amount currency.Coin) error {
-	if amount > sp.TotalOffers {
-		return fmt.Errorf("amount to be removed %v > total offer present %v", amount, sp.TotalOffers)
-	}
-	sp.TotalOffers -= amount
+	sp.IsOfferChanged = true
 	return nil
 }
 
@@ -224,13 +207,10 @@ func (sp *stakePool) slash(
 	blobID string,
 	offer, slash currency.Coin,
 	balances chainstate.StateContextI,
+	allocationID string,
 ) (move currency.Coin, err error) {
 	if offer == 0 || slash == 0 {
 		return // nothing to move
-	}
-
-	if slash > offer {
-		slash = offer // can't move the offer left
 	}
 
 	staked, err := sp.stake()
@@ -242,8 +222,9 @@ func (sp *stakePool) slash(
 	// moving the tokens to allocation user; the ratio is part of entire
 	// stake should be moved;
 	var ratio = float64(slash) / float64(staked)
-	edbSlash := stakepool.NewStakePoolReward(blobID, spenum.Blobber)
-	for id, dp := range sp.Pools {
+	edbSlash := stakepool.NewStakePoolReward(blobID, spenum.Blobber, spenum.ChallengeSlashPenalty, sp.Settings.DelegateWallet)
+	edbSlash.AllocationID = allocationID
+	for _, dp := range sp.GetOrderedPools() {
 		dpSlash, err := currency.MultFloat64(dp.Balance, ratio)
 		if err != nil {
 			return 0, err
@@ -251,6 +232,10 @@ func (sp *stakePool) slash(
 
 		if dpSlash == 0 {
 			continue
+		}
+
+		if dpSlash > dp.Balance {
+			dpSlash = dp.Balance // Can not exceed the dp balance
 		}
 
 		if balance, err := currency.MinusCoin(dp.Balance, dpSlash); err != nil {
@@ -262,43 +247,32 @@ func (sp *stakePool) slash(
 		if err != nil {
 			return 0, err
 		}
-		edbSlash.DelegateRewards[id] = -1 * int64(dpSlash)
+		edbSlash.DelegatePenalties[dp.DelegateID] = dpSlash
 	}
-	// todo we should slash from stake pools not rewards. 0chain issue 1495
-	if err := edbSlash.Emit(event.TagStakePoolReward, balances); err != nil {
+	//Added New Tag for StakePoolPenalty
+	if err := edbSlash.Emit(event.TagStakePoolPenalty, balances); err != nil {
 		return 0, err
 	}
 
 	return
 }
 
-// unallocated capacity of related blobber, excluding delegate pools want to
-// unstake.
-func (sp *stakePool) unallocatedCapacity(writePrice currency.Coin) (free int64, err error) {
-
-	staked, err := sp.stake()
-	if err != nil {
-		return
-	}
-	var total, offers = staked, sp.TotalOffers
-	logging.Logger.Debug("clean_capacity", zap.Int64("total", int64(total)), zap.Int64("offers",
-		int64(offers)), zap.Int64("writePrice", int64(writePrice)))
+func unallocatedCapacity(writePrice, total, offers currency.Coin) (free int64, err error) {
 	if total <= offers {
 		// zero, since the offer stake (not updated) can be greater than the clean stake
-		return
+		return 0, fmt.Errorf("total stake %d is less than offers %d", total, offers)
 	}
 	free = int64((float64(total-offers) / float64(writePrice)) * GB)
 	return
 }
 
 func (sp *stakePool) stakedCapacity(writePrice currency.Coin) (int64, error) {
-
-	cleanStake, err := sp.cleanStake()
+	stake, err := sp.stake()
 	if err != nil {
 		return 0, err
 	}
 
-	fcleanStake, err := cleanStake.Float64()
+	fStake, err := stake.Float64()
 	if err != nil {
 		return 0, err
 	}
@@ -308,42 +282,7 @@ func (sp *stakePool) stakedCapacity(writePrice currency.Coin) (int64, error) {
 		return 0, err
 	}
 
-	return int64((fcleanStake / fWritePrice) * GB), nil
-}
-
-type delegatePoolStat struct {
-	ID         string        `json:"id"`          // blobber ID
-	Balance    currency.Coin `json:"balance"`     // current balance
-	DelegateID string        `json:"delegate_id"` // wallet
-	Rewards    currency.Coin `json:"rewards"`     // total for all time
-	UnStake    bool          `json:"unstake"`     // want to unstake
-
-	TotalReward  currency.Coin `json:"total_reward"`
-	TotalPenalty currency.Coin `json:"total_penalty"`
-	Status       string        `json:"status"`
-	RoundCreated int64         `json:"round_created"`
-}
-
-// swagger:model stakePoolStat
-type stakePoolStat struct {
-	ID      string        `json:"pool_id"` // pool ID
-	Balance currency.Coin `json:"balance"` // total balance
-	Unstake currency.Coin `json:"unstake"` // total unstake amount
-
-	Free       int64         `json:"free"`        // free staked space
-	Capacity   int64         `json:"capacity"`    // blobber bid
-	WritePrice currency.Coin `json:"write_price"` // its write price
-
-	OffersTotal  currency.Coin `json:"offers_total"` //
-	UnstakeTotal currency.Coin `json:"unstake_total"`
-	// delegate pools
-	Delegate []delegatePoolStat `json:"delegate"`
-	Penalty  currency.Coin      `json:"penalty"` // total for all
-	// rewards
-	Rewards currency.Coin `json:"rewards"`
-
-	// Settings of the stake pool
-	Settings stakepool.Settings `json:"settings"`
+	return int64((fStake / fWritePrice) * GB), nil
 }
 
 //
@@ -351,23 +290,33 @@ type stakePoolStat struct {
 //
 
 // getStakePool of given blobber
-func (ssc *StorageSmartContract) getStakePool(blobberID datastore.Key,
+func (_ *StorageSmartContract) getStakePool(providerType spenum.Provider, providerID string,
 	balances chainstate.CommonStateContextI) (sp *stakePool, err error) {
+	return getStakePool(providerType, providerID, balances)
+}
 
-	sp = newStakePool()
-	err = balances.GetTrieNode(stakePoolKey(ssc.ID, blobberID), sp)
+func getStakePoolAdapter(
+	providerType spenum.Provider, providerID string, balances chainstate.CommonStateContextI,
+) (sp stakepool.AbstractStakePool, err error) {
+	pool, err := getStakePool(providerType, providerID, balances)
 	if err != nil {
 		return nil, err
 	}
 
-	return sp, nil
+	return pool, nil
 }
 
-func getStakePool(
-	blobberID datastore.Key, balances chainstate.CommonStateContextI,
-) (sp *stakePool, err error) {
+// getStakePool of given blobber
+func (_ *StorageSmartContract) getStakePoolAdapter(
+	providerType spenum.Provider, providerID string, balances chainstate.StateContextI,
+) (sp stakepool.AbstractStakePool, err error) {
+	return getStakePoolAdapter(providerType, providerID, balances)
+}
+
+func getStakePool(providerType spenum.Provider, providerID datastore.Key, balances chainstate.CommonStateContextI) (
+	sp *stakePool, err error) {
 	sp = newStakePool()
-	err = balances.GetTrieNode(stakePoolKey(ADDRESS, blobberID), sp)
+	err = balances.GetTrieNode(stakePoolKey(providerType, providerID), sp)
 	if err != nil {
 		return nil, err
 	}
@@ -379,19 +328,19 @@ func getStakePool(
 // SC functions
 
 // get existing stake pool or create new one not saving it
-func (ssc *StorageSmartContract) getOrUpdateStakePool(
+func (ssc *StorageSmartContract) getOrCreateStakePool(
 	conf *Config,
-	providerId datastore.Key,
 	providerType spenum.Provider,
+	providerId datastore.Key,
 	settings stakepool.Settings,
 	balances chainstate.StateContextI,
 ) (*stakePool, error) {
-	if err := validateStakePoolSettings(settings, conf); err != nil {
+	if err := validateStakePoolSettings(settings, conf, balances); err != nil {
 		return nil, fmt.Errorf("invalid stake_pool settings: %v", err)
 	}
 
 	// the stake pool can be created by related validator
-	sp, err := ssc.getStakePool(providerId, balances)
+	sp, err := ssc.getStakePool(providerType, providerId, balances)
 	if err != nil {
 		if err != util.ErrValueNotPresent {
 			return nil, fmt.Errorf("unexpected error: %v", err)
@@ -401,18 +350,37 @@ func (ssc *StorageSmartContract) getOrUpdateStakePool(
 		sp.Minter = chainstate.MinterStorage
 	}
 
-	sp.Settings.MinStake = settings.MinStake
-	sp.Settings.MaxStake = settings.MaxStake
 	sp.Settings.ServiceChargeRatio = settings.ServiceChargeRatio
 	sp.Settings.MaxNumDelegates = settings.MaxNumDelegates
+	sp.Settings.MinStake = conf.MinStakePerDelegate
+	return sp, nil
+}
+
+func (ssc *StorageSmartContract) createStakePool(
+	conf *Config,
+	settings stakepool.Settings,
+	balances chainstate.StateContextI,
+) (*stakePool, error) {
+	if err := validateStakePoolSettings(settings, conf, balances); err != nil {
+		return nil, fmt.Errorf("invalid stake_pool settings: %v", err)
+	}
+
+	sp := newStakePool()
+	sp.Settings.DelegateWallet = settings.DelegateWallet
+	sp.Minter = chainstate.MinterStorage
+	sp.Settings.ServiceChargeRatio = settings.ServiceChargeRatio
+	sp.Settings.MaxNumDelegates = settings.MaxNumDelegates
+	sp.Settings.MinStake = conf.MinStakePerDelegate
+
 	return sp, nil
 }
 
 type stakePoolRequest struct {
-	BlobberID string `json:"blobber_id,omitempty"`
-	PoolID    string `json:"pool_id,omitempty"`
+	ProviderType spenum.Provider `json:"provider_type,omitempty"`
+	ProviderID   string          `json:"provider_id,omitempty"`
 }
 
+//nolint:unused
 func (spr *stakePoolRequest) decode(p []byte) (err error) {
 	if err = json.Unmarshal(p, spr); err != nil {
 		return
@@ -420,73 +388,50 @@ func (spr *stakePoolRequest) decode(p []byte) (err error) {
 	return // ok
 }
 
-// unlock response
-type unlockResponse struct {
-	// one of the fields is set in a response, the Unstake if can't unstake
-	// for now and the TokenPoolTransferResponse if has a pool had unlocked
-	Unstake bool          `json:"unstake"` // max time to wait to unstake
-	Balance currency.Coin `json:"balance"`
-}
-
 // add delegated stake pool
 func (ssc *StorageSmartContract) stakePoolLock(t *transaction.Transaction,
 	input []byte, balances chainstate.StateContextI) (resp string, err error) {
-
-	var conf *Config
-	if conf, err = ssc.getConfig(balances, true); err != nil {
-		return "", common.NewErrorf("stake_pool_lock_failed",
-			"can't get SC configurations: %v", err)
-	}
-
-	if t.Value < conf.StakePool.MinLock {
-		return "", common.NewError("stake_pool_lock_failed",
-			"too small stake to lock")
-	}
-
-	var spr stakePoolRequest
-	if err = spr.decode(input); err != nil {
-		return "", common.NewErrorf("stake_pool_lock_failed",
-			"invalid request: %v", err)
-	}
-
-	var sp *stakePool
-	if sp, err = ssc.getStakePool(spr.BlobberID, balances); err != nil {
-		return "", common.NewErrorf("stake_pool_lock_failed",
-			"can't get stake pool: %v", err)
-	}
-
-	if len(sp.Pools) >= conf.MaxDelegates {
-		return "", common.NewErrorf("stake_pool_lock_failed",
-			"max_delegates reached: %v, no more stake pools allowed",
-			conf.MaxDelegates)
-	}
-
-	err = sp.LockPool(t, spenum.Blobber, spr.BlobberID, spenum.Active, balances)
+	gn, err := getConfig(balances)
 	if err != nil {
-		return "", common.NewErrorf("stake_pool_lock_failed",
-			"stake pool digging error: %v", err)
+		return "", err
+	}
+	return stakepool.StakePoolLock(t, input, balances,
+		stakepool.ValidationSettings{MaxStake: gn.MaxStake, MinStake: gn.MinStake, MaxNumDelegates: gn.MaxDelegates},
+		ssc.getStakePoolAdapter, ssc.refreshProvider)
+}
+
+// getStakePool of given blobber
+func (_ *StorageSmartContract) refreshProvider(
+	providerType spenum.Provider, providerID string, balances chainstate.StateContextI,
+) (s stakepool.AbstractStakePool, err error) {
+	sp, err := getStakePool(providerType, providerID, balances)
+	if demeterActErr := cstate.WithActivation(balances, "demeter", func() (e error) { return }, func() error {
+		return err
+	}); demeterActErr != nil {
+		return nil, demeterActErr
 	}
 
-	if err = sp.save(ssc.ID, spr.BlobberID, balances); err != nil {
-		return "", common.NewErrorf("stake_pool_lock_failed",
-			"saving stake pool: %v", err)
+	if providerType == spenum.Blobber {
+		spBalance, err := sp.stake()
+		if err != nil {
+			return nil, err
+		}
+
+		blobber, err := getBlobber(providerID, balances)
+		if err != nil {
+			return nil, err
+		}
+		sd, err := maths.ConvertToUint64(blobber.mustBase().SavedData)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := PartitionsChallengeReadyBlobberUpdate(balances, providerID, spBalance, sd); err != nil {
+			return nil, err
+		}
 	}
 
-	staked, err := sp.stake()
-	if err != nil {
-		return "", common.NewErrorf("stake_pool_lock_failed",
-			"stake pool staking error: %v", err)
-	}
-
-	data := dbs.DbUpdates{
-		Id: spr.BlobberID,
-		Updates: map[string]interface{}{
-			"total_stake": int64(staked),
-		},
-	}
-	balances.EmitEvent(event.TypeStats, event.TagUpdateBlobber, spr.BlobberID, data)
-
-	return
+	return nil, nil
 }
 
 // stake pool can return excess tokens from stake pool
@@ -494,84 +439,6 @@ func (ssc *StorageSmartContract) stakePoolUnlock(
 	t *transaction.Transaction,
 	input []byte,
 	balances chainstate.StateContextI,
-) (resp string, err error) {
-	var spr stakePoolRequest
-	if err = spr.decode(input); err != nil {
-		return "", common.NewErrorf("stake_pool_unlock_failed",
-			"can't decode request: %v", err)
-	}
-	var sp *stakePool
-	if sp, err = ssc.getStakePool(spr.BlobberID, balances); err != nil {
-		return "", common.NewErrorf("stake_pool_unlock_failed",
-			"can't get related stake pool: %v", err)
-	}
-
-	dp, ok := sp.Pools[spr.PoolID]
-	if !ok {
-		return "", common.NewErrorf("stake_pool_unlock_failed", "no such delegate pool: %v ", spr.PoolID)
-	}
-
-	// if StakeAt has valid value and lock period is less than MinLockPeriod
-	if dp.StakedAt > 0 {
-		stakedAt := common.ToTime(dp.StakedAt)
-		minLockPeriod := config.SmartContractConfig.GetDuration("stakepool.min_lock_period")
-		if !stakedAt.Add(minLockPeriod).Before(time.Now()) {
-			return "", common.NewErrorf("stake_pool_unlock_failed", "token can only be unstaked till: %s", stakedAt.Add(minLockPeriod))
-		}
-	}
-
-	unstake, err := sp.empty(ssc.ID, spr.PoolID, t.ClientID, balances)
-	if err != nil {
-		return "", common.NewErrorf("stake_pool_unlock_failed",
-			"unlocking tokens: %v", err)
-	}
-
-	// the tokens can't be unlocked due to opened offers, but we mark it
-	// as 'unstake' and returns maximal time to wait to unlock the pool
-	if !unstake {
-		// save the pool and return special result
-		if err = sp.save(ssc.ID, spr.BlobberID, balances); err != nil {
-			return "", common.NewErrorf("stake_pool_unlock_failed",
-				"saving stake pool: %v", err)
-		}
-		staked, err := sp.stake()
-		if err != nil {
-			return "", common.NewErrorf("stake_pool_unlock_failed",
-				"stake pool staking error: %v", err)
-		}
-		data := dbs.DbUpdates{
-			Id: spr.BlobberID,
-			Updates: map[string]interface{}{
-				"total_stake": int64(staked),
-			},
-		}
-		balances.EmitEvent(event.TypeStats, event.TagUpdateBlobber, spr.BlobberID, data)
-		return toJson(&unlockResponse{Unstake: false}), nil
-	}
-
-	amount, err := sp.UnlockClientStakePool(t.ClientID, spenum.Blobber, spr.BlobberID, spr.PoolID, balances)
-	if err != nil {
-		return "", common.NewErrorf("stake_pool_unlock_failed", "%v", err)
-	}
-
-	// save the pool
-	if err = sp.save(ssc.ID, spr.BlobberID, balances); err != nil {
-		return "", common.NewErrorf("stake_pool_unlock_failed",
-			"saving stake pool: %v", err)
-	}
-
-	staked, err := sp.stake()
-	if err != nil {
-		return "", common.NewErrorf("stake_pool_unlock_failed",
-			"stake pool staking error: %v", err)
-	}
-	data := dbs.DbUpdates{
-		Id: spr.BlobberID,
-		Updates: map[string]interface{}{
-			"total_stake": int64(staked),
-		},
-	}
-	balances.EmitEvent(event.TypeStats, event.TagUpdateBlobber, spr.BlobberID, data)
-
-	return toJson(&unlockResponse{Unstake: true, Balance: amount}), nil
+) (string, error) {
+	return stakepool.StakePoolUnlock(t, input, balances, ssc.getStakePoolAdapter, ssc.refreshProvider)
 }

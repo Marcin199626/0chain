@@ -5,6 +5,9 @@ package miner
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"math/rand"
 	"net/url"
 
 	"0chain.net/chaincore/block"
@@ -14,8 +17,8 @@ import (
 	"0chain.net/chaincore/threshold/bls"
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
-	"0chain.net/core/logging"
 	"0chain.net/smartcontract/minersc"
+	"github.com/0chain/common/core/logging"
 
 	"go.uber.org/zap"
 )
@@ -72,10 +75,14 @@ func (mc *Chain) sendDKGShare(ctx context.Context, to string) (err error) {
 		ok, err = signatureScheme.Verify(share.Sign, share.Message)
 		if !ok || err != nil {
 			logging.Logger.Error("invalid share or sign",
-				zap.Error(err), zap.Any("minersc/dkg.gosign_status", ok),
-				zap.Any("message", share.Message), zap.Any("sign", share.Sign))
+				zap.Error(err), zap.Bool("minersc/dkg.gosign_status", ok),
+				zap.String("message", share.Message), zap.String("sign", share.Sign))
 			return
 		}
+
+		// share.ID = nodeID.GetHexString()
+		// DEBUG: change back
+		// share.Share = secShare.GetHexString()
 		shareOrSignSuccess[n.ID] = share
 
 		return
@@ -90,6 +97,8 @@ func (mc *Chain) sendDKGShare(ctx context.Context, to string) (err error) {
 	}
 
 	mc.setSecretShares(shareOrSignSuccess)
+	logging.Logger.Debug("[mvc] set dkg share",
+		zap.Any("shareOrSignSuccess", shareOrSignSuccess))
 	return
 }
 
@@ -98,8 +107,13 @@ func (mc *Chain) sendDKGShare(ctx context.Context, to string) (err error) {
 //
 
 func (mc *Chain) PublishShareOrSigns(ctx context.Context, lfb *block.Block,
-	mb *block.MagicBlock, active bool) (tx *httpclientutil.Transaction,
+	mb *block.MagicBlock) (tx *httpclientutil.Transaction,
 	err error) {
+
+	if mc.isSyncingBlocks() {
+		logging.Logger.Debug("[mvc] sendsijs, block is syncing")
+		return nil, nil
+	}
 
 	mc.viewChangeProcess.Lock()
 	defer mc.viewChangeProcess.Unlock()
@@ -114,14 +128,21 @@ func (mc *Chain) PublishShareOrSigns(ctx context.Context, lfb *block.Block,
 	)
 
 	var mpks *block.Mpks
-	if mpks, err = mc.getMinersMpks(ctx, lfb, mb, active); err != nil {
+	if mpks, err = mc.getMinersMpks(lfb); err != nil {
+		logging.Logger.Error("[mvc] publishShareOrSigns, failed to get miners mpks", zap.Error(err))
 		return nil, err
 	}
+
 	if _, ok := mpks.Mpks[selfNodeKey]; !ok {
-		return // (nil, nil)
+		logging.Logger.Error("[mvc] publishShareOrSigns, miner not part of mpks", zap.String("miner", selfNodeKey))
+		return nil, nil
 	}
 
 	var sos = mc.viewChangeProcess.shareOrSigns // local reference
+	if len(sos.ShareOrSigns) < mb.K-1 {
+		logging.Logger.Error("[mvc] publishShareOrSigns, not enough share or signs", zap.Int("len", len(sos.ShareOrSigns)), zap.Int("K - 1", mb.K-1))
+		return nil, common.NewError("publish_sos", "not enough share or signs")
+	}
 
 	for k := range mpks.Mpks {
 		if k == selfNodeKey {
@@ -129,6 +150,7 @@ func (mc *Chain) PublishShareOrSigns(ctx context.Context, lfb *block.Block,
 		}
 
 		if _, ok := sos.ShareOrSigns[k]; !ok {
+			logging.Logger.Debug("[mvc] publishShareOrSigns, add share", zap.String("miner", k))
 			share := mc.viewChangeDKG.GetDKGKeyShare(bls.ComputeIDdkg(k))
 			if share != nil {
 				sos.ShareOrSigns[k] = share
@@ -136,46 +158,85 @@ func (mc *Chain) PublishShareOrSigns(ctx context.Context, lfb *block.Block,
 		}
 	}
 
-	var dmn *minersc.DKGMinerNodes
-	if dmn, err = mc.getDKGMiners(ctx, lfb, mb, active); err != nil {
+	// logging.Logger.Debug("[mvc] create sos",
+	// 	zap.Any("sos", sos),
+	// 	zap.Any("mpks", mpks.Mpks))
+
+	var dmn *minersc.DKGMinerNodesV2
+	if dmn, err = mc.getDKGMiners(ctx, lfb, mb); err != nil {
+		logging.Logger.Error("[mvc] publishShareOrSigns, failed to get miners DKG", zap.Error(err))
 		return nil, err
 	}
-	if len(dmn.SimpleNodes) == 0 {
+
+	if len(dmn.Nodes) == 0 {
+		logging.Logger.Error("[mvc] publishShareOrSigns, no miners in DKG")
 		return nil, common.NewError("publish_sos", "no miners in DKG")
 	}
 
 	var publicKeys = make(map[string]string)
-	for _, n := range dmn.SimpleNodes {
-		publicKeys[n.ID] = n.PublicKey
+	for _, n := range dmn.Nodes {
+		publicKeys[n.Key] = n.PublicKey
 	}
+	// Note: Remove the valiate code here perhaps as we have validated
+	// every share or sign when after requesting for sign
+	// See it in the sendDKGShare function
 
-	var _, ok = sos.Validate(mpks, publicKeys,
-		chain.GetServerChain().GetSignatureScheme())
-	if !ok {
-		logging.Logger.Error("failed to verify share or signs", zap.Any("mpks", mpks))
-	}
-
-	tx = httpclientutil.NewTransactionEntity(selfNodeKey, mc.ID,
-		selfNode.PublicKey)
+	// _, ok := sos.ValidateV2(publicKeys)
+	// if !ok {
+	// 	logging.Logger.Error("[mvc] failed to verify share or signs", zap.Any("pks", publicKeys))
+	// 	return nil, common.NewError("publish_sos", "failed to verify share or signs")
+	// }
 
 	var data = &httpclientutil.SmartContractTxnData{}
 	data.Name = scNamePublishShares
 	data.InputArgs = sos.Clone()
 
-	tx.ToClientID = minersc.ADDRESS
-
+	tx = httpclientutil.NewSmartContractTxn(selfNodeKey, mc.ID, selfNode.PublicKey, minersc.ADDRESS)
 	var minerUrls []string
-	for id := range dmn.SimpleNodes {
-		var nodeSend = node.GetNode(id)
+	// DEBUG: only send VC transaction to self node
+	for _, v := range dmn.Nodes {
+		var nodeSend = node.GetNode(v.Key)
 		if nodeSend == nil {
-			logging.Logger.Warn("failed to get node", zap.Any("id", id))
+			logging.Logger.Warn("failed to get node", zap.String("id", v.Key))
 			continue
 		}
 		minerUrls = append(minerUrls, nodeSend.GetN2NURLBase())
 	}
-	err = httpclientutil.SendSmartContractTxn(tx, minersc.ADDRESS, 0, 0, data,
-		minerUrls, mb.Sharders.N2NURLs())
+
+	// minerUrls = getRandomMinerURLs(minerUrls, 10)
+	// minerUrls = append(minerUrls, selfNode.GetN2NURLBase())
+	err = mc.SendSmartContractTxn(tx, data, minerUrls, mb.Sharders.N2NURLs())
 	return
+}
+
+// getRandomMinerURLs returns a random subset of miner URLs.
+// It selects percent of the total miners, with a maximum cap of 10 miners.
+// If the calculated number is less than 1, at least 1 miner URL is returned.
+func getRandomMinerURLs(minerUrls []string, percent int) []string {
+	numMiners := len(minerUrls)
+	if numMiners == 0 {
+		return []string{}
+	}
+
+	// Calculate the number to send - 10% of total with a maximum of 10
+	numToSend := numMiners * percent / 100
+	if numToSend > 10 {
+		numToSend = 10
+	}
+	if numToSend < 1 {
+		numToSend = 1 // Ensure at least one miner is selected
+	}
+
+	// Create a copy of the original slice to avoid modifying it
+	urlsCopy := make([]string, numMiners)
+	copy(urlsCopy, minerUrls)
+
+	rand.Shuffle(numMiners, func(i, j int) {
+		urlsCopy[i], urlsCopy[j] = urlsCopy[j], urlsCopy[i]
+	})
+
+	// Return the first numToSend elements
+	return urlsCopy[:numToSend]
 }
 
 //
@@ -183,12 +244,17 @@ func (mc *Chain) PublishShareOrSigns(ctx context.Context, lfb *block.Block,
 //
 
 func (mc *Chain) ContributeMpk(ctx context.Context, lfb *block.Block,
-	mb *block.MagicBlock, active bool) (tx *httpclientutil.Transaction,
+	mb *block.MagicBlock) (tx *httpclientutil.Transaction,
 	err error) {
 
-	var dmn *minersc.DKGMinerNodes
-	if dmn, err = mc.getDKGMiners(ctx, lfb, mb, active); err != nil {
-		logging.Logger.Error("can't contribute", zap.Any("error", err))
+	if mc.isSyncingBlocks() {
+		logging.Logger.Debug("[mvc] contribute_mpk, block is syncing")
+		return nil, nil
+	}
+
+	var dmn *minersc.DKGMinerNodesV2
+	if dmn, err = mc.getDKGMiners(ctx, lfb, mb); err != nil {
+		logging.Logger.Error("can't contribute", zap.Error(err))
 		return
 	}
 
@@ -207,6 +273,7 @@ func (mc *Chain) ContributeMpk(ctx context.Context, lfb *block.Block,
 				"failed to contribute mpk: dkg is not set yet")
 		}
 
+		logging.Logger.Debug("[mvc] contribute_mpk set VC")
 		var vc = bls.MakeDKG(dmn.T, dmn.N, selfNodeKey)
 		vc.MagicBlockNumber = mb.MagicBlockNumber + 1
 		mc.viewChangeProcess.viewChangeDKG = vc
@@ -227,15 +294,235 @@ func (mc *Chain) ContributeMpk(ctx context.Context, lfb *block.Block,
 	data.Name = scNameContributeMpk
 	data.InputArgs = mpk
 
-	tx = httpclientutil.NewTransactionEntity(selfNodeKey, mc.ID,
-		selfNode.PublicKey)
-	tx.ToClientID = minersc.ADDRESS
+	tx = httpclientutil.NewSmartContractTxn(selfNodeKey, mc.ID, selfNode.PublicKey, minersc.ADDRESS)
 
-	err = httpclientutil.SendSmartContractTxn(tx, minersc.ADDRESS, 0, 0, data,
-		mb.Miners.N2NURLs(), mb.Sharders.N2NURLs())
+	// minersUrls := getRandomMinerURLs(mb.Miners.N2NURLs(), 10)
+	// minersUrls = append(minersUrls, selfNode.GetN2NURLBase())
+	err = mc.SendSmartContractTxn(tx, data, mb.Miners.N2NURLs(), mb.Sharders.N2NURLs())
+	// err = mc.SendSmartContractTxn(tx, data, mb.Miners.N2NURLs(), mb.Sharders.N2NURLs())
+	logging.Logger.Info("[vc] contribute mpk", zap.Any("tx", tx), zap.Any("err", err))
 	return
 }
 
 func afterSignShareRequestHandler(message *bls.DKGKeyShare, nodeID string) (messageResult *bls.DKGKeyShare, err error) {
 	return message, nil
+}
+
+//
+//                               S H A R E
+//
+
+func (mc *Chain) SendSijs(ctx context.Context, lfb *block.Block,
+	mb *block.MagicBlock) (tx *httpclientutil.Transaction,
+	err error) {
+
+	if mc.isSyncingBlocks() {
+		logging.Logger.Debug("[mvc] sendsijs, block is syncing")
+		return nil, nil
+	}
+
+	var (
+		sendFail []string
+		sendTo   []string
+	)
+
+	// it locks the mutex, but after, its free
+	if sendTo, err = mc.sendSijsPrepare(ctx, lfb, mb); err != nil {
+		return
+	}
+
+	for _, key := range sendTo {
+		if err := mc.sendDKGShare(ctx, key); err != nil {
+			logging.Logger.Error("[mvc] sendSijs, failed to send dkg share",
+				zap.String("miner", key),
+				zap.Error(err))
+			sendFail = append(sendFail, fmt.Sprintf("%s(%v);", key, err))
+		}
+	}
+
+	totalSentNum := len(sendTo)
+	failNum := len(sendFail)
+	successNum := totalSentNum - failNum
+	// require to get sijs share from all
+	// DEBUG: require to get shares from all dkg miners
+	sharesNum := mc.getShareOrSignsNum()
+	if sharesNum+successNum < mb.K {
+		// return error to continue share
+		logging.Logger.Error("[mvc] not shared enough shares or signs",
+			zap.Int("total sent num", totalSentNum),
+			zap.Int("fail num", failNum),
+			zap.Int("shared num", sharesNum+successNum),
+			zap.Strings("fail to miners", sendFail))
+		return nil, errors.New("not shared enough shares or signs")
+	}
+
+	logging.Logger.Debug("[mvc] send sijs success", zap.Int("total sent num", totalSentNum),
+		zap.Int("success num", successNum))
+
+	return // (nil, nil)
+}
+
+//
+//                               W A I T
+//
+
+// Wait create 'wait' transaction to commit the miner
+func (mc *Chain) Wait(ctx context.Context,
+	lfb *block.Block, mb *block.MagicBlock) (tx *httpclientutil.Transaction, err error) {
+	mc.viewChangeProcess.Lock()
+	defer mc.viewChangeProcess.Unlock()
+
+	if !mc.viewChangeProcess.isDKGSet() {
+		return nil, common.NewError("vc_wait", "DKG is not set")
+	}
+
+	var magicBlock *block.MagicBlock
+	if magicBlock, err = mc.GetMagicBlockFromSC(ctx, lfb, mb); err != nil {
+		logging.Logger.Error("chain wait failed", zap.Error(err))
+		return // error
+	}
+
+	if magicBlock.MagicBlockNumber != mb.MagicBlockNumber+1 {
+		logging.Logger.Error("[mvc] dkg wait failed, not new magic block",
+			zap.Int64("mb_num", magicBlock.MagicBlockNumber),
+			zap.Int64("mb_sr", magicBlock.StartingRound),
+			zap.String("mb_hash", magicBlock.Hash),
+			zap.Int64("current_mb_num", mb.MagicBlockNumber))
+		return nil, common.NewError("vc_wait", "not new magic block")
+	}
+
+	if !magicBlock.Miners.HasNode(node.Self.Underlying().GetKey()) {
+		logging.Logger.Error("[mvc] vc wait failed, magic miners does not have self node")
+		mc.viewChangeProcess.clearViewChange()
+		return // node leaves BC, don't do anything here
+	}
+
+	if mc.isSyncingBlocks() {
+		// Just store the magic block and return
+		if err = StoreMagicBlock(ctx, magicBlock); err != nil {
+			logging.Logger.Panic("failed to store magic block", zap.Error(err))
+		}
+		logging.Logger.Debug("[mvc] dkg wait, miner is synching, store magic block with no DKG summary",
+			zap.Int64("mb_rs", magicBlock.StartingRound),
+			zap.Int64("mb_rc", magicBlock.MagicBlockNumber),
+			zap.String("mb_hash", magicBlock.Hash))
+		return nil, nil
+	}
+
+	var (
+		mpks        = mc.viewChangeProcess.mpks.GetMpks()
+		vcdkg       = mc.viewChangeProcess.viewChangeDKG
+		selfNodeKey = node.Self.Underlying().GetKey()
+	)
+
+	logging.Logger.Debug("[mvc] dkg wait, dkg_ss size", zap.Int("size", vcdkg.GetSecretSharesSize()))
+	for key, share := range magicBlock.GetShareOrSigns().GetShares() {
+		if key == selfNodeKey {
+			continue // skip self
+		}
+
+		var myShare, ok = share.ShareOrSigns[selfNodeKey]
+		if ok && myShare.Share != "" {
+			logging.Logger.Debug("[mvc] dkg wait, add share from magic block",
+				zap.String("miner", key), zap.String("share", myShare.Share))
+			var share bls.Key
+			if err := share.SetHexString(myShare.Share); err != nil {
+				return nil, err
+			}
+			lmpks, err := bls.ConvertStringToMpk(mpks[key].Mpk)
+			if err != nil {
+				return nil, err
+			}
+
+			var validShare = vcdkg.ValidateShare(lmpks, share)
+			if !validShare {
+				continue
+			}
+			err = vcdkg.AddSecretShare(bls.ComputeIDdkg(key), myShare.Share,
+				true)
+			if err != nil {
+				return nil, common.NewErrorf("vc_wait",
+					"adding secret share: %v", err)
+			}
+		}
+	}
+
+	var miners []string
+	for key := range mc.viewChangeProcess.mpks.GetMpks() {
+		if _, ok := magicBlock.Mpks.Mpks[key]; !ok {
+			miners = append(miners, key)
+		}
+	}
+	vcdkg.DeleteFromSet(miners)
+	// mpkMap, err := magicBlock.Mpks.GetMpkMap()
+	// if err != nil {
+	// 	logging.Logger.Error("[mvc] dkg_ss, dkg wait, failed to get mpk map", zap.Error(err))
+	// 	return nil, err
+	// }
+	// logging.Logger.Debug("[mvc] dkg_ss, aggregate pub key shares")
+	// if err := vcdkg.AggregatePublicKeyShares(mpkMap); err != nil {
+	// 	logging.Logger.Error("[mvc] dkg_ss, dkg wait, failed to aggregate pub key shares", zap.Error(err))
+	// 	return nil, err
+	// }
+
+	// logging.Logger.Debug("[mvc] dkg_ss, aggregate secret key shares")
+	// vcdkg.AggregateSecretKeyShares()
+	vcdkg.StartingRound = magicBlock.StartingRound
+	vcdkg.MagicBlockNumber = magicBlock.MagicBlockNumber
+	// set T and N from the magic block
+	vcdkg.T = magicBlock.T
+	vcdkg.N = magicBlock.N
+
+	// save DKG and MB
+	logging.Logger.Debug("[mvc] dkg_ss, get dkg summary")
+	dkgSum := vcdkg.GetDKGSummary()
+	logging.Logger.Debug("[mvc] dkg_ss, store dkg summary")
+	if err = StoreDKGSummary(ctx, dkgSum); err != nil {
+		return nil, common.NewErrorf("vc_wait", "saving DKG summary: %v", err)
+	}
+	logging.Logger.Debug("[mvc] dkg wait: store dkg summary",
+		zap.String("id", dkgSum.ID),
+		zap.Int64("mb_num", magicBlock.MagicBlockNumber),
+		zap.Int64("mb_sr", magicBlock.StartingRound),
+		zap.String("mb_hash", magicBlock.Hash),
+	)
+
+	logging.Logger.Debug("[mvc] dkg_ss, store dkg summary")
+	if err = StoreMagicBlock(ctx, magicBlock); err != nil {
+		return nil, common.NewErrorf("vc_wait", "saving MB data: %v", err)
+	}
+
+	logging.Logger.Debug("[mvc] dkg wait: store mb",
+		zap.Int64("mb_num", magicBlock.MagicBlockNumber),
+		zap.Int64("mb_sr", magicBlock.StartingRound),
+		zap.String("mb_hash", magicBlock.Hash))
+
+	// create 'wait' transaction
+	if tx, err = mc.waitTransaction(mb); err != nil {
+		return nil, common.NewErrorf("vc_wait",
+			"sending 'wait' transaction: %v", err)
+	}
+
+	return // the transaction
+}
+
+// isSyncingBlocks checks if the miner is syncing blocks
+// NOTE: to differ it from the mc.IsBlockSyncing(), this function allows a
+// certain numbers of blocks behind to be considered as synced, otherwise
+// the VC process will be stuck as it always seeing it in syncing state.
+// Especially when the miner is not in the MB.
+func (mc *Chain) isSyncingBlocks() bool {
+	var (
+		allowBehind  = int64(20) // base on the observation of the max number of blocks was behind the LFB ticket
+		lfb          = mc.GetLatestFinalizedBlock()
+		lfbTkt       = mc.GetLatestLFBTicket(context.Background())
+		aheadN       = int64(3)
+		currentRound = mc.GetCurrentRound()
+	)
+
+	if currentRound+allowBehind < lfbTkt.Round ||
+		lfb.Round+aheadN+allowBehind < lfbTkt.Round {
+		return true
+	}
+	return false
 }

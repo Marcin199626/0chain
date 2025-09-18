@@ -2,20 +2,16 @@ package storagesc
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"math"
-	"net/url"
-
-	"0chain.net/core/logging"
+	"github.com/0chain/common/core/logging"
 	"go.uber.org/zap"
+	"net/url"
 
 	"0chain.net/chaincore/smartcontract"
 
 	"github.com/rcrowley/go-metrics"
 
 	chainstate "0chain.net/chaincore/chain/state"
-	"0chain.net/chaincore/config"
 	sci "0chain.net/chaincore/smartcontractinterface"
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/common"
@@ -50,20 +46,15 @@ func (ipsc *StorageSmartContract) GetExecutionStats() map[string]interface{} {
 	return ipsc.SmartContractExecutionStats
 }
 
-func (ipsc *StorageSmartContract) GetCost(t *transaction.Transaction, funcName string, balances chainstate.StateContextI) (int, error) {
-	conf, err := ipsc.getConfig(balances, true)
+func (ipsc *StorageSmartContract) GetCostTable(balances chainstate.StateContextI) (map[string]int, error) {
+	node, err := ipsc.getConfig(balances, true)
 	if err != nil {
-		return math.MaxInt32, err
+		return map[string]int{}, err
 	}
-	if conf.Cost == nil {
-		return math.MaxInt32, errors.New("can't get cost")
+	if node.Cost == nil {
+		return map[string]int{}, err
 	}
-	cost, ok := conf.Cost[funcName]
-	if !ok {
-		logging.Logger.Error("no cost given", zap.Any("funcName", funcName))
-		return math.MaxInt32, errors.New("no cost given for " + funcName)
-	}
-	return cost, nil
+	return node.Cost, nil
 }
 
 func (ssc *StorageSmartContract) setSC(sc *sci.SmartContract, _ sci.BCContextI) {
@@ -79,17 +70,14 @@ func (ssc *StorageSmartContract) setSC(sc *sci.SmartContract, _ sci.BCContextI) 
 	ssc.SmartContractExecutionStats["finalize_allocation"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "finalize_allocation"), nil)
 	ssc.SmartContractExecutionStats["cancel_allocation"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "cancel_allocation"), nil)
 	ssc.SmartContractExecutionStats["free_allocation_request"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "free_allocation_request"), nil)
-	ssc.SmartContractExecutionStats["free_update_allocation"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "update_free_storage"), nil)
-	ssc.SmartContractExecutionStats["add_curator"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "add_curator"), nil)
-	ssc.SmartContractExecutionStats["curator_transfer_allocation"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "curator_transfer_allocation"), nil)
 	// challenge
-	ssc.SmartContractExecutionStats["challenge_request"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "challenge_request"), nil)
 	ssc.SmartContractExecutionStats["challenge_response"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "challenge_response"), nil)
-	ssc.SmartContractExecutionStats["generate_challenges"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "generate_challenges"), nil)
 	ssc.SmartContractExecutionStats["generate_challenge"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "generate_challenge"), nil)
 	// validator
 	ssc.SmartContractExecutionStats["add_validator"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "add_validator (add/update SC function)"), nil)
 	ssc.SmartContractExecutionStats["update_validator_settings"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "update_validator_settings"), nil)
+	ssc.SmartContractExecutionStats["validator_health_check"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID,
+		"validator_health_check"), nil)
 	// validators stat (not function calls)
 	ssc.SmartContractExecutionStats[statAddValidator] = metrics.GetOrRegisterCounter(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "add_validator"), nil)
 	ssc.SmartContractExecutionStats[statUpdateValidator] = metrics.GetOrRegisterCounter(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "update_validator"), nil)
@@ -98,23 +86,28 @@ func (ssc *StorageSmartContract) setSC(sc *sci.SmartContract, _ sci.BCContextI) 
 	ssc.SmartContractExecutionStats["add_blobber"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "add_blobber (add/update/remove SC function)"), nil)
 	ssc.SmartContractExecutionStats["update_blobber_settings"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "update_blobber_settings"), nil)
 	ssc.SmartContractExecutionStats["blobber_block_rewards"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "blobber_block_rewards"), nil)
+	ssc.SmartContractExecutionStats["shut-down-blobber"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "shut-down-blobber"), nil)
+	ssc.SmartContractExecutionStats["kill-blobber"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "kill-blobber"), nil)
+	ssc.SmartContractExecutionStats["shut-down-validator"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "shut-down-validator"), nil)
+	ssc.SmartContractExecutionStats["kill-validator"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "kill-validator"), nil)
+	ssc.SmartContractExecutionStats["blobber_health_check"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID,
+		"blobber_health_check"), nil)
+
 	// blobber statistic (not function calls)
 	ssc.SmartContractExecutionStats[statNumberOfBlobbers] = metrics.GetOrRegisterCounter(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "stat: number of blobbers"), nil)
 	ssc.SmartContractExecutionStats[statAddBlobber] = metrics.GetOrRegisterCounter(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "stat: add bblober"), nil)
 	ssc.SmartContractExecutionStats[statUpdateBlobber] = metrics.GetOrRegisterCounter(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "stat: update blobber"), nil)
 	ssc.SmartContractExecutionStats[statRemoveBlobber] = metrics.GetOrRegisterCounter(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "stat: remove blobber"), nil)
 	// read pool
-	ssc.SmartContractExecutionStats["new_read_pool"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "new_read_pool"), nil)
 	ssc.SmartContractExecutionStats["read_pool_lock"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "read_pool_lock"), nil)
 	ssc.SmartContractExecutionStats["read_pool_unlock"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "read_pool_unlock"), nil)
 	// write pool
 	ssc.SmartContractExecutionStats["write_pool_lock"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "write_pool_lock"), nil)
-	ssc.SmartContractExecutionStats["write_pool_unlock"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "write_pool_unlock"), nil)
 	// stake pool
 	ssc.SmartContractExecutionStats["stake_pool_lock"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "stake_pool_lock"), nil)
 	ssc.SmartContractExecutionStats["stake_pool_unlock"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "stake_pool_unlock"), nil)
-	ssc.SmartContractExecutionStats["stake_pool_pay_interests"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "stake_pool_pay_interests"), nil)
 	ssc.SmartContractExecutionStats["pay_reward"] = metrics.GetOrRegisterTimer(fmt.Sprintf("sc:%v:func:%v", ssc.ID, "pay_reward (add/update/remove SC function)"), nil)
+
 }
 
 func (ssc *StorageSmartContract) GetName() string {
@@ -205,16 +198,6 @@ func (sc *StorageSmartContract) Execute(t *transaction.Transaction,
 		resp, err = sc.addFreeStorageAssigner(t, input, balances)
 	case "free_allocation_request":
 		resp, err = sc.freeAllocationRequest(t, input, balances)
-	case "free_update_allocation":
-		resp, err = sc.updateFreeStorageRequest(t, input, balances)
-	case "curator_transfer_allocation":
-		resp, err = sc.curatorTransferAllocation(t, input, balances)
-
-	//curator
-	case "add_curator":
-		resp, err = sc.addCurator(t, input, balances)
-	case "remove_curator":
-		resp, err = sc.removeCurator(t, input, balances)
 
 	// blobbers
 
@@ -224,17 +207,26 @@ func (sc *StorageSmartContract) Execute(t *transaction.Transaction,
 		resp, err = sc.addValidator(t, input, balances)
 	case "blobber_health_check":
 		resp, err = sc.blobberHealthCheck(t, input, balances)
+	case "validator_health_check":
+		resp, err = sc.validatorHealthCheck(t, input, balances)
 	case "update_blobber_settings":
 		resp, err = sc.updateBlobberSettings(t, input, balances)
 	case "update_validator_settings":
 		resp, err = sc.updateValidatorSettings(t, input, balances)
 	case "blobber_block_rewards":
-		err = sc.blobberBlockRewards(balances)
+		err = sc.blobberBlockRewards(t, input, balances)
+
+	case "shutdown_blobber":
+		_, err = sc.shutdownBlobber(t, input, balances)
+	case "kill_blobber":
+		_, err = sc.killBlobber(t, input, balances)
+	case "shutdown_validator":
+		_, err = sc.shutdownValidator(t, input, balances)
+	case "kill_validator":
+		_, err = sc.killValidator(t, input, balances)
 
 	// read_pool
 
-	case "new_read_pool":
-		resp, err = sc.newReadPool(t, input, balances)
 	case "read_pool_lock":
 		resp, err = sc.readPoolLock(t, input, balances)
 	case "read_pool_unlock":
@@ -244,10 +236,8 @@ func (sc *StorageSmartContract) Execute(t *transaction.Transaction,
 
 	case "write_pool_lock":
 		resp, err = sc.writePoolLock(t, input, balances)
-	case "write_pool_unlock":
-		resp, err = sc.writePoolUnlock(t, input, balances)
 
-		// stake pool
+	// stake pool
 
 	case "stake_pool_lock":
 		resp, err = sc.stakePoolLock(t, input, balances)
@@ -256,10 +246,12 @@ func (sc *StorageSmartContract) Execute(t *transaction.Transaction,
 	case "collect_reward":
 		resp, err = sc.collectReward(t, input, balances)
 	case "generate_challenge":
-		challengesEnabled := config.SmartContractConfig.GetBool(
-			"smart_contracts.storagesc.challenge_enabled")
-		if challengesEnabled {
-			err = sc.generateChallenge(t, balances.GetBlock(), input, balances)
+		var conf *Config
+		if conf, err = sc.getConfig(balances, true); err != nil {
+			return "", fmt.Errorf("can't get SC configurations: %v", err.Error())
+		}
+		if conf.ChallengeEnabled {
+			err = sc.generateChallenge(t, balances.GetBlock(), input, conf, balances)
 			if err != nil {
 				return
 			}
@@ -279,7 +271,90 @@ func (sc *StorageSmartContract) Execute(t *transaction.Transaction,
 	case "commit_settings_changes":
 		resp, err = sc.commitSettingChanges(t, input, balances)
 
+	case "reset_blobber_stats":
+		resp, err = sc.resetBlobberStats(t, input, balances)
+
+	case "reset_allocation_stats":
+		resp, err = sc.resetAllocationStats(t, input, balances)
+
 	default:
+		logging.Logger.Info("Storage function name", zap.String("function", funcName))
+
+		updateBlobberVersionSuccess := false
+		actErr := chainstate.WithActivation(balances, "hercules", func() error {
+			return nil
+		}, func() error {
+			if funcName == "update_blobber_version" {
+				resp, err = sc.updateBlobberVersion(t, input, balances)
+				if err == nil {
+					updateBlobberVersionSuccess = true
+				}
+				return err
+			}
+			return nil
+		})
+		if actErr != nil || resp != "" {
+			return resp, actErr
+		}
+		if updateBlobberVersionSuccess {
+			return resp, nil
+		}
+
+		insertKilledProvider := false
+		actErr = chainstate.WithActivation(balances, "hercules", func() error {
+			return nil
+		}, func() error {
+			if funcName == "insert_killed_provider_id" {
+				resp, err = sc.insertKilledProviderID(t, input, balances)
+				if err == nil {
+					insertKilledProvider = true
+				}
+				return err
+			}
+			return nil
+		})
+		if actErr != nil || resp != "" {
+			return resp, actErr
+		}
+		if insertKilledProvider {
+			return resp, nil
+		}
+
+		actErr = chainstate.WithActivation(balances, "demeter", func() error {
+			return nil
+		}, func() error {
+			var conf *Config
+			if conf, err = sc.getConfig(balances, true); err != nil {
+				return nil
+			}
+
+			if t.ClientID != conf.OwnerId {
+				return nil
+			}
+
+			if funcName == "repair_partitions" {
+				resp, err = sc.repairPartitions(t, input, balances)
+				return err
+			}
+			return nil
+		})
+		if actErr != nil || resp != "" {
+			return resp, actErr
+		}
+
+		actErr = chainstate.WithActivation(balances, "demeter", func() error {
+			return nil
+		}, func() error {
+			if funcName == "fix_validator" {
+				resp, err = sc.fixValidatorBaseUrl(t, input, balances)
+				return err
+			}
+			return nil
+		})
+		if actErr != nil || resp != "" {
+			return resp, actErr
+		}
+
 		err = common.NewErrorf("invalid_storage_function_name",
 			"Invalid storage function '%s' called", funcName)
 	}

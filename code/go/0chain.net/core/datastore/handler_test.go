@@ -11,7 +11,7 @@ import (
 	"reflect"
 	"testing"
 
-	"0chain.net/core/logging"
+	"github.com/0chain/common/core/logging"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -52,19 +52,6 @@ func TestToJSONEntityReqResponse(t *testing.T) {
 		want http.ResponseWriter
 	}{
 		{
-			name: "Test_ToJSONEntityReqResponse_CO_FALSE_OK",
-			args: func() args {
-				r := httptest.NewRequest(http.MethodGet, "/", nil)
-				r.Header.Add("Origin", "invalid origin")
-
-				return args{
-					handler: handler,
-					r:       r,
-				}
-			}(),
-			want: httptest.NewRecorder(),
-		},
-		{
 			name: "Test_ToJSONEntityReqResponse_Options_OK",
 			args: func() args {
 				r := httptest.NewRequest(http.MethodOptions, "/", nil)
@@ -78,8 +65,8 @@ func TestToJSONEntityReqResponse(t *testing.T) {
 			want: func() http.ResponseWriter {
 				w := httptest.NewRecorder()
 				w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
-				w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Accept-Encoding")
-				w.Header().Set("Access-Control-Allow-Origin", "file://localhost:8080/")
+				w.Header().Set("Access-Control-Allow-Headers", "*")
+				w.Header().Set("Access-Control-Allow-Origin", "*")
 				return w
 			}(),
 		},
@@ -96,7 +83,6 @@ func TestToJSONEntityReqResponse(t *testing.T) {
 			}(),
 			want: func() http.ResponseWriter {
 				w := httptest.NewRecorder()
-				w.Header().Set("Access-Control-Allow-Origin", "file://localhost:8080/")
 				http.Error(w, "Header Content-type=application/json not found", 400)
 				return w
 			}(),
@@ -116,8 +102,7 @@ func TestToJSONEntityReqResponse(t *testing.T) {
 			}(),
 			want: func() http.ResponseWriter {
 				w := httptest.NewRecorder()
-				w.Header().Set("Access-Control-Allow-Origin", "file://localhost:8080/")
-				http.Error(w, "Error decoding json", 500)
+				http.Error(w, "Error decoding json", 400)
 				return w
 			}(),
 		},
@@ -144,7 +129,6 @@ func TestToJSONEntityReqResponse(t *testing.T) {
 			}(),
 			want: func() http.ResponseWriter {
 				w := httptest.NewRecorder()
-				w.Header().Set("Access-Control-Allow-Origin", "file://localhost:8080/")
 				w.WriteHeader(http.StatusNoContent)
 				return w
 			}(),

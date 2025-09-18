@@ -4,16 +4,17 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"0chain.net/chaincore/currency"
+	"github.com/0chain/common/core/currency"
 
 	cstate "0chain.net/chaincore/chain/state"
 	"0chain.net/chaincore/tokenpool"
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
-	"0chain.net/core/logging"
-	"0chain.net/core/util"
+	"0chain.net/smartcontract/dbs/event"
 	"0chain.net/smartcontract/stakepool/spenum"
+	"github.com/0chain/common/core/logging"
+	"github.com/0chain/common/core/util"
 	"go.uber.org/zap"
 )
 
@@ -64,19 +65,38 @@ func (cp *challengePool) Decode(input []byte) (err error) {
 }
 
 // save the challenge pool
-func (cp *challengePool) save(sscKey, allocationID string,
-	balances cstate.StateContextI) (err error) {
+func (cp *challengePool) save(sscKey string, alloc *storageAllocationBase, balances cstate.StateContextI) (err error) {
+	cpKey := challengePoolKey(sscKey, alloc.ID)
+	r, err := balances.InsertTrieNode(cpKey, cp)
+	logging.Logger.Debug("after Save challenge pool", zap.String("root", util.ToHex([]byte(r))))
 
-	r, err := balances.InsertTrieNode(challengePoolKey(sscKey, allocationID), cp)
-	logging.Logger.Debug("after save challenge pool", zap.String("root", r))
+	//emit challenge pool event
+	emitChallengePoolEvent(cpKey, cp.GetBalance(), alloc, balances)
 
 	return
 }
 
-func (cp *challengePool) moveToValidators(sscKey string, reward currency.Coin,
+func emitChallengePoolEvent(id string, balance currency.Coin, alloc *storageAllocationBase, balances cstate.StateContextI) {
+	data := event.ChallengePool{
+		ID:           id,
+		AllocationID: alloc.ID,
+		Balance:      int64(balance),
+		StartTime:    int64(alloc.StartTime),
+		Expiration:   int64(alloc.Expiration),
+		Finalized:    alloc.Finalized,
+	}
+
+	balances.EmitEvent(event.TypeStats, event.TagAddOrUpdateChallengePool, id, data)
+	//nolint:gosimple
+	return
+}
+
+func (cp *challengePool) moveToValidators(
+	reward currency.Coin,
 	validators []datastore.Key,
 	vSPs []*stakePool,
 	balances cstate.StateContextI,
+	allocationID string,
 ) error {
 	if len(validators) == 0 || reward == 0 {
 		return nil // nothing to move, or nothing to move to
@@ -92,7 +112,7 @@ func (cp *challengePool) moveToValidators(sscKey string, reward currency.Coin,
 	}
 
 	for i, sp := range vSPs {
-		err := sp.DistributeRewards(oneReward, validators[i], spenum.Validator, balances)
+		err := sp.DistributeRewards(oneReward, validators[i], spenum.Validator, spenum.ValidationReward, balances, allocationID)
 		if err != nil {
 			return fmt.Errorf("moving to validator %s: %v",
 				validators[i], err)
@@ -100,7 +120,7 @@ func (cp *challengePool) moveToValidators(sscKey string, reward currency.Coin,
 	}
 	if bal > 0 {
 		for i := 0; i < int(bal); i++ {
-			err := vSPs[i].DistributeRewards(1, validators[i], spenum.Validator, balances)
+			err := vSPs[i].DistributeRewards(1, validators[i], spenum.Validator, spenum.ValidationReward, balances, allocationID)
 			if err != nil {
 				return fmt.Errorf("moving to validator %s: %v",
 					validators[i], err)
@@ -112,18 +132,40 @@ func (cp *challengePool) moveToValidators(sscKey string, reward currency.Coin,
 	return nil
 }
 
-func (cp *challengePool) stat(alloc *StorageAllocation) (
-	stat *challengePoolStat) {
+func (cp *challengePool) moveToBlobbers(sscKey string, reward currency.Coin,
+	blobberId datastore.Key,
+	sp *stakePool,
+	balances cstate.StateContextI,
+	allocationID string,
+) error {
 
-	stat = new(challengePoolStat)
+	if reward == 0 {
+		return nil // nothing to move, or nothing to move to
+	}
 
-	stat.ID = cp.ID
-	stat.Balance = cp.Balance
-	stat.StartTime = alloc.StartTime
-	stat.Expiration = alloc.Until()
-	stat.Finalized = alloc.Finalized
+	if cp.ZcnPool.Balance < reward {
+		return fmt.Errorf("not enough tokens in challenge pool: %v < %v", cp.Balance, reward)
+	}
 
-	return
+	err := sp.DistributeRewards(reward, blobberId, spenum.Blobber, spenum.ChallengePassReward, balances, allocationID)
+	if err != nil {
+		return fmt.Errorf("can't move tokens to blobber: %v", err)
+	}
+
+	cp.ZcnPool.Balance -= reward
+	return nil
+}
+
+func toChallengePoolStat(cp *event.ChallengePool) *challengePoolStat {
+	stat := challengePoolStat{
+		ID:         cp.ID,
+		Balance:    currency.Coin(cp.Balance),
+		StartTime:  common.Timestamp(cp.StartTime),
+		Expiration: common.Timestamp(cp.Expiration),
+		Finalized:  cp.Finalized,
+	}
+
+	return &stat
 }
 
 // swagger:model challengePoolStat
@@ -150,7 +192,7 @@ func (ssc *StorageSmartContract) getChallengePool(allocationID datastore.Key,
 // newChallengePool SC function creates new
 // challenge pool for a client don't saving it
 func (ssc *StorageSmartContract) newChallengePool(allocationID string,
-	creationDate, expiresAt common.Timestamp, balances cstate.StateContextI) (
+	balances cstate.StateContextI) (
 	cp *challengePool, err error) {
 
 	_, err = ssc.getChallengePool(allocationID, balances)
@@ -166,25 +208,33 @@ func (ssc *StorageSmartContract) newChallengePool(allocationID string,
 	}
 }
 
-// create, fill and save challenge pool for new allocation
+// create, fill and Save challenge pool for new allocation
 func (ssc *StorageSmartContract) createChallengePool(t *transaction.Transaction,
-	alloc *StorageAllocation, balances cstate.StateContextI) (err error) {
+	alloc *storageAllocationBase, balances cstate.StateContextI, conf *Config) (err error) {
 
 	// create related challenge_pool expires with the allocation + challenge
 	// completion time
 	var cp *challengePool
-	cp, err = ssc.newChallengePool(alloc.ID, t.CreationDate, alloc.Until(),
-		balances)
+
+	cp, err = ssc.newChallengePool(alloc.ID, balances)
 	if err != nil {
 		return fmt.Errorf("can't create challenge pool: %v", err)
 	}
 
 	// don't lock anything here
 
-	// save the challenge pool
-	if err = cp.save(ssc.ID, alloc.ID, balances); err != nil {
-		return fmt.Errorf("can't save challenge pool: %v", err)
+	// Save the challenge pool
+	if err = cp.save(ssc.ID, alloc, balances); err != nil {
+		return fmt.Errorf("can't Save challenge pool: %v", err)
 	}
 
 	return
+}
+
+func (ssc *StorageSmartContract) deleteChallengePool(alloc *storageAllocationBase, balances cstate.StateContextI) (err error) {
+	if _, err = balances.DeleteTrieNode(challengePoolKey(ssc.ID, alloc.ID)); err != nil {
+		return fmt.Errorf("can't delete challenge pool: %v", err)
+	}
+
+	return nil
 }

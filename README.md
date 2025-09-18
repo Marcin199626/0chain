@@ -1,4 +1,4 @@
-            # TestNet Setup with Docker Containers
+            # Züs TestNet Setup with Docker Containers
 
 [![Build](https://github.com/0chain/0chain/actions/workflows/build-&-publish-docker-image.yml/badge.svg)](https://github.com/0chain/0chain/actions/workflows/build-&-publish-docker-image.yml)
 [![Test](https://github.com/0chain/0chain/actions/workflows/unit-test.yml/badge.svg)](https://github.com/0chain/0chain/actions/workflows/unit-test.yml)
@@ -6,34 +6,60 @@
 [![codecov](https://codecov.io/gh/0chain/0chain/branch/staging/graph/badge.svg)](https://codecov.io/gh/0chain/0chain)
 
 ## Table of Contents
-
+- [Züs Overview](#züs-overview)
 - [Changelog](#changelog)
 - [Initial Setup](#initial-setup)
   - [Host Machine Network Setup](#host-machine-network-setup)
   - [Directory Setup for Miners & Sharders](#directory-setup-for-miners-and-sharders)
   - [Setup Network](#setup-network)
-- [Building and Starting the Nodes](#building-the-nodes)
-- [Building the Nodes](#building-the-nodes)
-- [Generating Test Transactions](#generating-test-transactions)
-- [Troubleshooting](#troubleshooting)
-- [Development](#development)
-- [Debugging](#debugging)
-- [Unit tests](#unit-tests)
-- [Creating The Magic Block](#creating-the-magic-block)
-- [Initial states](#initial-states)
-- [Miscellaneous](#miscellaneous)
+  - [Building the Nodes](#building-the-nodes)
+  - [Configuring the Nodes](#configuring-the-nodes)
+  - [Starting the Nodes](#starting-the-nodes)
+  - [Check Chain Status](#check-chain-status)
+  - [Restarting the Nodes](#restarting-the-nodes)
   - [Cleanup](#cleanup)
-  - [Minio Setup](#minio)
-- [Integration tests](#integration-tests)
-- [Benchmarks](#benchmarks)
 - [Run 0chain on ec2 / vm / bare metal](https://github.com/0chain/0chain/blob/master/docker.aws/README.md)
 - [Run 0chain on ec2 / vm / bare metal over https](https://github.com/0chain/0chain/blob/master/https/README.md)
-- [Swagger documentation](#swagger-documentation)
+- [Development](#development)
+  - [Installing msgp](#installing-msgp)
+  - [Dependencies for local compilation](#dependencies-for-local-compilation)
+  - [Debugging](#debugging)
+  - [Unit tests](#unit-tests)
+  - [Creating The Magic Block](#creating-the-magic-block)
+  - [Initial states](#initial-states)
+  - [Integration tests ](#integration-tests)
+    - [Architecture](#architecture)
+    - [Running Integration Tests](#running-integration-tests)
+    - [Running Standard Tests](#running-standard-tests)
+    - [Running complex scenario suites](#running-complex-scenario-suites)
+    - [Running Blobber Tests](#running-blobber-tests)
+    - [Adding new Tests](#adding-new-tests)
+    - [Supported Conductor Commands](#supported-conductor-commands)
+    - [Creating Custom Conductor Commands](#creating-custom-conductor-commands) 
+  - [Benchmarks](#benchmarks)
+  - [Swagger documentation](#swagger-documentation)
+
+## Züs Overview 
+[Züs](https://zus.network/) is a high-performance cloud on a fast blockchain offering privacy and configurable uptime. It is an alternative to traditional cloud S3 and has shown better performance on a test network due to its parallel data architecture. The technology uses erasure code to distribute the data between data and parity servers. Züs storage is configurable to provide flexibility for IT managers to design for desired security and uptime, and can design a hybrid or a multi-cloud architecture with a few clicks using [Blimp's](https://blimp.software/) workflow, and can change redundancy and providers on the fly.
+
+For instance, the user can start with 10 data and 5 parity providers and select where they are located globally, and later decide to add a provider on-the-fly to increase resilience, performance, or switch to a lower cost provider.
+
+Users can also add their own servers to the network to operate in a hybrid cloud architecture. Such flexibility allows the user to improve their regulatory, content distribution, and security requirements with a true multi-cloud architecture. Users can also construct a private cloud with all of their own servers rented across the globe to have a better content distribution, highly available network, higher performance, and lower cost.
+
+[The QoS protocol](https://medium.com/0chain/qos-protocol-weekly-debrief-april-12-2023-44524924381f) is time-based where the blockchain challenges a provider on a file that the provider must respond within a certain time based on its size to pass. This forces the provider to have a good server and data center performance to earn rewards and income.
+
+The [privacy protocol](https://zus.network/build) from Züs is unique where a user can easily share their encrypted data with their business partners, friends, and family through a proxy key sharing protocol, where the key is given to the providers, and they re-encrypt the data using the proxy key so that only the recipient can decrypt it with their private key.
+
+Züs has ecosystem apps to encourage traditional storage consumption such as [Blimp](https://blimp.software/), a S3 server and cloud migration platform, and [Vult](https://vult.network/), a personal cloud app to store encrypted data and share privately with friends and family, and [Chalk](https://chalk.software/), a high-performance story-telling storage solution for NFT artists.
+
+Other apps are [Bolt](https://bolt.holdings/), a wallet that is very secure with air-gapped 2FA split-key protocol to prevent hacks from compromising your digital assets, and it enables you to stake and earn from the storage providers; [Atlus](https://atlus.cloud/), a blockchain explorer and [Chimney](https://demo.chimney.software/), which allows anyone to join the network and earn using their server or by just renting one, with no prior knowledge required.
 
 ## Changelog
 [CHANGELOG.md](CHANGELOG.md)
 
 ## Initial Setup
+
+Docker and Go must be installed to run the testnet containers. Get Docker from [here](https://docs.docker.com/engine/install/) and Go from [here](https://go.dev/doc/install). 
 
 ### Host Machine Network setup
 
@@ -44,7 +70,12 @@
 #### Windows
 Run powershell as administrator
 ```powershell
-./windows_network.sh
+./windows_network.ps1
+```
+#### Ubuntu/WSL2
+Run the following script
+```bash
+./wsl_ubuntu_network_iptables.sh
 ```
 ### Directory Setup for Miners and Sharders
 
@@ -68,47 +99,51 @@ Set up a network called testnet0 for each of these node containers to talk to ea
 
 1. Open 5 terminal tabs. Use the first one for building the containers by being in git/0chain directory. Use the next 3 for 3 miners and be in the respective miner directories created above in docker.local. Use the 5th terminal and be in the sharder1 directory.
 
-1.1) First build the base containers, zchain_build_base and zchain_run_base
+   1.1) First build the base containers, zchain_build_base and zchain_run_base
 
-Use **-m1** flag to build for Apple m1 chip
+   ```
+   ./docker.local/bin/build.base.sh
+   ```
+2. Build mocks from the Makefile in the repo, from git/0chain directory run:
+   
+   ```
+    make build-mocks 
+   ```
+   Note: Mocks have to be built once in the beginning. Building mocks require mockery and brew which can be installed from [here](https://docs.zus.network/guides/setup-a-blockchain/additional-tips-and-troubleshooting-for-mac#install-homebrew-and-mockery-on-mac-and-linux). 
 
-```
-./docker.local/bin/build.base.sh
-```
+3. Building the miners and sharders. From the git/0chain directory use
 
-2. Building the miners and sharders. From the git/0chain directory use
+   3.1) To build the miner containers
 
-2.1) To build the miner containers
+   ```
+   ./docker.local/bin/build.miners.sh
+   ```
 
-```
-./docker.local/bin/build.miners.sh
-```
+   3.2) To build the sharder containers
 
-2.2) To build the sharder containers
+   ```
+   ./docker.local/bin/build.sharders.sh
+   ```
 
-```
-./docker.local/bin/build.sharders.sh
-```
+   3.3) Syncing time (the host and the containers are being offset by a few seconds that throws validation errors as we accept transactions    that are within 5 seconds of creation). This step is needed periodically when you see the validation error.
 
-for building the 1 sharder.
-
-2.3) Syncing time (the host and the containers are being offset by a few seconds that throws validation errors as we accept transactions that are within 5 seconds of creation). This step is needed periodically when you see the validation error.
-
-```
-./docker.local/bin/sync_clock.sh
-```
+   ```
+   ./docker.local/bin/sync_clock.sh
+   ```
 
 ## Configuring the nodes
 
 1. Use `./docker.local/config/0chain.yaml` to configure the blockchain properties. The default options are set up for running the blockchain fast in development.
 
-1.1) If you want the logs to appear on the console - change `logging.console` from `false` to `true`
+  1.1) If you want the logs to appear on the console - change `logging.console` from `false` to `true`
 
-1.2) If you want the debug statements in the logs to appear - change `logging.level` from `"info"` to `"debug"`
+  1.2) If you want the debug statements in the logs to appear - change `logging.level` from `"info"` to `"debug"`
 
-1.3) If you want to change the block size, set the value of `server_chain.block.size`
+  1.3) If you want to change the block size, set the value of `server_chain.block.size`
 
-1.4) If you want to adjust the network relay time, set the value of `network.relay_time`
+  1.4) If you want to adjust the network relay time, set the value of `network.relay_time`
+
+  1.5) If you want to turn off fees adjust `server_chain.smart_contract.miner` from `true` to `false`
 
 **_Note: Remove sharder72 and miner75 from docker.local/config/b0snode2_keys.txt and docker.local/config/b0mnode5_keys.txt respectively if you are joining to local network._**
 
@@ -129,79 +164,7 @@ On the respective miner terminal, use
 ```
 ../bin/start.b0miner.sh
 ```
-
-## Re-starting the nodes
-
-To reflect a change in config files 0chain.yaml and sc.yaml, just restart the miner or sharder to take the new configuration. If you're doing a code change locally or pulling updates from GitHub, you need to build.
-```
-git pull
-docker.local/bin/build.base.sh && docker.local/bin/build.sharders.sh && docker.local/bin/build.miners.sh
-```
-For existing code and if you have tried running once, make sure there are no previous files and processes.
-```
-docker stop $(docker ps -a -q)
-docker.local/bin/clean.sh
-docker.local/bin/init.setup.sh
-docker.local/bin/sync_clock.sh
-```
-Then go to individual miner/sharder:
-```
-../bin/start.b0sharder.sh (start sharders first!)
-../bin/start.b0miner.sh
-```
-### Running on systems with SELinux enabled
-
-Library by `herumi` for working with BLS threshold signatures requires this flag turned on:
-
-```
-setsebool -P selinuxuser_execheap 1
-```
-
-If you are curious about the reasons for this, this thread sheds some light on the topic:
-
-https://github.com/herumi/xbyak/issues/9
-
-## Setting up Cassandra Schema
-
-The following is no longer required as the schema is automatically loaded.
-
-Start the sharder service that also brings up the cassandra service. To run commands on cassandra, use the following command
-
-```
-../bin/run.sharder.sh cassandra cqlsh
-```
-
-1. To create zerochain keyspace, do the following
-
-```
-../bin/run.sharder.sh cassandra cqlsh -f /0chain/sql/zerochain_keyspace.sql
-```
-
-2. To create the tables, do the following
-
-```
-../bin/run.sharder.sh cassandra cqlsh -k zerochain -f /0chain/sql/txn_summary.sql
-```
-
-3. When you want to truncate existing data (use caution), do the following
-
-```
-../bin/run.sharder.sh cassandra cqlsh -k zerochain -f /0chain/sql/truncate_tables.sql
-```
-
-## Generating Test Transactions
-
-There is no need to generate the test data separately. In development mode, the transaction data is automatically generated at a certain rate based on the block size.
-
-However, you can use the <a href='https://github.com/0chain/block-explorer'>block explorer</a> to submit transactions, view the blocks and confirm the transactions.
-
-## Monitoring the progress
-
-1. Use <a href='https://github.com/0chain/block-explorer'>block explorer</a> to see the progress of the block chain.
-
-2. In addition, use the '/\_diagnostics' link on any node to view internal details of the blockchain and the node.
-
-## Troubleshooting
+## Check Chain Status
 
 1. Ensure the port mapping is all correct:
 
@@ -249,9 +212,88 @@ Redis used for transactions:
 ../bin/run.sharder.sh cassandra cqlsh
 ```
 
+## Restarting the nodes
+
+To reflect a change in config files 0chain.yaml and sc.yaml, just restart the miner or sharder to take the new configuration. If you're doing a code change locally or pulling updates from GitHub, you need to build.
+```
+git pull
+docker.local/bin/build.base.sh && docker.local/bin/build.sharders.sh && docker.local/bin/build.miners.sh
+```
+For existing code and if you have tried running once, make sure there are no previous files and processes.
+```
+docker stop $(docker ps -a -q)
+docker.local/bin/clean.sh
+docker.local/bin/init.setup.sh
+docker.local/bin/sync_clock.sh
+```
+Then go to individual miner/sharder:
+```
+../bin/start.b0sharder.sh (start sharders first!)
+../bin/start.b0miner.sh
+```
+## Cleanup
+
+1. If you want to restart the blockchain from the beginning
+
+```
+./docker.local/bin/clean.sh
+```
+
+This cleans up the directories within docker.local/miner* and docker.local/sharder*
+
+**_Note: this script can take a while if the blockchain generated a lot of blocks as the script deletes
+the databases and also all the blocks that are stored by the sharders. Since each block is stored as a
+separate file, deleting thousands of such files will take some time._**
+
+2. If you want to get rid of old unused docker resources:
+
+```
+docker system prune
+```
+
+### Running on systems with SELinux enabled
+
+Library by `herumi` for working with BLS threshold signatures requires this flag turned on:
+
+```
+setsebool -P selinuxuser_execheap 1
+```
+
+If you are curious about the reasons for this, this thread sheds some light on the topic:
+
+https://github.com/herumi/xbyak/issues/9
+
+## Setting up Cassandra Schema
+
+The following is no longer required as the schema is automatically loaded.
+
+Start the sharder service that also brings up the cassandra service. To run commands on cassandra, use the following command
+
+```
+../bin/run.sharder.sh cassandra cqlsh
+```
+
+1. To create zerochain keyspace, do the following
+
+```
+../bin/run.sharder.sh cassandra cqlsh -f /0chain/sql/zerochain_keyspace.sql
+```
+
+2. To create the tables, do the following
+
+```
+../bin/run.sharder.sh cassandra cqlsh -k zerochain -f /0chain/sql/txn_summary.sql
+```
+
+3. When you want to truncate existing data (use caution), do the following
+
+```
+../bin/run.sharder.sh cassandra cqlsh -k zerochain -f /0chain/sql/truncate_tables.sql
+```
+
 ## Development
 
-## Install msgp
+### Installing msgp
 
 Run the following command to install the msgp tool:
 
@@ -353,27 +395,6 @@ This gives the start timestamps that can be used to correlate the events and the
 
 ![unit testing uml](https://user-images.githubusercontent.com/65766301/120052862-0b4ffd00-c045-11eb-83c8-977dfdb3038e.png)
 
-### Getting started
-
-### Prerequisites
-
-Docker and Git must be installed to run the tests .
-
-Install Git using the following command:
-
-```
-sudo apt install git
-```
-
-Docker installation instructions can be found [here](https://docs.docker.com/engine/install/).
-
-### Cloning the repository and Building Base Image
-
-Clone the 0chain repository:
-
-```
-git clone https://github.com/0chain/0chain.git
-```
 
 Navigate to 0chain folder and run the script to build base docker image for unit testing :
 
@@ -391,8 +412,12 @@ Now run the script containing unit tests .
 ```
 ./docker.local/bin/unit_test.sh
 ```
+OR to run the unit tests without the mocks,
+```
+./docker.local/bin/unit_test.sh --no-mocks 
+```
 
-The list of packages is optional, and if provided runs only the tests from those packages. Command for running unit tests with specific packages .
+The list of packages is optional, and if provided runs only the tests from those packages. The command for running unit tests with specific packages.
 
 ```
 ./docker.local/bin/unit_test.sh [<packages>]
@@ -474,83 +499,7 @@ running a sharder or miner, falling that the `0chain.yaml`
 An example, that can be used with the preset ids, can be found at
 [0chain/docker.local/config/initial_state.yaml`](https://github.com/0chain/0chain/blob/master/docker.local/config/initial_state.yaml)
 
-## Miscellaneous
 
-### Cleanup
-
-1. If you want to restart the blockchain from the beginning
-
-```
-./docker.local/bin/clean.sh
-```
-
-This cleans up the directories within docker.local/miner* and docker.local/sharder*
-
-**_Note: this script can take a while if the blockchain generated a lot of blocks as the script deletes
-the databases and also all the blocks that are stored by the sharders. Since each block is stored as a
-separate file, deleting thousands of such files will take some time._**
-
-2. If you want to get rid of old unused docker resources:
-
-```
-docker system prune
-```
-
-### Minio
-
-- You can use the inbuilt minio support to store blocks on cloud
-
-You have to update minio_config file with the cloud creds data, The file can be found at `docker.local/config/minio_config.txt`.
-The following order is used for the content :
-
-```
-CONNECTION_URL
-ACCESS_KEY_ID
-SECRET_ACCESS_KEY
-BUCKET_NAME
-REGION
-```
-
-- Your minio config file is then used in the docker-compose while starting the sharder node
-
-```
---minio_file config/minio_config.txt
-```
-
-- You can either update the setting in the same file which is given above or create a new one with you config and use that as
-
-```
---minio_file config/your_new_minio_config_file.txt
-```
-
-\*\*\_Note: Do not forget to put the file in the same config folder OR mount your new folder.
-
-- Apart from private connection config, There are other options as well in the 0chain.yaml file to manage minio settings.
-
-Sample config
-
-```
-minio:
-  # Enable or disable minio backup, Do not enable with deep scan ON
-  enabled: false
-  # In Seconds, The frequency at which the worker should look for files, Ex: 3600 means it will run every 3600 seconds
-  worker_frequency: 3600
-  # Number of workers to run in parallel, Just to make execution faster we can have mutiple workers running simultaneously
-  num_workers: 5
-  # Use SSL for connection or not
-  use_ssl: false
-  # How old the block should be to be considered for moving to cloud
-  old_block_round_range: 20000000
-  # Delete local copy of block once it's moved to cloud
-  delete_local_copy: true
-```
-- In minio the folders do not get deleted and will cause a slight increase in volume over time.
-
-## Integration tests
-
-Integration testing combines individual 0chain modules and test them as a group. Integration testing evaluates the compliance of a system for specific functional requirements and usually occurs after unit testing .
-
-For integration testing, A conductor which is RPC(Remote Procedure Call) server is implemented to control behaviour of nodes .To know more about the conductor refer to the [conductor documentation](https://github.com/0chain/0chain/blob/master/code/go/0chain.net/conductor/README.md)
 
 ## Benchmarks
 Benchmark 0chain smart-contract endpoints.
@@ -558,6 +507,13 @@ Benchmark 0chain smart-contract endpoints.
 Runs testing.Benchmark on each 0chain endpoint. The blockchain database used in these tests is constructed from the parameters in the benchmark.yaml. file. Smartcontracts do not (or should not) access tha chain so a populated MPT database is enough to give a realistic benchmark.
 
 More info in [read.me](code/go/0chain.net/smartcontract/benchmark/main/readme.md)
+
+
+## Integration tests 
+
+Integration testing combines individual 0chain modules and test them as a group. Integration testing evaluates the compliance of a system for specific functional requirements and usually occurs after unit testing .
+
+For integration testing, A conductor which is RPC(Remote Procedure Call) server is implemented to control behaviour of nodes .To know more about the conductor refer to the [conductor documentation](https://github.com/0chain/0chain/blob/master/code/go/0chain.net/conductor/README.md)
 
 ### Architecture
 A conductor requires the nodes to be built in a certain order to control them during the tests. A config file is defined in [conductor.config.yaml](https://github.com/0chain/0chain/blob/master/docker.local/config/conductor.config.yaml) which contains important details such as details of all nodes used and custom commands used in integration testing.
@@ -621,9 +577,9 @@ tests:
 ...
 ```
 
-## Getting Started
+### Running Integration Tests
 
-### Prerequisites
+#### Prerequisites
 
 Docker and Git must be installed to run the tests .
 
@@ -635,7 +591,7 @@ sudo apt install git
 
 Docker installation instructions can be found [here](https://docs.docker.com/engine/install/).
 
-### Cloning the repository and Building Base Image
+#### Cloning the repository and Building Base Image
 
 Clone the 0chain repository:
 

@@ -1,0 +1,481 @@
+# enabled test cases sets
+enable:
+  - "Bad Blobbers"
+
+# sets of test cases
+sets:
+  - name: "Bad Blobbers"
+    tests:
+    - "Send wrong data to the client on listing directory"
+    - "Send wrong metadata to the client on listing directory"
+    - "Not respond to the client on listing directory"
+    - "Not respond to the client on downloading file"
+    - "Not respond to the client on uploading file"
+    - "Not respond to the client on deleting file"
+    - "Return error to the client on listing file"
+    - "Return error to the client on downloading file"
+    - "Return error to the client on uploading file"
+    - "Return error to the client on deleting file"
+
+# test cases
+tests:
+  - name: "Send wrong data to the client on listing directory"
+    flow:
+      - set_monitor: "sharder-1"
+      - cleanup_bc: {}
+      - command:
+          name: "cleanup_blobbers"
+      - command:
+          name: "cleanup_0dns"
+      - start: ['sharder-1', 'miner-1', 'miner-2', 'miner-3']
+      - wait_round:
+          round: 15 # just wait the BC starts
+      - start: ['0dns']
+      # wait the 0dns starts
+      - sleep: "20s"
+      - wait_add:
+          blobbers: ['blobber-1', 'blobber-2', 'blobber-3', 'blobber-4']
+          validators: ['validator-1', 'validator-2', 'validator-3', 'validator-4']
+          timeout: '15m'
+          start: true
+      - blobber_list:
+          send_wrong_data: true
+          adversarial: f65af5d64000c7cd2883f4910eb69086f9d6e6635c744e62afcfab58b938ee25
+      - command:
+          name: "check_registered"
+          params:
+            provider_type: blobber
+            provider_ids:
+              - "f65af5d64000c7cd2883f4910eb69086f9d6e6635c744e62afcfab58b938ee25"
+              - "7a90e6790bcd3d78422d7a230390edc102870fe58c15472073922024985b1c7d"
+              - "2f051ca6447d8712a020213672bece683dbd0d23a81fdf93ff273043a0764d18"
+              - "2a4d5a5c6c0976873f426128d2ff23a060ee715bccf0fd3ca5e987d57f25b78e"
+      - command:
+          name: "check_registered"
+          params:
+            provider_type: validator
+            provider_ids:
+              - "41313b795d2c057b6277801e9ed277b444770c2af75f5209afd00bd07c72cc0b"
+              - "ab549edb7cea822dab0b460f65dcde85f698c1e97d730e3ffc6b0f8b576b65bd"
+              - "86cf791f03f01e3e4d318b1ca009a51c91dd43f7cf3c87a32f531b609cc5044b"
+              - "823cb45de27dfe739b320dcf6449e5fdea35c60804fd81d6f22c005042cfb337"
+      - wait_round:
+          shift: 50
+      # setup blobbers and create allocation with minimum write pool lock
+      - command:
+          name: 'list_and_verify'
+          timeout: '25m'
+          retry_count: 3
+  - name: "Send wrong metadata to the client on listing directory"
+    flow:
+      - set_monitor: "sharder-1"
+      - cleanup_bc: {}
+      - command:
+          name: "cleanup_blobbers"
+      - command:
+          name: "cleanup_0dns"
+      - start: ['sharder-1', 'miner-1', 'miner-2', 'miner-3']
+      - wait_round:
+          round: 15 # just wait the BC starts
+      - start: ['0dns']
+      # wait the 0dns starts
+      - sleep: "20s"
+      - wait_add:
+          blobbers: ['blobber-1', 'blobber-2', 'blobber-3', 'blobber-4']
+          validators: ['validator-1', 'validator-2', 'validator-3', 'validator-4']
+          timeout: '15m'
+          start: true
+      - blobber_list:
+          send_wrong_metadata: true
+          adversarial: f65af5d64000c7cd2883f4910eb69086f9d6e6635c744e62afcfab58b938ee25
+      - command:
+          name: "check_registered"
+          params:
+            provider_type: blobber
+            provider_ids:
+              - "f65af5d64000c7cd2883f4910eb69086f9d6e6635c744e62afcfab58b938ee25"
+              - "7a90e6790bcd3d78422d7a230390edc102870fe58c15472073922024985b1c7d"
+              - "2f051ca6447d8712a020213672bece683dbd0d23a81fdf93ff273043a0764d18"
+              - "2a4d5a5c6c0976873f426128d2ff23a060ee715bccf0fd3ca5e987d57f25b78e"
+      - command:
+          name: "check_registered"
+          params:
+            provider_type: validator
+            provider_ids:
+              - "41313b795d2c057b6277801e9ed277b444770c2af75f5209afd00bd07c72cc0b"
+              - "ab549edb7cea822dab0b460f65dcde85f698c1e97d730e3ffc6b0f8b576b65bd"
+              - "86cf791f03f01e3e4d318b1ca009a51c91dd43f7cf3c87a32f531b609cc5044b"
+              - "823cb45de27dfe739b320dcf6449e5fdea35c60804fd81d6f22c005042cfb337"
+      - wait_round:
+          shift: 50
+      - command:
+          name: 'list_and_verify'
+          timeout: '25m'
+          retry_count: 3
+  - name: "Not respond to the client on listing directory"
+    flow:
+      - set_monitor: "sharder-1"
+      - cleanup_bc: {}
+      - command:
+          name: "cleanup_blobbers"
+      - command:
+          name: "cleanup_0dns"
+      - start: ['sharder-1', 'miner-1', 'miner-2', 'miner-3']
+      - wait_round:
+          round: 15 # just wait the BC starts
+      - start: ['0dns']
+      # wait the 0dns starts
+      - sleep: "20s"
+      - wait_add:
+          blobbers: ['blobber-1', 'blobber-2', 'blobber-3', 'blobber-4']
+          validators: ['validator-1', 'validator-2', 'validator-3', 'validator-4']
+          timeout: '15m'
+          start: true
+      - blobber_list:
+          not_respond: true
+          adversarial: f65af5d64000c7cd2883f4910eb69086f9d6e6635c744e62afcfab58b938ee25
+      - command:
+          name: "check_registered"
+          params:
+            provider_type: blobber
+            provider_ids:
+              - "f65af5d64000c7cd2883f4910eb69086f9d6e6635c744e62afcfab58b938ee25"
+              - "7a90e6790bcd3d78422d7a230390edc102870fe58c15472073922024985b1c7d"
+              - "2f051ca6447d8712a020213672bece683dbd0d23a81fdf93ff273043a0764d18"
+              - "2a4d5a5c6c0976873f426128d2ff23a060ee715bccf0fd3ca5e987d57f25b78e"
+      - command:
+          name: "check_registered"
+          params:
+            provider_type: validator
+            provider_ids:
+              - "41313b795d2c057b6277801e9ed277b444770c2af75f5209afd00bd07c72cc0b"
+              - "ab549edb7cea822dab0b460f65dcde85f698c1e97d730e3ffc6b0f8b576b65bd"
+              - "86cf791f03f01e3e4d318b1ca009a51c91dd43f7cf3c87a32f531b609cc5044b"
+              - "823cb45de27dfe739b320dcf6449e5fdea35c60804fd81d6f22c005042cfb337"
+      - wait_round:
+          shift: 50
+      - command:
+          name: 'list_and_verify'
+          timeout: '25m'
+          retry_count: 3
+  - name: "Not respond to the client on downloading file"
+    flow:
+      - set_monitor: "sharder-1"
+      - cleanup_bc: {}
+      - command:
+          name: "cleanup_blobbers"
+      - command:
+          name: "cleanup_0dns"
+      - start: ['sharder-1', 'miner-1', 'miner-2', 'miner-3']
+      - wait_round:
+          round: 15 # just wait the BC starts
+      - start: ['0dns']
+      # wait the 0dns starts
+      - sleep: "20s"
+      - wait_add:
+          blobbers: ['blobber-1', 'blobber-2', 'blobber-3', 'blobber-4']
+          validators: ['validator-1', 'validator-2', 'validator-3', 'validator-4']
+          timeout: '15m'
+          start: true
+      - blobber_download:
+          not_respond: true
+          adversarial: f65af5d64000c7cd2883f4910eb69086f9d6e6635c744e62afcfab58b938ee25
+      - command:
+          name: "check_registered"
+          params:
+            provider_type: blobber
+            provider_ids:
+              - "f65af5d64000c7cd2883f4910eb69086f9d6e6635c744e62afcfab58b938ee25"
+              - "7a90e6790bcd3d78422d7a230390edc102870fe58c15472073922024985b1c7d"
+              - "2f051ca6447d8712a020213672bece683dbd0d23a81fdf93ff273043a0764d18"
+              - "2a4d5a5c6c0976873f426128d2ff23a060ee715bccf0fd3ca5e987d57f25b78e"
+      - command:
+          name: "check_registered"
+          params:
+            provider_type: validator
+            provider_ids:
+              - "41313b795d2c057b6277801e9ed277b444770c2af75f5209afd00bd07c72cc0b"
+              - "ab549edb7cea822dab0b460f65dcde85f698c1e97d730e3ffc6b0f8b576b65bd"
+              - "86cf791f03f01e3e4d318b1ca009a51c91dd43f7cf3c87a32f531b609cc5044b"
+              - "823cb45de27dfe739b320dcf6449e5fdea35c60804fd81d6f22c005042cfb337"
+      - wait_round:
+          shift: 50
+      - command:
+          name: 'download_and_verify'
+          timeout: '25m'
+          retry_count: 3
+  - name: "Not respond to the client on uploading file"
+    flow:
+      - set_monitor: "sharder-1"
+      - cleanup_bc: {}
+      - command:
+          name: "cleanup_blobbers"
+      - command:
+          name: "cleanup_0dns"
+      - start: ['sharder-1', 'miner-1', 'miner-2', 'miner-3']
+      - wait_round:
+          round: 15 # just wait the BC starts
+      - start: ['0dns']
+      # wait the 0dns starts
+      - sleep: "20s"
+      - wait_add:
+          blobbers: ['blobber-1', 'blobber-2', 'blobber-3', 'blobber-4']
+          validators: ['validator-1', 'validator-2', 'validator-3', 'validator-4']
+          timeout: '15m'
+          start: true
+      - blobber_upload:
+          not_respond: true
+          adversarial: f65af5d64000c7cd2883f4910eb69086f9d6e6635c744e62afcfab58b938ee25
+      - command:
+          name: "check_registered"
+          params:
+            provider_type: blobber
+            provider_ids:
+              - "f65af5d64000c7cd2883f4910eb69086f9d6e6635c744e62afcfab58b938ee25"
+              - "7a90e6790bcd3d78422d7a230390edc102870fe58c15472073922024985b1c7d"
+              - "2f051ca6447d8712a020213672bece683dbd0d23a81fdf93ff273043a0764d18"
+              - "2a4d5a5c6c0976873f426128d2ff23a060ee715bccf0fd3ca5e987d57f25b78e"
+      - command:
+          name: "check_registered"
+          params:
+            provider_type: validator
+            provider_ids:
+              - "41313b795d2c057b6277801e9ed277b444770c2af75f5209afd00bd07c72cc0b"
+              - "ab549edb7cea822dab0b460f65dcde85f698c1e97d730e3ffc6b0f8b576b65bd"
+              - "86cf791f03f01e3e4d318b1ca009a51c91dd43f7cf3c87a32f531b609cc5044b"
+              - "823cb45de27dfe739b320dcf6449e5fdea35c60804fd81d6f22c005042cfb337"
+      - wait_round:
+          shift: 50
+      - command:
+          name: 'upload_and_verify'
+          timeout: '25m'
+  - name: "Not respond to the client on deleting file"
+    flow:
+      - set_monitor: "sharder-1"
+      - cleanup_bc: {}
+      - command:
+          name: "cleanup_blobbers"
+      - command:
+          name: "cleanup_0dns"
+      - start: ['sharder-1', 'miner-1', 'miner-2', 'miner-3']
+      - wait_round:
+          round: 15 # just wait the BC starts
+      - start: ['0dns']
+      # wait the 0dns starts
+      - sleep: "20s"
+      - wait_add:
+          blobbers: ['blobber-1', 'blobber-2', 'blobber-3', 'blobber-4']
+          validators: ['validator-1', 'validator-2', 'validator-3', 'validator-4']
+          timeout: '15m'
+          start: true
+      - blobber_delete:
+          not_respond: true
+          adversarial: f65af5d64000c7cd2883f4910eb69086f9d6e6635c744e62afcfab58b938ee25
+      - command:
+          name: "check_registered"
+          params:
+            provider_type: blobber
+            provider_ids:
+              - "f65af5d64000c7cd2883f4910eb69086f9d6e6635c744e62afcfab58b938ee25"
+              - "7a90e6790bcd3d78422d7a230390edc102870fe58c15472073922024985b1c7d"
+              - "2f051ca6447d8712a020213672bece683dbd0d23a81fdf93ff273043a0764d18"
+              - "2a4d5a5c6c0976873f426128d2ff23a060ee715bccf0fd3ca5e987d57f25b78e"
+      - command:
+          name: "check_registered"
+          params:
+            provider_type: validator
+            provider_ids:
+              - "41313b795d2c057b6277801e9ed277b444770c2af75f5209afd00bd07c72cc0b"
+              - "ab549edb7cea822dab0b460f65dcde85f698c1e97d730e3ffc6b0f8b576b65bd"
+              - "86cf791f03f01e3e4d318b1ca009a51c91dd43f7cf3c87a32f531b609cc5044b"
+              - "823cb45de27dfe739b320dcf6449e5fdea35c60804fd81d6f22c005042cfb337"
+      - wait_round:
+          shift: 50
+      - command:
+          name: 'delete_and_verify'
+          timeout: '25m'
+          retry_count: 3
+  - name: "Return error to the client on listing file"
+    flow:
+      - set_monitor: "sharder-1"
+      - cleanup_bc: {}
+      - command:
+          name: "cleanup_blobbers"
+      - command:
+          name: "cleanup_0dns"
+      - start: ['sharder-1', 'miner-1', 'miner-2', 'miner-3']
+      - wait_round:
+          round: 15 # just wait the BC starts
+      - start: ['0dns']
+      # wait the 0dns starts
+      - sleep: "20s"
+      - wait_add:
+          blobbers: ['blobber-1', 'blobber-2', 'blobber-3', 'blobber-4']
+          validators: ['validator-1', 'validator-2', 'validator-3', 'validator-4']
+          timeout: '15m'
+          start: true
+      - blobber_list:
+          return_error: true
+          adversarial: f65af5d64000c7cd2883f4910eb69086f9d6e6635c744e62afcfab58b938ee25
+      - command:
+          name: "check_registered"
+          params:
+            provider_type: blobber
+            provider_ids:
+              - "f65af5d64000c7cd2883f4910eb69086f9d6e6635c744e62afcfab58b938ee25"
+              - "7a90e6790bcd3d78422d7a230390edc102870fe58c15472073922024985b1c7d"
+              - "2f051ca6447d8712a020213672bece683dbd0d23a81fdf93ff273043a0764d18"
+              - "2a4d5a5c6c0976873f426128d2ff23a060ee715bccf0fd3ca5e987d57f25b78e"
+      - command:
+          name: "check_registered"
+          params:
+            provider_type: validator
+            provider_ids:
+              - "41313b795d2c057b6277801e9ed277b444770c2af75f5209afd00bd07c72cc0b"
+              - "ab549edb7cea822dab0b460f65dcde85f698c1e97d730e3ffc6b0f8b576b65bd"
+              - "86cf791f03f01e3e4d318b1ca009a51c91dd43f7cf3c87a32f531b609cc5044b"
+              - "823cb45de27dfe739b320dcf6449e5fdea35c60804fd81d6f22c005042cfb337"      
+      - wait_round:
+          shift: 50
+      - command:
+          name: 'list_and_verify'
+          timeout: '25m'
+          retry_count: 3
+  - name: "Return error to the client on downloading file"
+    flow:
+      - set_monitor: "sharder-1"
+      - cleanup_bc: {}
+      - command:
+          name: "cleanup_blobbers"
+      - command:
+          name: "cleanup_0dns"
+      - start: ['sharder-1', 'miner-1', 'miner-2', 'miner-3']
+      - wait_round:
+          round: 15 # just wait the BC starts
+      - start: ['0dns']
+      # wait the 0dns starts
+      - sleep: "20s"
+      - wait_add:
+          blobbers: ['blobber-1', 'blobber-2', 'blobber-3', 'blobber-4']
+          validators: ['validator-1', 'validator-2', 'validator-3', 'validator-4']
+          timeout: '15m'
+          start: true
+      - blobber_download:
+          return_error: true
+          adversarial: f65af5d64000c7cd2883f4910eb69086f9d6e6635c744e62afcfab58b938ee25
+      - command:
+          name: "check_registered"
+          params:
+            provider_type: blobber
+            provider_ids:
+              - "f65af5d64000c7cd2883f4910eb69086f9d6e6635c744e62afcfab58b938ee25"
+              - "7a90e6790bcd3d78422d7a230390edc102870fe58c15472073922024985b1c7d"
+              - "2f051ca6447d8712a020213672bece683dbd0d23a81fdf93ff273043a0764d18"
+              - "2a4d5a5c6c0976873f426128d2ff23a060ee715bccf0fd3ca5e987d57f25b78e"
+      - command:
+          name: "check_registered"
+          params:
+            provider_type: validator
+            provider_ids:
+              - "41313b795d2c057b6277801e9ed277b444770c2af75f5209afd00bd07c72cc0b"
+              - "ab549edb7cea822dab0b460f65dcde85f698c1e97d730e3ffc6b0f8b576b65bd"
+              - "86cf791f03f01e3e4d318b1ca009a51c91dd43f7cf3c87a32f531b609cc5044b"
+              - "823cb45de27dfe739b320dcf6449e5fdea35c60804fd81d6f22c005042cfb337"
+      - wait_round:
+          shift: 50
+      - command:
+          name: 'download_and_verify'
+          timeout: '25m'
+          retry_count: 3
+  - name: "Return error to the client on uploading file"
+    flow:
+      - set_monitor: "sharder-1"
+      - cleanup_bc: {}
+      - command:
+          name: "cleanup_blobbers"
+      - command:
+          name: "cleanup_0dns"
+      - start: ['sharder-1', 'miner-1', 'miner-2', 'miner-3']
+      - wait_round:
+          round: 15 # just wait the BC starts
+      - start: ['0dns']
+      # wait the 0dns starts
+      - sleep: "20s"
+      - wait_add:
+          blobbers: ['blobber-1', 'blobber-2', 'blobber-3', 'blobber-4']
+          validators: ['validator-1', 'validator-2', 'validator-3', 'validator-4']
+          timeout: '15m'
+          start: true
+      - blobber_upload:
+          return_error: true
+          adversarial: f65af5d64000c7cd2883f4910eb69086f9d6e6635c744e62afcfab58b938ee25
+      - command:
+          name: "check_registered"
+          params:
+            provider_type: blobber
+            provider_ids:
+              - "f65af5d64000c7cd2883f4910eb69086f9d6e6635c744e62afcfab58b938ee25"
+              - "7a90e6790bcd3d78422d7a230390edc102870fe58c15472073922024985b1c7d"
+              - "2f051ca6447d8712a020213672bece683dbd0d23a81fdf93ff273043a0764d18"
+              - "2a4d5a5c6c0976873f426128d2ff23a060ee715bccf0fd3ca5e987d57f25b78e"
+      - command:
+          name: "check_registered"
+          params:
+            provider_type: validator
+            provider_ids:
+              - "41313b795d2c057b6277801e9ed277b444770c2af75f5209afd00bd07c72cc0b"
+              - "ab549edb7cea822dab0b460f65dcde85f698c1e97d730e3ffc6b0f8b576b65bd"
+              - "86cf791f03f01e3e4d318b1ca009a51c91dd43f7cf3c87a32f531b609cc5044b"
+              - "823cb45de27dfe739b320dcf6449e5fdea35c60804fd81d6f22c005042cfb337"
+      - wait_round:
+          shift: 50
+      - command:
+          name: 'upload_and_verify'
+          timeout: '25m'
+          retry_count: 3
+  - name: "Return error to the client on deleting file"
+    flow:
+      - set_monitor: "sharder-1"
+      - cleanup_bc: {}
+      - command:
+          name: "cleanup_blobbers"
+      - command:
+          name: "cleanup_0dns"
+      - start: ['sharder-1', 'miner-1', 'miner-2', 'miner-3']
+      - wait_round:
+          round: 15 # just wait the BC starts
+      - start: ['0dns']
+      # wait the 0dns starts
+      - sleep: "20s"
+      - wait_add:
+          blobbers: ['blobber-1', 'blobber-2', 'blobber-3', 'blobber-4']
+          validators: ['validator-1', 'validator-2', 'validator-3', 'validator-4']
+          timeout: '15m'
+          start: true
+      - blobber_delete:
+          return_error: true
+          adversarial: f65af5d64000c7cd2883f4910eb69086f9d6e6635c744e62afcfab58b938ee25
+      - command:
+          name: "check_registered"
+          params:
+            provider_type: blobber
+            provider_ids:
+              - "f65af5d64000c7cd2883f4910eb69086f9d6e6635c744e62afcfab58b938ee25"
+              - "7a90e6790bcd3d78422d7a230390edc102870fe58c15472073922024985b1c7d"
+              - "2f051ca6447d8712a020213672bece683dbd0d23a81fdf93ff273043a0764d18"
+              - "2a4d5a5c6c0976873f426128d2ff23a060ee715bccf0fd3ca5e987d57f25b78e"
+      - command:
+          name: "check_registered"
+          params:
+            provider_type: validator
+            provider_ids:
+              - "41313b795d2c057b6277801e9ed277b444770c2af75f5209afd00bd07c72cc0b"
+              - "ab549edb7cea822dab0b460f65dcde85f698c1e97d730e3ffc6b0f8b576b65bd"
+              - "86cf791f03f01e3e4d318b1ca009a51c91dd43f7cf3c87a32f531b609cc5044b"
+              - "823cb45de27dfe739b320dcf6449e5fdea35c60804fd81d6f22c005042cfb337"
+      - wait_round:
+          shift: 50
+      - command:
+          name: 'delete_and_verify'
+          timeout: '25m'
+          retry_count: 3

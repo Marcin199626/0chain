@@ -5,7 +5,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"io"
-	"io/ioutil"
+
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -20,8 +20,8 @@ import (
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
 	"0chain.net/core/encryption"
-	"0chain.net/core/logging"
-	"0chain.net/core/util"
+	"github.com/0chain/common/core/logging"
+	"github.com/0chain/common/core/util"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -78,6 +78,9 @@ func TestGetLatestFinalizedMagicBlock(t *testing.T) {
 			req := httptest.NewRequest("POST", "/v1/block/get/latest_finalized_magic_block", data)
 			req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 
+			c.On("GetCurrentRound").Return(int64(1))
+			c.On("GetMagicBlock", int64(1)).Return(&block.MagicBlock{})
+
 			c.On("GetLatestFinalizedMagicBlockClone", req.Context()).Return(tc.retLFMB)
 			handler := common.ToJSONResponse(LatestFinalizedMagicBlockHandler(&c))
 
@@ -89,7 +92,7 @@ func TestGetLatestFinalizedMagicBlock(t *testing.T) {
 			require.Equal(t, tc.expectCode, resp.StatusCode)
 
 			if tc.expectCode == http.StatusNotModified {
-				d, err := ioutil.ReadAll(resp.Body)
+				d, err := io.ReadAll(resp.Body)
 				require.NoError(t, err)
 				require.Empty(t, d)
 				return
@@ -97,7 +100,7 @@ func TestGetLatestFinalizedMagicBlock(t *testing.T) {
 
 			// decode the body and compare the
 			b := &block.Block{}
-			d, err := ioutil.ReadAll(resp.Body)
+			d, err := io.ReadAll(resp.Body)
 			require.NoError(t, err)
 			require.NoError(t, b.Decode(d))
 			require.Equal(t, tc.retLFMB.Hash, b.Hash)
@@ -124,7 +127,7 @@ func TestGetLatestFinalizedMagicBlock(t *testing.T) {
 	//handler(w, req)
 	//resp = w.Result()
 	//defer resp.Body.Close()
-	//d, err := ioutil.ReadAll(resp.Body)
+	//d, err := io.ReadAll(resp.Body)
 	//require.NoError(t, err)
 	//
 	//b := block.Block{}
@@ -147,7 +150,7 @@ func TestHomePageAndNotFoundHandler(t *testing.T) {
 
 		HomePageAndNotFoundHandler(w, req)
 
-		body, err := ioutil.ReadAll(w.Result().Body)
+		body, err := io.ReadAll(w.Result().Body)
 
 		wantSubstring := `I am Miner000 working on the chain`
 
@@ -162,7 +165,7 @@ func TestHomePageAndNotFoundHandler(t *testing.T) {
 
 		HomePageAndNotFoundHandler(w, req)
 
-		body, err := ioutil.ReadAll(w.Result().Body)
+		body, err := io.ReadAll(w.Result().Body)
 
 		wantSubstring := `{"code":"resource_not_found","error":"resource_not_found: can't retrieve resource"}`
 
@@ -189,23 +192,19 @@ func makeTestNode() (*node.Node, error) {
 }
 
 func generateProposedBlockToRound(t *testing.T, r *round.Round, n *node.Node) {
-	for {
-		b := block.NewBlock("", r.Number)
-		b.MinerID = n.Client.ID
-		randomData := make([]byte, 10)
-		read, err := rand.Reader.Read(randomData)
-		require.NoError(t, err)
-		require.Equal(t, read, len(randomData))
-		txn := transaction.Transaction{HashIDField: datastore.HashIDField{Hash: encryption.Hash(randomData)}}
-		b.Txns = append(b.Txns, &txn)
-		b.AddTransaction(&txn)
-		b.TxnsMap = make(map[string]bool)
-		b.TxnsMap[txn.Hash] = true
-		b.HashBlock()
-		if _, added := r.AddProposedBlock(b); added {
-			break
-		}
-	}
+	b := block.NewBlock("", r.Number)
+	b.MinerID = n.Client.ID
+	randomData := make([]byte, 10)
+	read, err := rand.Reader.Read(randomData)
+	require.NoError(t, err)
+	require.Equal(t, read, len(randomData))
+	txn := transaction.Transaction{HashIDField: datastore.HashIDField{Hash: encryption.Hash(randomData)}}
+	b.Txns = append(b.Txns, &txn)
+	b.AddTransaction(&txn)
+	b.TxnsMap = make(map[string]bool)
+	b.TxnsMap[txn.Hash] = true
+	b.HashBlock()
+	r.AddProposedBlock(b)
 }
 
 func TestRoundInfoHandler(t *testing.T) {
@@ -224,7 +223,7 @@ func TestRoundInfoHandler(t *testing.T) {
 		)
 		logging.Logger = zap.New(core, zap.Development())
 		RoundInfoHandler(c)(w, req)
-		bodybytes, err := ioutil.ReadAll(w.Result().Body)
+		bodybytes, err := io.ReadAll(w.Result().Body)
 		require.NoError(t, err)
 		require.Equal(t, 200, w.Result().StatusCode)
 		err = writer.Flush()

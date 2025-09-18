@@ -1,19 +1,24 @@
 package zcnsc_test
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"math/rand"
 	"testing"
 	"time"
 
-	"0chain.net/chaincore/currency"
+	"0chain.net/core/common"
+	"0chain.net/smartcontract/provider"
+	"0chain.net/smartcontract/stakepool/spenum"
+
+	"github.com/0chain/common/core/currency"
 
 	"0chain.net/core/encryption"
 
 	cstate "0chain.net/chaincore/chain/state"
-	"0chain.net/core/logging"
 	. "0chain.net/smartcontract/zcnsc"
+	"github.com/0chain/common/core/logging"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
@@ -21,6 +26,7 @@ import (
 func init() {
 	rand.Seed(time.Now().UnixNano())
 	logging.Logger = zap.NewNop()
+	common.SetupRootContext(context.Background())
 }
 
 func Test_ShouldSign(t *testing.T) {
@@ -106,7 +112,6 @@ func Test_ShouldGetGlobalNode(t *testing.T) {
 
 func Test_GlobalNodeEncodeAndDecode(t *testing.T) {
 	node := CreateSmartContractGlobalNode()
-	node.BurnAddress = "11"
 	node.MinMintAmount = 12
 	node.MinBurnAmount = 13
 
@@ -117,7 +122,6 @@ func Test_GlobalNodeEncodeAndDecode(t *testing.T) {
 
 	require.NoError(t, err, "must Save the global node in state")
 
-	expected.BurnAddress = "11"
 	expected.MinMintAmount = 12
 	expected.MinBurnAmount = 13
 }
@@ -153,7 +157,7 @@ func Test_AuthorizerPartialUpSizeSerialization(t *testing.T) {
 		Config *AuthorizerConfig `json:"config"`
 	}
 
-	target := &AuthorizerNode{}
+	target := NewAuthorizerNode("")
 	source := &PartialState{
 		Config: &AuthorizerConfig{
 			Fee: currency.Coin(222),
@@ -195,7 +199,7 @@ func Test_AuthorizerSettings_ShouldBeSerializable(t *testing.T) {
 		},
 	}
 
-	target := &AuthorizerNode{}
+	target := NewAuthorizerNode("")
 	err := target.Decode(source.Encode())
 	require.NoError(t, err)
 	require.Equal(t, currency.Coin(222), target.Config.Fee)
@@ -203,7 +207,10 @@ func Test_AuthorizerSettings_ShouldBeSerializable(t *testing.T) {
 
 func Test_AuthorizerNodeSerialization(t *testing.T) {
 	source := &AuthorizerNode{
-		ID:        "aaa",
+		Provider: provider.Provider{
+			ID:           "aaa",
+			ProviderType: spenum.Authorizer,
+		},
 		PublicKey: "bbb",
 		URL:       "ddd",
 		Config: &AuthorizerConfig{
@@ -211,7 +218,7 @@ func Test_AuthorizerNodeSerialization(t *testing.T) {
 		},
 	}
 
-	target := &AuthorizerNode{}
+	target := NewAuthorizerNode("")
 
 	err := target.Decode(source.Encode())
 	require.NoError(t, err)
@@ -233,7 +240,7 @@ func Test_UpdateAuthorizerConfigTest(t *testing.T) {
 			Fee: currency.Coin(999),
 		},
 	}
-	target := &AuthorizerNode{}
+	target := NewAuthorizerNode("")
 
 	bytes, err := json.Marshal(source)
 	require.NoError(t, err)

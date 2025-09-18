@@ -3,22 +3,23 @@ package chain
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/url"
 	"sort"
 	"sync"
 	"time"
 
+	"0chain.net/smartcontract/dbs/event"
+
+	"0chain.net/core/config"
 	metrics "github.com/rcrowley/go-metrics"
 	"go.uber.org/zap"
 
 	"0chain.net/chaincore/block"
-	"0chain.net/chaincore/config"
 	"0chain.net/chaincore/node"
 	"0chain.net/chaincore/round"
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
-	"0chain.net/core/logging"
+	"github.com/0chain/common/core/logging"
 )
 
 var DELTA = 200 * time.Millisecond
@@ -30,25 +31,30 @@ func SetNetworkRelayTime(delta time.Duration) {
 	FINALIZATION_TIME = 2 * delta
 }
 
-//SteadyStateFinalizationTimer - a metric that tracks the steady state finality time (time between two successive finalized blocks in steady state)
+// SteadyStateFinalizationTimer - a metric that tracks the steady state finality time (time between two successive finalized blocks in steady state)
 var SteadyStateFinalizationTimer metrics.Timer
 var ssFTs time.Time
 
-//StartToFinalizeTimer - a metric that tracks the time a block is created to finalized
+// StartToFinalizeTimer - a metric that tracks the time a block is created to finalized
 var StartToFinalizeTimer metrics.Timer
 
-//StartToFinalizeTxnTimer - a metric that trakcs the time a txn is created to finalized
+// StartToFinalizeTxnTimer - a metric that trakcs the time a txn is created to finalized
 var StartToFinalizeTxnTimer metrics.Timer
+var StartToFinalizeTxnTypeTimer map[string]metrics.Timer
 
-//FinalizationLagMetric - a metric that tracks how much is the lag between current round and finalization round
+// FinalizationLagMetric - a metric that tracks how much is the lag between current round and finalization round
 var FinalizationLagMetric metrics.Histogram
 
 func init() {
 	SteadyStateFinalizationTimer = metrics.GetOrRegisterTimer("ss_finalization_time", nil)
 	StartToFinalizeTimer = metrics.GetOrRegisterTimer("s2f_time", nil)
 	StartToFinalizeTxnTimer = metrics.GetOrRegisterTimer("s2ft_time", nil)
+	StartToFinalizeTxnTypeTimer = make(map[string]metrics.Timer)
+
 	FinalizationLagMetric = metrics.NewHistogram(metrics.NewUniformSample(1024))
 	_ = metrics.Register("finalization_lag", FinalizationLagMetric)
+
+	event.InitMetrics()
 }
 
 // ComputeFinalizedBlock iterates through all previous blocks of notarized block on round r until finds single notarized block on the round,
@@ -132,17 +138,23 @@ func (c *Chain) FinalizeRoundImpl(r round.RoundI) {
 	if r.IsFinalized() {
 		return // round already finalized
 	}
-	// The SetFinalizing is not condition check it changes round state.
-	if !r.SetFinalizing() {
-		logging.Logger.Debug("finalize_round: already finalizing",
-			zap.Int64("round", r.GetRoundNumber()))
-	}
-
 	if r.GetHeaviestNotarizedBlock() == nil {
 		logging.Logger.Error("finalize round: no notarized blocks",
 			zap.Int64("round", r.GetRoundNumber()))
 		go c.GetHeaviestNotarizedBlock(context.Background(), r)
+		// r.ResetFinalizingStateIfNotFinalized()
 		time.Sleep(FINALIZATION_TIME)
+	}
+
+	if r.GetHeaviestNotarizedBlock() == nil {
+		logging.Logger.Error("finalize round: no notarized blocks", zap.Int64("round", r.GetRoundNumber()))
+		return
+	}
+
+	// The SetFinalizing is not condition check it changes round state.
+	if !r.SetFinalizing() {
+		logging.Logger.Debug("finalize_round: already finalizing",
+			zap.Int64("round", r.GetRoundNumber()))
 	}
 
 	logging.Logger.Debug("finalize round", zap.Int64("round", r.GetRoundNumber()),
@@ -150,6 +162,7 @@ func (c *Chain) FinalizeRoundImpl(r round.RoundI) {
 	select {
 	case c.finalizedRoundsChannel <- r:
 	case <-time.NewTimer(500 * time.Millisecond).C: // TODO: make the timeout configurable
+		r.ResetFinalizingStateIfNotFinalized()
 		logging.Logger.Info("finalize round - push round to finalizedRoundsChannel timeout",
 			zap.Int64("round", r.GetRoundNumber()))
 	}
@@ -306,17 +319,8 @@ func (c *Chain) finalizeRound(ctx context.Context, r round.RoundI) {
 				zap.Int64("round", roundNumber),
 				zap.Int64("from", plfb.Round+1),
 				zap.Int64("to", fb.Round-1))
-			c.MissedBlocks += fb.Round - 1 - plfb.Round
 		}
 
-		// perform view change (or not perform)
-		if err := c.viewChanger.ViewChange(ctx, lfb); err != nil {
-			logging.Logger.Error("view_changing_lfb",
-				zap.Int64("round", roundNumber),
-				zap.Int64("lfb_round", lfb.Round),
-				zap.Error(err))
-			return
-		}
 		FinalizationLagMetric.Update(int64(c.GetCurrentRound() - lfb.Round))
 
 		logging.Logger.Info("finalize round - latest finalized round",
@@ -327,6 +331,7 @@ func (c *Chain) finalizeRound(ctx context.Context, r round.RoundI) {
 			fb := frchain[len(frchain)-1-idx]
 			if roundNumber-fb.Round < 3 {
 				// finalize the block only when it has at least 3 confirmation
+				logging.Logger.Debug("finalize round - block has less than 3 confirmation")
 				continue
 			}
 
@@ -361,25 +366,35 @@ func (c *Chain) finalizeRound(ctx context.Context, r round.RoundI) {
 				resultC: make(chan error, 1),
 			}
 
-			ts := time.Now()
+			rd := c.GetRound(fb.Round)
+			if rd == nil {
+				logging.Logger.Debug("finalize round - fb with round not exist",
+					zap.Int64("round", fb.Round), zap.String("block", fb.Hash))
+				return
+			}
 			select {
 			case <-ctx.Done():
 				logging.Logger.Info("finalize round - context done",
 					zap.Error(ctx.Err()),
 					zap.Int64("round", roundNumber))
+				rd.ResetFinalizingStateIfNotFinalized()
 				return
 			case c.finalizedBlocksChannel <- fbWithReply:
+				ts := time.Now()
 				select {
 				case <-ctx.Done():
 					logging.Logger.Error("finalize round - context done",
 						zap.Error(ctx.Err()),
 						zap.Int64("round", roundNumber))
+					rd.ResetFinalizingStateIfNotFinalized()
+					return
 				case err := <-fbWithReply.resultC:
 					if err != nil {
 						logging.Logger.Error("finalize round - finalize block failed",
 							zap.Int64("round", fb.Round),
 							zap.String("block", fb.Hash),
 							zap.Error(err))
+						rd.ResetFinalizingStateIfNotFinalized()
 						return
 					}
 
@@ -392,7 +407,7 @@ func (c *Chain) finalizeRound(ctx context.Context, r round.RoundI) {
 					if du > 3*time.Second {
 						logging.Logger.Debug("finalize round slow",
 							zap.Int64("round", roundNumber),
-							zap.Any("duration", time.Since(ts)))
+							zap.Duration("duration", time.Since(ts)))
 					}
 				}
 			case <-time.NewTimer(500 * time.Millisecond).C: // TODO: make the timeout configurable
@@ -413,11 +428,6 @@ func (c *Chain) finalizeRound(ctx context.Context, r round.RoundI) {
 	b := c.commonAncestor(ctx, plfb, lfb)
 	if b != nil {
 		// Recovering from incorrectly finalized block
-		c.RollbackCount++
-		rl := plfb.Round - b.Round
-		if c.LongestRollbackLength < int8(rl) {
-			c.LongestRollbackLength = int8(rl)
-		}
 		logging.Logger.Error("finalize round - rolling back finalized block", zap.Int64("round", roundNumber),
 			zap.Int64("cf_round", plfb.Round), zap.String("cf_block", plfb.Hash), zap.String("cf_prev_block", plfb.PrevHash),
 			zap.Int64("nf_round", lfb.Round), zap.String("nf_block", lfb.Hash), zap.Int64("caf_round", b.Round), zap.String("caf_block", b.Hash))
@@ -437,13 +447,6 @@ func (c *Chain) finalizeRound(ctx context.Context, r round.RoundI) {
 			logging.Logger.Error("finalize round - rolling back finalized block -> ",
 				zap.Int64("round", cfb.Round),
 				zap.String("block", cfb.Hash))
-		}
-		// perform view change or not perform
-		if err := c.viewChanger.ViewChange(ctx, b); err != nil {
-			logging.Logger.Error("view_changing_lfb",
-				zap.Int64("lfb_round", b.Round),
-				zap.Error(err))
-			return
 		}
 		c.SetLatestOwnFinalizedBlockRound(b.Round)
 		c.SetLatestFinalizedBlock(b)
@@ -473,8 +476,6 @@ func (c *Chain) createRoundIfNotExist(ctx context.Context, b *block.Block) (roun
 }
 
 // GetHeaviestNotarizedBlock - get a notarized block for a round.
-// TODO: move to the place where getNotarizedBlockFromMiners() is implemented, this is kind of
-// duplicate actions here
 func (c *Chain) GetHeaviestNotarizedBlock(ctx context.Context, r round.RoundI) *block.Block {
 
 	rn := r.GetRoundNumber()
@@ -496,67 +497,20 @@ func (c *Chain) GetHeaviestNotarizedBlock(ctx context.Context, r round.RoundI) *
 	// This is a notarized block. So, use this method to sync round info with the notarized block.
 	c.AddNotarizedBlockToRound(r, nb)
 
-	// TODO: this may not be the best round block or the best chain weight
-	// block. Do we do that extra work?
 	return r.GetHeaviestNotarizedBlock()
-}
-
-// GetHeaviestNotarizedBlockLight - get a notarized block for a round.
-func (c *Chain) GetHeaviestNotarizedBlockLight(ctx context.Context, r int64) *block.Block {
-	params := &url.Values{}
-
-	params.Add("round", fmt.Sprintf("%v", r))
-
-	cctx, cancel := context.WithTimeout(ctx, node.TimeoutLargeMessage)
-	defer cancel()
-
-	notarizedBlockC := make(chan *block.Block, 1)
-	var handler = func(ctx context.Context, entity datastore.Entity) (
-		resp interface{}, err error) {
-		logging.Logger.Info("get notarized block for round", zap.Int64("round", r),
-			zap.String("block", entity.GetKey()))
-
-		var nb, ok = entity.(*block.Block)
-		if !ok {
-			return nil, datastore.ErrInvalidEntity
-		}
-
-		if nb.Round != r {
-			return nil, common.NewError("invalid_block",
-				"Block not from the requested round")
-		}
-
-		select {
-		case notarizedBlockC <- nb:
-		default:
-		}
-		cancel()
-		return nb, nil
-	}
-
-	c.RequestEntityFromMinersOnMB(cctx, c.GetCurrentMagicBlock(), MinerNotarizedBlockRequestor, params, handler)
-	var nb *block.Block
-	select {
-	case nb = <-notarizedBlockC:
-	default:
-	}
-
-	return nb
 }
 
 // GetLatestFinalizedMagicBlockFromShardersOn - request for latest finalized
 // magic blocks from all the sharders. It uses provided MagicBlock to get list
 // of sharders to request data from, and returns the block with highest magic
 // block starting round.
-func (c *Chain) GetLatestFinalizedMagicBlockFromShardersOn(ctx context.Context,
-	mb *block.MagicBlock) *block.Block {
+func (c *Chain) GetLatestFinalizedMagicBlockFromShardersOn(ctx context.Context, mb *block.MagicBlock) *block.Block {
 	if mb == nil {
 		return nil
 	}
 
 	var (
-		sharders = mb.Sharders
-
+		sharders  = mb.Sharders
 		listMutex sync.Mutex
 	)
 
@@ -637,22 +591,28 @@ func (c *Chain) GetLatestFinalizedMagicBlockFromSharders(ctx context.Context) *b
 
 // GetLatestFinalizedMagicBlockRound returns LFMB for given round number
 func (c *Chain) GetLatestFinalizedMagicBlockRound(rn int64) *block.Block {
-	lfmb := c.GetLatestFinalizedMagicBlock(common.GetRootContext())
-	// TODO: improve this lfmbMutex
-	c.lfmbMutex.RLock()
-	defer c.lfmbMutex.RUnlock()
 	rn = mbRoundOffset(rn) // round number with mb offset
-	if len(c.magicBlockStartingRounds) > 0 {
-		lfmbr := int64(-1)
-		for r := range c.magicBlockStartingRounds {
-			if r <= rn && r > lfmbr {
-				lfmbr = r
+	c.lfmbMutex.RLock()
+	if len(c.magicBlockStartingRoundsMap) > 0 {
+		r := c.magicBlockStartingRounds.Prev()
+		ringSize := c.magicBlockStartingRounds.Len()
+		for i := 0; i < ringSize; i++ {
+			startRound := r.Value.(int64)
+			r = r.Prev()
+			if startRound <= rn {
+				b := c.magicBlockStartingRoundsMap[startRound]
+				c.lfmbMutex.RUnlock()
+				return b
 			}
 		}
-		if lfmbr >= 0 {
-			lfmb = c.magicBlockStartingRounds[lfmbr]
-		}
 	}
+	c.lfmbMutex.RUnlock()
+	lfmb := c.GetLatestFinalizedMagicBlock(common.GetRootContext())
+	logging.Logger.Warn("GetLatestFinalizedMagicBlockRound: no magic block found for round, use the latest one",
+		zap.Int64("round", rn),
+		zap.Int64("lfmb starting round", lfmb.StartingRound),
+		zap.Int64("mb number", lfmb.MagicBlockNumber),
+		zap.String("mb hash", lfmb.MagicBlock.Hash))
 	return lfmb
 }
 

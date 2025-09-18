@@ -5,9 +5,9 @@ package minersc
 
 import (
 	cstate "0chain.net/chaincore/chain/state"
-	"0chain.net/chaincore/config"
 	"0chain.net/chaincore/node"
 	"0chain.net/chaincore/transaction"
+	"0chain.net/core/config"
 
 	crpc "0chain.net/conductor/conductrpc"
 )
@@ -69,11 +69,18 @@ func (msc *MinerSmartContract) AddMinerIntegrationTests(
 		state  = client.State()
 		ame    crpc.AddMinerEvent
 	)
+
 	ame.Sender = state.Name(crpc.NodeID(node.Self.Underlying().GetKey()))
-	ame.Miner = state.Name(crpc.NodeID(mn.ID))
+	ame.Miner = state.Name(crpc.NodeID(mn.SimpleNode.ID))
+
+	if ame.Miner == crpc.NodeName("") {
+		return
+	}
+
 	if err = client.AddMiner(&ame); err != nil {
 		panic(err)
 	}
+
 	return
 }
 

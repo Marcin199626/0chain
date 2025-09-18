@@ -1,6 +1,7 @@
 package smartcontract_test
 
 import (
+	"0chain.net/chaincore/block"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,16 +10,20 @@ import (
 	"net/url"
 	"testing"
 
+	"0chain.net/smartcontract/stakepool/spenum"
+
 	"0chain.net/chaincore/chain"
 
-	"0chain.net/chaincore/currency"
+	"github.com/0chain/common/core/currency"
 
+	"0chain.net/smartcontract/dbs/event"
 	"0chain.net/smartcontract/multisigsc"
 	"0chain.net/smartcontract/setupsc"
 	"0chain.net/smartcontract/vestingsc"
 	"0chain.net/smartcontract/zcnsc"
 	"github.com/stretchr/testify/require"
 
+	"0chain.net/core/common"
 	"0chain.net/core/viper"
 	"github.com/rcrowley/go-metrics"
 	"github.com/stretchr/testify/mock"
@@ -30,10 +35,10 @@ import (
 	"0chain.net/chaincore/state"
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/datastore"
-	"0chain.net/core/util"
 	"0chain.net/smartcontract/faucetsc"
 	"0chain.net/smartcontract/minersc"
 	"0chain.net/smartcontract/storagesc"
+	"github.com/0chain/common/core/util"
 )
 
 func init() {
@@ -116,6 +121,7 @@ tr.header { background-color: #E0E0E0;  }
 func TestGetSmartContract(t *testing.T) {
 	t.Parallel()
 
+	common.ConfigRateLimits()
 	tests := []struct {
 		name       string
 		address    string
@@ -130,7 +136,7 @@ func TestGetSmartContract(t *testing.T) {
 		{
 			name:       "storage",
 			address:    storagesc.ADDRESS,
-			restpoints: 41,
+			restpoints: 46,
 		},
 		{
 			name:       "multisig",
@@ -140,7 +146,7 @@ func TestGetSmartContract(t *testing.T) {
 		{
 			name:       "miner",
 			address:    minersc.ADDRESS,
-			restpoints: 21,
+			restpoints: 22,
 		},
 		{
 			name:       "vesting",
@@ -150,7 +156,7 @@ func TestGetSmartContract(t *testing.T) {
 		{
 			name:       "zcnsc",
 			address:    zcnsc.ADDRESS,
-			restpoints: 3,
+			restpoints: 5,
 		},
 		{
 			name:    "Nil_OK",
@@ -176,6 +182,7 @@ func TestGetSmartContract(t *testing.T) {
 
 func makeTestStateContextIMock() *mocks.StateContextI {
 	stateContextI := mocks.StateContextI{}
+
 	stateContextI.On("GetClientBalance", mock.AnythingOfType("string")).Return(
 		func(_ datastore.Key) currency.Coin {
 			return 5
@@ -214,6 +221,20 @@ func makeTestStateContextIMock() *mocks.StateContextI {
 		},
 	)
 
+	hardForks := []string{"apollo", "ares", "artemis", "athena", "demeter", "electra", "hercules", "hermes"}
+	for _, name := range hardForks {
+		h := chstate.NewHardFork(name, 0)
+		key := datastore.Key(name)
+		stateContextI.On("InsertTrieNode", key, h).Return(
+			func(_ datastore.Key, _ util.MPTSerializable) datastore.Key {
+				return key
+			},
+			func(_ datastore.Key, _ util.MPTSerializable) error {
+				return nil
+			},
+		)
+	}
+
 	return &stateContextI
 }
 
@@ -226,7 +247,9 @@ func TestExecuteWithStats(t *testing.T) {
 	smcoi.SmartContract.SmartContractExecutionStats["token refills"] = metrics.NewHistogram(metrics.NilSample{})
 	smcoi.SmartContract.SmartContractExecutionStats["refill"] = metrics.NewTimer()
 
-	gn := &faucetsc.GlobalNode{}
+	gn := &faucetsc.GlobalNode{
+		FaucetConfig: &faucetsc.FaucetConfig{},
+	}
 	blob, err := gn.MarshalMsg(nil)
 	require.NoError(t, err)
 
@@ -259,7 +282,13 @@ func TestExecuteWithStats(t *testing.T) {
 				sc:       smcoi.SmartContract,
 				funcName: "unknown func",
 				balances: stateContextIMock,
-				t:        &transaction.Transaction{},
+				t: &transaction.Transaction{
+					TransactionType: transaction.TxnTypeSmartContract,
+					SmartContractData: &transaction.SmartContractData{
+						FunctionName: "unknown func",
+						InputData:    json.RawMessage{},
+					},
+				},
 			},
 			wantErr: true,
 		},
@@ -270,7 +299,13 @@ func TestExecuteWithStats(t *testing.T) {
 				sc:       smcoi.SmartContract,
 				funcName: "refill",
 				balances: stateContextIMock,
-				t:        &transaction.Transaction{},
+				t: &transaction.Transaction{
+					TransactionType: transaction.TxnTypeSmartContract,
+					SmartContractData: &transaction.SmartContractData{
+						FunctionName: "refill",
+						InputData:    json.RawMessage{},
+					},
+				},
 			},
 			want:    "{\"from\":\"\",\"to\":\"\",\"amount\":0}",
 			wantErr: false,
@@ -281,7 +316,7 @@ func TestExecuteWithStats(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := ExecuteWithStats(tt.args.smcoi, tt.args.t, tt.args.funcName, tt.args.input, tt.args.balances)
+			got, err := ExecuteWithStats(tt.args.smcoi, tt.args.t, tt.args.balances)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ExecuteWithStats() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -302,10 +337,19 @@ func TestExecuteSmartContract(t *testing.T) {
 		mock.MatchedBy(func(v *minersc.MinerNodes) bool {
 			return true
 		})).Return(nil)
+
+	mockBlock := &block.Block{}
+	mockBlock.Round = 0
+	stateContextIMock.On("GetBlock").Return(mockBlock).Maybe()
+
+	stateContextIMock.On("GetTrieNode", mock.AnythingOfType("string"), mock.MatchedBy(func(v *chstate.HardFork) bool {
+		return true
+	})).Return(nil)
+
 	stateContextIMock.On("GetTrieNode",
 		mock.AnythingOfType("string"),
 		mock.MatchedBy(func(v *minersc.GlobalNode) bool {
-			gn := &minersc.GlobalNode{}
+			gn := minersc.NewGlobalNode("", map[string]int{})
 			blob, err := gn.MarshalMsg(nil)
 			require.NoError(t, err)
 
@@ -327,8 +371,8 @@ func TestExecuteSmartContract(t *testing.T) {
 	stateContextIMock.On("GetTrieNode",
 		mock.AnythingOfType("string"),
 		mock.MatchedBy(func(v *minersc.MinerNode) bool {
-			mn := &minersc.MinerNode{SimpleNode: &minersc.SimpleNode{}}
-			blob, err := mn.MarshalMsg(nil)
+			v.ProviderType = spenum.Miner
+			blob, err := v.MarshalMsg(nil)
 			require.NoError(t, err)
 
 			_, err = v.UnmarshalMsg(blob)
@@ -338,7 +382,9 @@ func TestExecuteSmartContract(t *testing.T) {
 	stateContextIMock.On("GetTrieNode",
 		mock.AnythingOfType("string"),
 		mock.MatchedBy(func(v *faucetsc.GlobalNode) bool {
-			gn := &faucetsc.GlobalNode{}
+			gn := &faucetsc.GlobalNode{
+				FaucetConfig: &faucetsc.FaucetConfig{},
+			}
 			blob, err := gn.MarshalMsg(nil)
 			require.NoError(t, err)
 
@@ -346,6 +392,18 @@ func TestExecuteSmartContract(t *testing.T) {
 			require.NoError(t, err)
 			return true
 		})).Return(nil)
+	stateContextIMock.On("EmitEvent",
+		mock.Anything,
+		mock.MatchedBy(func(v event.EventTag) bool {
+			return v == event.TagMinerHealthCheck ||
+				v == event.TagSharderHealthCheck ||
+				v == event.TagBlobberHealthCheck ||
+				v == event.TagValidatorHealthCheck ||
+				v == event.TagAuthorizerHealthCheck
+		}),
+		mock.Anything,
+		mock.Anything,
+	).Return(nil)
 
 	type args struct {
 		ctx      context.Context
@@ -374,10 +432,10 @@ func TestExecuteSmartContract(t *testing.T) {
 			args: args{
 				t: &transaction.Transaction{
 					ToClientID: "unknown",
-				},
-				td: &sci.SmartContractTransactionData{
-					FunctionName: "miner_health_check",
-					InputData:    json.RawMessage{},
+					SmartContractData: &transaction.SmartContractData{
+						FunctionName: "miner_health_check",
+						InputData:    json.RawMessage{},
+					},
 				},
 			},
 			wantErr: true,
@@ -388,10 +446,10 @@ func TestExecuteSmartContract(t *testing.T) {
 				balances: stateContextIMock,
 				t: &transaction.Transaction{
 					ToClientID: faucetsc.ADDRESS,
-				},
-				td: &sci.SmartContractTransactionData{
-					FunctionName: "update-settings",
-					InputData:    json.RawMessage("}{"),
+					SmartContractData: &transaction.SmartContractData{
+						FunctionName: "update-settings",
+						InputData:    json.RawMessage("}{"),
+					},
 				},
 			},
 			wantErr: true,
@@ -402,13 +460,13 @@ func TestExecuteSmartContract(t *testing.T) {
 				balances: stateContextIMock,
 				t: &transaction.Transaction{
 					ToClientID: minersc.ADDRESS,
-				},
-				td: &sci.SmartContractTransactionData{
-					FunctionName: "miner_health_check",
-					InputData:    scData,
+					SmartContractData: &transaction.SmartContractData{
+						FunctionName: "miner_health_check",
+						InputData:    scData,
+					},
 				},
 			},
-			want:    "{\"simple_miner\":{\"id\":\"\",\"n2n_host\":\"\",\"host\":\"\",\"port\":0,\"geolocation\":{\"latitude\":0,\"longitude\":0},\"path\":\"\",\"public_key\":\"\",\"short_name\":\"\",\"build_tag\":\"\",\"total_stake\":0,\"delete\":false,\"last_health_check\":0,\"last_setting_update_round\":0},\"stake_pool\":null}",
+			want:    "{\"simple_miner\":{\"id\":\"\",\"is_shut_down\":false,\"is_killed\":false,\"provider_type\":1,\"n2n_host\":\"\",\"host\":\"\",\"port\":0,\"path\":\"\",\"public_key\":\"\",\"short_name\":\"\",\"build_tag\":\"\",\"total_stake\":0,\"delete\":false,\"last_health_check\":0,\"last_setting_update_round\":0},\"stake_pool\":{\"pools\":{},\"rewards\":0,\"settings\":{\"delegate_wallet\":\"\",\"num_delegates\":0,\"min_stake\":0,\"service_charge\":0},\"minter\":0,\"is_dead\":false}}",
 			wantErr: false,
 		},
 	}
@@ -416,8 +474,10 @@ func TestExecuteSmartContract(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-
-			got, err := ExecuteSmartContract(tt.args.t, tt.args.td, tt.args.balances)
+			//txnData, err := json.Marshal(tt.args.td)
+			//require.NoError(t, err)
+			//tt.args.t.TransactionData = string(txnData)
+			got, err := ExecuteSmartContract(tt.args.t, tt.args.balances)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ExecuteSmartContract() error = %v, wantErr %v", err, tt.wantErr)
 				return

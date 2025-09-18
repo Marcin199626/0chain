@@ -13,13 +13,17 @@ import (
 	"0chain.net/chaincore/node"
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
-	"0chain.net/core/logging"
-	"0chain.net/core/util"
+	"github.com/0chain/common/core/logging"
+	"github.com/0chain/common/core/util"
 )
 
 /*SetupNodeHandlers - setup the handlers for the chain */
-func (c *Chain) SetupNodeHandlers() {
+func (c *Chain) SetupMinerNodeHandlers() {
 	http.HandleFunc("/_nh/list/m", common.Recover(c.GetMinersHandler))
+	http.HandleFunc("/v1/scstats/", common.WithCORS(common.UserRateLimit(c.GetSCStats)))
+}
+
+func (c *Chain) SetupSharderNodeHandlers() {
 	http.HandleFunc("/_nh/list/s", common.Recover(c.GetShardersHandler))
 }
 
@@ -42,6 +46,9 @@ var (
 
 	// FBRequestor represents FB from sharders reqeustor.
 	FBRequestor node.EntityRequestor
+	// MinerLatestFinalizedBlockRequestor - RequestHandler for latest finalized
+	// block to a node.
+	MinerLatestFinalizedBlockRequestor node.EntityRequestor
 )
 
 // setupX2MRequestors - setup requestors */
@@ -72,14 +79,22 @@ func setupX2SRequestors() {
 	}
 	FBRequestor = node.RequestEntityHandler("/v1/_x2s/block/get", &opts,
 		datastore.GetEntityMetadata("block"))
+
+	options = &node.SendOptions{Timeout: node.TimeoutLargeMessage, CODEC: node.CODEC_MSGPACK, Compress: true}
+	// Though it is `_m2s`, but it can also be called by sharder for sharders to get latest finalized block
+	// this is to make it backward compatible
+	MinerLatestFinalizedBlockRequestor = node.RequestEntityHandler("/v1/_m2s/block/latest_finalized/get", options, blockEntityMetadata)
 }
 
 func SetupX2XResponders(c *Chain) {
-	http.HandleFunc("/v1/_x2x/state/get_nodes", common.N2NRateLimit(node.ToN2NSendEntityHandler(StateNodesHandler)))
-	http.HandleFunc("/v1/_x2x/block/state_change/get", common.N2NRateLimit(node.ToN2NSendEntityHandler(c.BlockStateChangeHandler)))
+	middleHandlers := func(h common.JSONResponderF) common.ReqRespHandlerf {
+		return common.N2NRateLimit(node.ToN2NSendEntityHandler(h))
+	}
+	http.HandleFunc("/v1/_x2x/state/get_nodes", middleHandlers(StateNodesHandler))
+	http.HandleFunc("/v1/_x2x/block/state_change/get", middleHandlers(c.BlockStateChangeHandler))
 }
 
-//StateNodesHandler - return a list of state nodes
+// StateNodesHandler - return a list of state nodes
 func StateNodesHandler(ctx context.Context, r *http.Request) (interface{}, error) {
 	// this is needed as we get multiple values for the same key
 	if err := r.ParseForm(); err != nil {

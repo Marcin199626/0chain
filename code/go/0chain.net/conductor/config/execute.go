@@ -14,7 +14,7 @@ import (
 type Executor interface {
 
 	// common setups
-
+	SetMagicBlock(configFile string) (err error)
 	SetMonitor(name NodeName) (err error)
 	CleanupBC(timeout time.Duration) (err error)
 	SetEnv(map[string]string) (err error)
@@ -45,6 +45,15 @@ type Executor interface {
 	WaitNoProgress(wait time.Duration) (err error)
 	WaitNoViewChainge(wnvc WaitNoViewChainge, timeout time.Duration) (err error)
 	WaitSharderKeep(wsk WaitSharderKeep, timeout time.Duration) (err error)
+	WaitMinerGeneratesBlock(wmgb WaitMinerGeneratesBlock, timeout time.Duration) (err error)
+	WaitSharderLFB(wslfb WaitSharderLFB, timeout time.Duration) (err error)
+	WaitValidatorTicket(wvt WaitValidatorTicket, timeout time.Duration)
+	WaitForChallengeGeneration(timeout time.Duration)
+	WaitOnBlobberCommit(timeout time.Duration)
+	WaitForChallengeStatus(timeout time.Duration)
+	WaitForFileMetaRoot()
+	WaitShardersFinalizeNearBlocks(command WaitShardersFinalizeNearBlocks, timeout time.Duration)
+	CheckFileMetaRoot(cfg *CheckFileMetaRoot) error
 
 	// Byzantine: BC, sharders
 
@@ -62,6 +71,8 @@ type Executor interface {
 	WrongBlockSignHash(wbsh *Bad) (err error)
 	WrongBlockSignKey(wbsk *Bad) (err error)
 	WrongBlockHash(wbh *Bad) (err error)
+	WrongBlockRandomSeed(wb *Bad) (err error)
+	WrongBlockDDoS(wb *Bad) (err error)
 	VerificationTicketGroup(vtg *Bad) (err error)
 	WrongVerificationTicketHash(wvth *Bad) (err error)
 	WrongVerificationTicketKey(wvtk *Bad) (err error)
@@ -75,7 +86,7 @@ type Executor interface {
 	Publish(p *Bad) (err error)
 
 	// system command (a bash script, etc)
-	Command(name string, timeout time.Duration)
+	Command(name string, params map[string]interface{}, retryCount int, failureThreshold, timeout time.Duration)
 
 	// Blobber related executors
 	StorageTree(st *Bad) (err error)
@@ -107,6 +118,18 @@ type Executor interface {
 
 	// MakeTestCaseCheck runs cases.TestCase's final check with TestCaseCheck configuration.
 	MakeTestCaseCheck(*TestCaseCheck) error
+
+	// SetServerState updates state.
+	SetServerState(interface{}) error
+	GenerateChallenge(c *GenerateChallege) error
+	GetNodes() map[NodeName]NodeID
+	CheckAggregateValueChange(cfg *CheckAggregateChange, tm time.Duration) error
+	CheckAggregateValueComparison(cfg *CheckAggregateComparison, tm time.Duration) error
+	StoreAllocationsData() error
+	CheckRollbackTokenomicsComparison() error
+	SetNodeCustomConfig(cfg *NodeCustomConfig) error
+	SyncLatestAggregates(cfg *SyncAggregates) error
+	SetMissUpDownload(cfg MissUpDownload) error
 }
 
 //

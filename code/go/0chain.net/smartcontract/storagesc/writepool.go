@@ -2,13 +2,15 @@ package storagesc
 
 import (
 	"encoding/json"
+	"fmt"
 
 	cstate "0chain.net/chaincore/chain/state"
-	"0chain.net/chaincore/currency"
 	"0chain.net/chaincore/state"
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/common"
+	"0chain.net/smartcontract/dbs/event"
 	"0chain.net/smartcontract/stakepool"
+	"github.com/0chain/common/core/currency"
 )
 
 //
@@ -27,10 +29,12 @@ func (lr *lockRequest) decode(input []byte) (err error) {
 	return // ok
 }
 
+//nolint:unused
 type unlockRequest struct {
 	AllocationID string `json:"allocation_id"`
 }
 
+//nolint:unused
 func (ur *unlockRequest) decode(input []byte) error {
 	return json.Unmarshal(input, ur)
 }
@@ -78,63 +82,40 @@ func (ssc *StorageSmartContract) writePoolLock(
 			"cannot find allocation pools for "+lr.AllocationID+": "+err.Error())
 	}
 
-	if allocation.Finalized || allocation.Canceled {
-		return "", common.NewError("write_pool_unlock_failed",
+	alloc := allocation.mustBase()
+
+	if alloc.Finalized || alloc.Canceled {
+		return "", common.NewError("write_pool_lock_failed",
 			"can't lock tokens with a finalized or cancelled allocation")
 
 	}
 
-	allocation.WritePool, err = currency.AddCoin(allocation.WritePool, txn.Value)
+	alloc.WritePool, err = currency.AddCoin(alloc.WritePool, txn.Value)
 	if err != nil {
-		return "", common.NewError("write_pool_unlock_failed", err.Error())
+		return "", common.NewError("write_pool_lock_failed", fmt.Sprintf("write pool token overflow: %v", err))
 	}
-	if err := allocation.saveUpdatedAllocation(nil, balances); err != nil {
+
+	i, err := txn.Value.Int64()
+	if err != nil {
+		return "", common.NewError("write_pool_lock_failed", fmt.Sprintf("invalid lock value: %v", err))
+	}
+
+	balances.EmitEvent(event.TypeStats, event.TagLockWritePool, alloc.ID, event.WritePoolLock{
+		Client:       txn.ClientID,
+		AllocationId: alloc.ID,
+		Amount:       i,
+	})
+
+	if err := allocation.mustUpdateBase(func(base *storageAllocationBase) error {
+		alloc.deepCopy(base)
+		return nil
+	}); err != nil {
 		return "", common.NewError("write_pool_lock_failed", err.Error())
 	}
 
-	return "", nil
-}
-
-// unlock tokens if expired
-func (ssc *StorageSmartContract) writePoolUnlock(
-	txn *transaction.Transaction,
-	input []byte, balances cstate.StateContextI,
-) (string, error) {
-	var err error
-	var req unlockRequest
-	if err = req.decode(input); err != nil {
-		return "", common.NewError("write_pool_unlock_failed", err.Error())
-	}
-	var alloc *StorageAllocation
-	alloc, err = ssc.getAllocation(req.AllocationID, balances)
-	if err != nil {
-		return "", common.NewError("write_pool_unlock_failed",
-			"can't get related allocation: "+err.Error())
+	if err := allocation.saveUpdatedStakes(balances); err != nil {
+		return "", common.NewError("write_pool_lock_failed", err.Error())
 	}
 
-	if alloc.Owner != txn.ClientID {
-		return "", common.NewError("write_pool_unlock_failed",
-			"only owner can unlock tokens")
-	}
-
-	if !alloc.Finalized && !alloc.Canceled {
-		return "", common.NewError("write_pool_unlock_failed",
-			"can't unlock until the allocation is finalized or cancelled")
-	}
-
-	if alloc.WritePool == 0 {
-		return "", common.NewError("write_pool_unlock_failed",
-			"no tokens to unlock")
-	}
-
-	transfer := state.NewTransfer(ssc.ID, txn.ClientID, alloc.WritePool)
-	if err = balances.AddTransfer(transfer); err != nil {
-		return "", common.NewError("write_pool_unlock_failed", err.Error())
-	}
-	alloc.WritePool = 0
-	if err = alloc.saveUpdatedAllocation(nil, balances); err != nil {
-		return "", common.NewError("write_pool_unlock_failed",
-			"saving allocation pools: "+err.Error())
-	}
 	return "", nil
 }

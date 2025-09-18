@@ -1,5 +1,8 @@
 __debug_bin
 dev.local/build
+dev.local/rocksdb*
+dev.local/mcl*
+dev.local/bls*
 code/coverage.txt
 \.*
 !.gitignore
@@ -33,7 +36,7 @@ awsnet/cookbook/*.retry
 awsnet/cookbook/context
 code/go/bin
 *.code-workspace
-gorocksdb/
+grocksdb/
 docker.local/sharder*
 docker.local/miner*
 docker.local/benchmark*
@@ -86,3 +89,4 @@ code/go/0chain.net/miner/miner/miner
 code/go/0chain.net/sharder/sharder/sharder
 
 docker.local/conductor.backup_logs
+go.work*

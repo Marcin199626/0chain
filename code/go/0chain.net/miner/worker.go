@@ -10,9 +10,9 @@ import (
 	"0chain.net/chaincore/httpclientutil"
 	"0chain.net/chaincore/node"
 	"0chain.net/chaincore/round"
-	"0chain.net/core/logging"
 	"0chain.net/core/viper"
 	"0chain.net/smartcontract/minersc"
+	"github.com/0chain/common/core/logging"
 )
 
 const minerScMinerHealthCheck = "miner_health_check"
@@ -21,22 +21,22 @@ const minerScMinerHealthCheck = "miner_health_check"
 func SetupWorkers(ctx context.Context) {
 	mc := GetMinerChain()
 	go mc.RoundWorker(ctx)              //we are going to start this after we are ready with the round
-	go mc.BlockWorker(ctx)              // 1) receives incoming blocks from the network
+	go mc.MessageWorker(ctx)            // 1) receives incoming blocks from the network
 	go mc.FinalizeRoundWorker(ctx)      // 2) sequentially finalize the rounds
 	go mc.FinalizedBlockWorker(ctx, mc) // 3) sequentially processes finalized blocks
+	go mc.BlockWorker(ctx)              // 4) sync blocks when stuck
 
 	go mc.SyncLFBStateWorker(ctx)
 
-	go mc.PruneStorageWorker(ctx, time.Minute*5, mc.getPruneCountRoundStorage(), mc.MagicBlockStorage, mc.roundDkg)
-	go mc.UpdateMagicBlockWorker(ctx)
+	go mc.PruneStorageWorker(ctx, time.Minute*5, mc.getPruneCountRoundStorage(), mc.MagicBlockStorage, mc.GetRoundDkg())
 	//TODO uncomment it, atm it breaks executing faucet pour somehow
-	//go mc.MinerHealthCheck(ctx)
+	go mc.MinerHealthCheck(ctx)
 	go mc.NotarizationProcessWorker(ctx)
 	go mc.BlockVerifyWorkers(ctx)
 }
 
-/*BlockWorker - a job that does all the work related to blocks in each round */
-func (mc *Chain) BlockWorker(ctx context.Context) {
+/*MessageWorker - a job that does all the work related to blocks in each round */
+func (mc *Chain) MessageWorker(ctx context.Context) {
 	var protocol Protocol = mc
 
 	for {
@@ -52,8 +52,8 @@ func (mc *Chain) BlockWorker(ctx context.Context) {
 				if bmsg.Sender != nil {
 					logging.Logger.Debug("message",
 						zap.Any("msg", GetMessageLookup(bmsg.Type)),
-						zap.Any("sender_index", bmsg.Sender.SetIndex),
-						zap.Any("id", bmsg.Sender.GetKey()))
+						zap.Int("sender_index", bmsg.Sender.SetIndex),
+						zap.String("id", bmsg.Sender.GetKey()))
 				} else {
 					logging.Logger.Debug("message", zap.Any("msg", GetMessageLookup(bmsg.Type)))
 				}
@@ -72,13 +72,13 @@ func (mc *Chain) BlockWorker(ctx context.Context) {
 				if bmsg.Sender != nil {
 					logging.Logger.Debug("message (done)",
 						zap.Any("msg", GetMessageLookup(bmsg.Type)),
-						zap.Any("sender_index", bmsg.Sender.SetIndex),
-						zap.Any("id", bmsg.Sender.GetKey()),
-						zap.Any("duration", time.Since(ts)))
+						zap.Int("sender_index", bmsg.Sender.SetIndex),
+						zap.String("id", bmsg.Sender.GetKey()),
+						zap.Duration("duration", time.Since(ts)))
 				} else {
 					logging.Logger.Debug("message (done)",
 						zap.Any("msg", GetMessageLookup(bmsg.Type)),
-						zap.Any("duration", time.Since(ts)))
+						zap.Duration("duration", time.Since(ts)))
 				}
 			}(msg)
 		}
@@ -104,11 +104,11 @@ func roundTimeoutProcess(ctx context.Context, proto Protocol, rn int64) {
 	case <-rc:
 		logging.Logger.Info("protocol.HandleRoundTimeout finished",
 			zap.Int64("round", rn),
-			zap.Any("duration", time.Since(ts)))
+			zap.Duration("duration", time.Since(ts)))
 	}
 }
 
-//RoundWorker - a worker that monitors the round progress
+// RoundWorker - a worker that monitors the round progress
 func (mc *Chain) RoundWorker(ctx context.Context) {
 
 	var (
@@ -121,6 +121,14 @@ func (mc *Chain) RoundWorker(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case nr := <-mc.GetNotifyMoveToNextRoundC():
+			roundNum := nr.GetRoundNumber()
+			logging.Logger.Debug("notify move to next round",
+				zap.Int64("round", roundNum),
+				zap.Int64("next round", roundNum+1))
+			if mr := mc.GetMinerRound(nr.GetRoundNumber()); mr != nil {
+				mc.ProgressOnNotarization(mr)
+			}
 		case <-timer.C:
 			if !mc.isStarted() {
 				break
@@ -131,28 +139,44 @@ func (mc *Chain) RoundWorker(ctx context.Context) {
 
 				if r != nil {
 					if r.IsFinalized() || r.IsFinalizing() {
+						logging.Logger.Info("round worker: round is finalized or finalizing, check next round",
+							zap.Int64("round", cround))
+
 						// check next round
 						nr := mc.GetRound(cround + 1)
 						if nr != nil {
 							roundTimeoutProcess(ctx, protocol, cround+1)
+						} else {
+							logging.Logger.Info("round worker: next round is nil", zap.Int64("next round", cround+1))
 						}
 					} else {
-						logging.Logger.Info("round timeout",
-							zap.Any("round", r.Number),
-							zap.Any("current round", cround),
+						logging.Logger.Info("round worker: round timeout",
+							zap.Int64("round", r.Number),
+							zap.Int64("current round", cround),
 							zap.Int("VRF_shares", len(r.GetVRFShares())),
 							zap.Int("proposedBlocks", len(r.GetProposedBlocks())),
 							zap.Int("verificationTickets", len(r.verificationTickets)),
 							zap.Int("notarizedBlocks", len(r.GetNotarizedBlocks())))
 						roundTimeoutProcess(ctx, protocol, cround)
 					}
+
+					lfb := mc.GetLatestFinalizedBlock()
+					lfbTk := mc.GetLatestLFBTicket(ctx)
+					if lfb.Round < lfbTk.Round {
+						logging.Logger.Info("round worker: LFB < latest lfb ticket round, notify block sync",
+							zap.Int64("lfb round", lfb.Round),
+							zap.Int64("lfb ticket round", lfbTk.Round),
+							zap.Int64("current round", cround))
+						mc.NotifyBlockSync()
+					}
 				} else {
 					// set current round to latest finalized block
-					lfbr := mc.GetLatestFinalizedBlock().Round
-					mc.SetCurrentRound(lfbr)
-					logging.Logger.Debug("Round timeout, nil miner round, set current round to lfb round",
-						zap.Int64("nil round", cround),
-						zap.Int64("lfb round", lfbr))
+					// lfbr := mc.GetLatestFinalizedBlock().Round
+					// mc.SetCurrentRound(lfbr)
+					// logging.Logger.Debug("round worker: Round timeout, nil miner round, set current round to lfb round",
+					// 	zap.Int64("nil round", cround),
+					// 	zap.Int64("lfb round", lfbr))
+					logging.Logger.Warn("round worker: Round timeout, nil miner round", zap.Int64("nil round", cround))
 				}
 			} else {
 				cround = mc.GetCurrentRound()
@@ -160,7 +184,7 @@ func (mc *Chain) RoundWorker(ctx context.Context) {
 			}
 		}
 		var next = mc.GetNextRoundTimeoutTime(ctx)
-		logging.Logger.Info("got_timeout", zap.Int("next", next))
+		logging.Logger.Info("round worker: got_timeout", zap.Int("next", next))
 		timer = time.NewTimer(time.Duration(next) * time.Millisecond)
 	}
 }
@@ -207,7 +231,7 @@ func (mc *Chain) getPruneCountRoundStorage() func(storage round.RoundStorage) in
 	pruneBelowCountDKG := viper.GetInt("server_chain.round_dkg_storage.prune_below_count")
 	return func(storage round.RoundStorage) int {
 		switch storage {
-		case mc.roundDkg:
+		case mc.GetRoundDkg():
 			return pruneBelowCountDKG
 		case mc.MagicBlockStorage:
 			return pruneBelowCountMB
@@ -218,30 +242,39 @@ func (mc *Chain) getPruneCountRoundStorage() func(storage round.RoundStorage) in
 }
 
 func (mc *Chain) MinerHealthCheck(ctx context.Context) {
-	const HEALTH_CHECK_TIMER = 60 * 5 // 5 Minute
+	gn, err := minersc.GetGlobalNode(mc.GetQueryStateContext())
+	if err != nil {
+		logging.Logger.Panic("miner health check - get global node failed", zap.Error(err))
+		return
+	}
+
+	gnb := gn.MustBase()
+	logging.Logger.Debug("miner health check - start", zap.Any("period", gnb.HealthCheckPeriod))
+	HEALTH_CHECK_TIMER := gnb.HealthCheckPeriod
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 			selfNode := node.Self.Underlying()
-			txn := httpclientutil.NewTransactionEntity(selfNode.GetKey(), mc.ID, selfNode.PublicKey)
+			txn := httpclientutil.NewSmartContractTxn(selfNode.GetKey(), mc.ID, selfNode.PublicKey, minersc.ADDRESS)
 			scData := &httpclientutil.SmartContractTxnData{}
 			scData.Name = minerScMinerHealthCheck
-
-			txn.ToClientID = minersc.ADDRESS
-			txn.PublicKey = selfNode.PublicKey
 
 			mb := mc.GetCurrentMagicBlock()
 			var minerUrls = mb.Miners.N2NURLs()
 			go func() {
-				if err := httpclientutil.SendSmartContractTxn(txn, minersc.ADDRESS, 0, 0, scData, minerUrls, mb.Sharders.N2NURLs()); err != nil {
+				if err := mc.SendSmartContractTxn(txn, scData, minerUrls, mb.Sharders.N2NURLs()); err != nil {
 					logging.Logger.Warn("miner health check -  send smart contract failed",
 						zap.Int("urls len", len(minerUrls)),
 						zap.Error(err))
+					return
 				}
+
+				mc.ConfirmTransaction(ctx, txn, 30)
 			}()
 		}
-		time.Sleep(HEALTH_CHECK_TIMER * time.Second)
+		time.Sleep(HEALTH_CHECK_TIMER)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"testing"
 
+	"0chain.net/chaincore/transaction"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -17,7 +18,7 @@ import (
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
 	"0chain.net/core/encryption"
-	"0chain.net/core/logging"
+	"github.com/0chain/common/core/logging"
 )
 
 func init() {
@@ -77,11 +78,10 @@ func TestChain_AcceptMessage(t *testing.T) {
 		Chain          *chain.Chain
 		BlockChannel   chan *block.Block
 		RoundChannel   chan *round.Round
-		BlockCache     cache.Cache
-		BlockTxnCache  cache.Cache
+		BlockCache     *cache.LRU[string, *block.Block]
+		BlockTxnCache  *cache.LRU[string, *transaction.TransactionSummary]
 		SharderStats   Stats
 		BlockSyncStats *SyncStats
-		TieringStats   *MinioStats
 	}
 	type args struct {
 		entityName string
@@ -128,7 +128,6 @@ func TestChain_AcceptMessage(t *testing.T) {
 				BlockTxnCache:  tt.fields.BlockTxnCache,
 				SharderStats:   tt.fields.SharderStats,
 				BlockSyncStats: tt.fields.BlockSyncStats,
-				TieringStats:   tt.fields.TieringStats,
 			}
 			if got := sc.AcceptMessage(tt.args.entityName, tt.args.entityID); got != tt.want {
 				t.Errorf("AcceptMessage() = %v, want %v", got, tt.want)

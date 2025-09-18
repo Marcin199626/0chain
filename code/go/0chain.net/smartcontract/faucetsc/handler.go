@@ -1,17 +1,20 @@
 package faucetsc
 
 import (
-	"0chain.net/smartcontract/rest"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"0chain.net/core/config"
+	"0chain.net/smartcontract/rest"
+
 	"0chain.net/chaincore/chain/state"
 
 	"0chain.net/core/common"
-	"0chain.net/core/util"
 	"0chain.net/smartcontract"
+	"github.com/0chain/common/core/currency"
+	"github.com/0chain/common/core/util"
 )
 
 const (
@@ -36,10 +39,10 @@ func GetEndpoints(rh rest.RestHandlerI) []rest.Endpoint {
 	frh := NewFaucetscRestHandler(rh)
 	faucet := "/v1/screst/" + ADDRESS
 	return []rest.Endpoint{
-		rest.MakeEndpoint(faucet+"/personalPeriodicLimit", frh.getPersonalPeriodicLimit),
-		rest.MakeEndpoint(faucet+"/globalPeriodicLimit", frh.getGlobalPeriodicLimit),
-		rest.MakeEndpoint(faucet+"/pourAmount", frh.getPourAmount),
-		rest.MakeEndpoint(faucet+"/faucet-config", frh.getConfig),
+		rest.MakeEndpoint(faucet+"/personalPeriodicLimit", common.UserRateLimit(frh.getPersonalPeriodicLimit)),
+		rest.MakeEndpoint(faucet+"/globalPeriodicLimit", common.UserRateLimit(frh.getGlobalPeriodicLimit)),
+		rest.MakeEndpoint(faucet+"/pourAmount", common.UserRateLimit(frh.getPourAmount)),
+		rest.MakeEndpoint(faucet+"/faucet-config", common.UserRateLimit(frh.getConfig)),
 	}
 }
 
@@ -51,8 +54,9 @@ func NoResourceOrErrInternal(w http.ResponseWriter, r *http.Request, err error) 
 // faucet smart contract configuration settings
 //
 // responses:
-//  200: StringMap
-//  404:
+//
+//	200: StringMap
+//	404:
 func (frh *FaucetscRestHandler) getConfig(w http.ResponseWriter, r *http.Request) {
 	gn, err := getGlobalNode(frh.GetQueryStateContext())
 	if err != nil {
@@ -106,32 +110,39 @@ func (frh *FaucetscRestHandler) getConfig(w http.ResponseWriter, r *http.Request
 		fields[fmt.Sprintf("cost.%s", key)] = fmt.Sprintf("%0v", faucetConfig.Cost[strings.ToLower(key)])
 	}
 
-	common.Respond(w, r, smartcontract.StringMap{
+	common.Respond(w, r, config.StringMap{
 		Fields: fields,
 	}, nil)
 }
 
+// swagger:model MinerSCPourAmount
+type MinerSCPourAmount struct {
+	PourAmount currency.Coin `json:"pour_amount"`
+}
+
 // swagger:route GET /v1/screst/6dba10422e368813802877a85039d3985d96760ed844092319743fb3a76712d3/pourAmount pourAmount
-// pour amount
+// returns the value of smart_contracts.faucetsc.pour_amount configured in sc.yaml
 //
 // responses:
-//  200:
-//  404:
+//
+//	200: MinerSCPourAmount
+//	404:
 func (frh *FaucetscRestHandler) getPourAmount(w http.ResponseWriter, r *http.Request) {
 	gn, err := getGlobalNode(frh.GetQueryStateContext())
 	if err != nil {
 		NoResourceOrErrInternal(w, r, err)
 		return
 	}
-	common.Respond(w, r, fmt.Sprintf("Pour amount per request: %v", gn.PourAmount), nil)
+	common.Respond(w, r, MinerSCPourAmount{gn.PourAmount}, nil)
 }
 
 // swagger:route GET /v1/screst/6dba10422e368813802877a85039d3985d96760ed844092319743fb3a76712d3/globalPeriodicLimit globalPeriodicLimit
 // list minersc config settings
 //
 // responses:
-//  200: periodicResponse
-//  404:
+//
+//	200: periodicResponse
+//	404:
 func (frh *FaucetscRestHandler) getGlobalPeriodicLimit(w http.ResponseWriter, r *http.Request) {
 	gn, err := getGlobalNode(frh.GetQueryStateContext())
 	if err != nil {
@@ -151,11 +162,12 @@ func (frh *FaucetscRestHandler) getGlobalPeriodicLimit(w http.ResponseWriter, r 
 }
 
 // swagger:route GET /v1/screst/6dba10422e368813802877a85039d3985d96760ed844092319743fb3a76712d3/personalPeriodicLimit personalPeriodicLimit
-// list minersc config settings
+// list minersc config settings for given client_id
 //
 // responses:
-//  200: periodicResponse
-//  404:
+//
+//	200: periodicResponse
+//	404:
 func (frh *FaucetscRestHandler) getPersonalPeriodicLimit(w http.ResponseWriter, r *http.Request) {
 	sctx := frh.GetQueryStateContext()
 	gn, err := getGlobalNode(sctx)

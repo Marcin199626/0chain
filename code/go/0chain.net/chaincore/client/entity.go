@@ -8,14 +8,14 @@ import (
 	"time"
 
 	"0chain.net/core/cache"
-	"0chain.net/core/logging"
+	"github.com/0chain/common/core/logging"
 	"go.uber.org/zap"
 
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
 	"0chain.net/core/encryption"
 	"0chain.net/core/memorystore"
-	"github.com/herumi/bls/ffi/go/bls"
+	"github.com/herumi/bls-go-binary/bls"
 )
 
 var defaultClientSignatureScheme = encryption.SignatureSchemeBls0chain
@@ -35,14 +35,17 @@ func init() {
 func SetupClientDB() {
 	memorystore.AddPool("clientdb", memorystore.DefaultPool)
 }
-
 //go:generate msgp -io=false -tests=false -v
+
 // Client - data structure that holds the client data
+//
+// swagger:model
 type Client struct {
 	datastore.CollectionMemberField `json:"-" msgpack:"-" msg:"-" yaml:"-"`
 	datastore.IDField               `yaml:",inline"`
 	datastore.VersionField          `yaml:"-"`
 	datastore.CreationDateField     `yaml:"-"`
+	// The public key of the client
 	PublicKey                       string                     `yaml:"public_key" json:"public_key"`
 	PublicKeyBytes                  []byte                     `json:"-" msgpack:"-" msg:"-" yaml:"-"`
 	sigSchemeType                   string                     `yaml:"-"`
@@ -294,7 +297,7 @@ func GetClients(ctx context.Context, clients map[string]*Client) (err error) {
 	return
 }
 
-// GetClientFromCache - gets client from either cache
+//GetClientFromCache - gets client from either cache
 func GetClientFromCache(key datastore.Key) (*Client, error) {
 	co, err := cacher.Get(key)
 	if err != nil {
@@ -303,7 +306,7 @@ func GetClientFromCache(key datastore.Key) (*Client, error) {
 	return co.(*Client), nil
 }
 
-// PutClientCache saves client to cache
+//PutClientCache saves client to cache
 func PutClientCache(co *Client) error {
 	return cacher.Add(co.GetKey(), co)
 }
@@ -316,7 +319,7 @@ func GetClient(ctx context.Context, key datastore.Key) (*Client, error) {
 	}
 
 	co := NewClient()
-	if err = co.Read(ctx, key); err != nil {
+	if err := co.Read(ctx, key); err != nil {
 		return nil, err
 	}
 

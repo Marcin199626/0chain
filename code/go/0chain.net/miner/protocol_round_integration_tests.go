@@ -11,10 +11,10 @@ import (
 
 	"0chain.net/chaincore/block"
 	"0chain.net/chaincore/chain"
-	"0chain.net/chaincore/config"
 	"0chain.net/chaincore/node"
 	"0chain.net/chaincore/round"
 	crpc "0chain.net/conductor/conductrpc"
+	"0chain.net/core/config"
 )
 
 func (mc *Chain) GetBlockToExtend(ctx context.Context, r round.RoundI) *block.Block {
@@ -34,6 +34,24 @@ func (mc *Chain) GetBlockToExtend(ctx context.Context, r round.RoundI) *block.Bl
 	cfg.Unlock()
 
 	return mc.getBlockToExtend(ctx, r)
+}
+
+const DDOS_INVALID_BLOCKS_NUMBER = 100
+
+// GenerateRoundBlock - given a round number generates a block.
+func (mc *Chain) GenerateRoundBlock(ctx context.Context, r *Round) (*block.Block, error) {
+	if crpc.Client().State().WrongBlockDDoS != nil {
+		var (
+			err error
+			b   *block.Block
+		)
+		for i := 1; i <= DDOS_INVALID_BLOCKS_NUMBER; i++ {
+			b, err = mc.generateRoundBlock(ctx, r)
+		}
+		return b, err
+	}
+
+	return mc.generateRoundBlock(ctx, r)
 }
 
 func isMockingNotNotarisedBlockExtension(round int64) bool {
@@ -158,10 +176,10 @@ func isTestingHalfNodesDown(minerRound *Round) bool {
 func isTestingSendDifferentBlocks(minerRound *Round) bool {
 	var (
 		cfgFromFirstGen        = crpc.Client().State().SendDifferentBlocksFromFirstGenerator
-		shouldTestFromFirstGen = cfgFromFirstGen != nil && cfgFromFirstGen.OnRound == minerRound.Number
+		shouldTestFromFirstGen = cfgFromFirstGen != nil && int64(cfgFromFirstGen.Round) == minerRound.Number
 
 		cfgFromAllGen        = crpc.Client().State().SendDifferentBlocksFromAllGenerators
-		shouldTestFromAllGen = cfgFromAllGen != nil && cfgFromAllGen.OnRound == minerRound.Number
+		shouldTestFromAllGen = cfgFromAllGen != nil && int64(cfgFromAllGen.Round) == minerRound.Number
 	)
 	return (shouldTestFromAllGen || shouldTestFromFirstGen) &&
 		minerRound.GetTimeoutCount() == 1 &&
@@ -189,4 +207,12 @@ func lockChainIfConfigured() {
 
 		<-time.NewTimer(time.Microsecond * 200).C
 	}
+}
+
+func areRoundAndBlockSeedsEqual(r round.RoundI, b *block.Block) bool {
+	if crpc.Client().State().WrongBlockRandomSeed != nil {
+		return true
+	}
+
+	return r.GetRandomSeed() == b.GetRoundRandomSeed()
 }

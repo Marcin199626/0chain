@@ -5,6 +5,8 @@ for i in $(seq 1 8)
 do
   mkdir -p docker.local/miner"$i"/data/redis/state
   mkdir -p docker.local/miner"$i"/data/redis/transactions
+  chown 999:999 docker.local/miner"$i"/data/redis/state
+  chown 999:999 docker.local/miner"$i"/data/redis/transactions
   mkdir -p docker.local/miner"$i"/data/rocksdb
   mkdir -p docker.local/miner"$i"/log
 done
@@ -19,3 +21,6 @@ do
   mkdir -p docker.local/sharder"$i"/log
   mkdir -p docker.local/sharder"$i"/data/postgresql
 done
+
+mkdir -p docker.local/kafka
+chmod -R 777 docker.local/kafka

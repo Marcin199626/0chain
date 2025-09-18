@@ -9,7 +9,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"0chain.net/core/logging"
+	"github.com/0chain/common/core/logging"
 
 	"0chain.net/core/common"
 )
@@ -28,9 +28,6 @@ type JSONEntityReqResponderF func(ctx context.Context, entity Entity) (interface
  */
 func ToJSONEntityReqResponse(handler JSONEntityReqResponderF, entityMetadata EntityMetadata) common.ReqRespHandlerf {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !common.CheckCrossOrigin(w, r) {
-			return
-		}
 		if r.Method == "OPTIONS" {
 			common.SetupCORSResponse(w)
 			return
@@ -43,9 +40,15 @@ func ToJSONEntityReqResponse(handler JSONEntityReqResponderF, entityMetadata Ent
 		entity := entityMetadata.Instance()
 		if err := json.NewDecoder(r.Body).Decode(entity); err != nil {
 			logging.Logger.Error("decode err", zap.Error(err))
-			http.Error(w, "Error decoding json", 500)
+			http.Error(w, "Error decoding json", 400)
 			return
 		}
+		if err := entity.ComputeProperties(); err != nil {
+			logging.Logger.Error("compute properties err", zap.Error(err))
+			http.Error(w, "Error computing properties", 400)
+			return
+		}
+
 		ctx := r.Context()
 		rsp, err := handler(ctx, entity)
 		common.Respond(w, r, rsp, err)
@@ -70,6 +73,15 @@ func GetEntityHandler(ctx context.Context, r *http.Request, entityMetadata Entit
 	}
 	entity := entityMetadata.Instance()
 	err := entity.Read(ctx, ToKey(id))
+	if err != nil {
+		return nil, err
+	}
+	return entity, nil
+}
+
+func GetEntityByHash(ctx context.Context, entityMetadata EntityMetadata, hash string) (interface{}, error) {
+	entity := entityMetadata.Instance()
+	err := entity.Read(ctx, ToKey(hash))
 	if err != nil {
 		return nil, err
 	}

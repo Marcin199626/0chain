@@ -92,21 +92,19 @@ func (mrf SharderRoundFactory) CreateRoundF(roundNum int64) round.RoundI {
 	return mr
 }
 
-/*StoreRound - persists given round to ememory(rocksdb)*/
-func (sc *Chain) StoreRound(r *round.Round) error {
+func (sc *Chain) StoreRoundNoCommit(r *round.Round) (func() error, error) {
 	roundEntityMetadata := r.GetEntityMetadata()
 	rctx := ememorystore.WithEntityConnection(common.GetRootContext(), roundEntityMetadata)
-	defer ememorystore.Close(rctx)
+	defer ememorystore.Close(rctx, roundEntityMetadata)
 	err := r.Write(rctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
+
 	con := ememorystore.GetEntityCon(rctx, roundEntityMetadata)
-	err = con.Commit()
-	if err != nil {
-		return err
-	}
-	return nil
+	return func() error {
+		return con.Commit()
+	}, nil
 }
 
 // ReadHealthyRound -
@@ -115,7 +113,7 @@ func (sc *Chain) ReadHealthyRound(ctx context.Context) (*HealthyRound, error) {
 	healthyRoundEntityMetadata := hr.GetEntityMetadata()
 	hrStore := healthyRoundEntityMetadata.GetStore()
 	hrctx := ememorystore.WithEntityConnection(ctx, healthyRoundEntityMetadata)
-	defer ememorystore.Close(hrctx)
+	defer ememorystore.Close(hrctx, healthyRoundEntityMetadata)
 	err := hrStore.Read(hrctx, hr.GetKey(), hr)
 	return hr, err
 }
@@ -125,7 +123,7 @@ func (sc *Chain) WriteHealthyRound(ctx context.Context, hr *HealthyRound) error 
 	healthyRoundEntityMetadata := hr.GetEntityMetadata()
 	hrStore := healthyRoundEntityMetadata.GetStore()
 	hrctx := ememorystore.WithEntityConnection(ctx, healthyRoundEntityMetadata)
-	defer ememorystore.Close(hrctx)
+	defer ememorystore.Close(hrctx, healthyRoundEntityMetadata)
 	err := hrStore.Write(hrctx, hr)
 	if err != nil {
 		return err

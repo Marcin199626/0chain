@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"0chain.net/chaincore/client"
-	"0chain.net/chaincore/config"
 	"0chain.net/chaincore/node"
 	"0chain.net/core/common"
+	"0chain.net/core/config"
 	"0chain.net/core/datastore"
 	"0chain.net/core/encryption"
 	"0chain.net/core/memorystore"
@@ -72,9 +72,9 @@ func BenchmarkTransactionRead(b *testing.B) {
 	txn := transactionEntityMetadata.Instance().(*Transaction)
 	txn.ChainID = config.GetMainChainID()
 	txnIDs := make([]datastore.Key, 0, memorystore.BATCH_SIZE)
-	getTxnsFunc := func(ctx context.Context, qe datastore.CollectionEntity) bool {
+	getTxnsFunc := func(ctx context.Context, qe datastore.CollectionEntity) (bool, error) {
 		txnIDs = append(txnIDs, qe.GetKey())
-		return len(txnIDs) != memorystore.BATCH_SIZE
+		return len(txnIDs) != memorystore.BATCH_SIZE, nil
 	}
 
 	transactionEntityMetadata.GetStore().IterateCollection(ctx, transactionEntityMetadata, txn.GetCollectionName(), getTxnsFunc)

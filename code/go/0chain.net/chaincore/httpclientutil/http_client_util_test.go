@@ -13,7 +13,8 @@ import (
 	"sync"
 	"testing"
 
-	"0chain.net/chaincore/currency"
+	"0chain.net/smartcontract/minersc"
+	"github.com/0chain/common/core/currency"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,9 +24,10 @@ import (
 	"0chain.net/chaincore/state"
 	"0chain.net/core/common"
 	"0chain.net/core/encryption"
-	"0chain.net/core/logging"
 	"0chain.net/core/mocks"
-	"0chain.net/core/util"
+	"github.com/0chain/common/core/logging"
+	utilmocks "github.com/0chain/common/core/mocks"
+	"github.com/0chain/common/core/util"
 )
 
 func init() {
@@ -61,7 +63,7 @@ func getTestServerURL() string {
 func TestTransaction_ComputeHashAndSign(t *testing.T) {
 	t.Parallel()
 
-	txn := NewTransactionEntity("id", "chainID", "public key")
+	txn := NewSmartContractTxn("id", "chainID", "public key", minersc.ADDRESS)
 	txn.CreationDate = 0
 
 	_, prK, err := encryption.GenerateKeys()
@@ -517,9 +519,8 @@ func TestMakeClientBalanceRequest(t *testing.T) {
 
 	type (
 		args struct {
-			clientID  string
-			urls      []string
-			consensus int
+			clientID string
+			urls     []string
 		}
 		makeServer func() (URL string)
 	)
@@ -544,28 +545,9 @@ func TestMakeClientBalanceRequest(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "Empty_ERR",
-			args: args{
-				urls: []string{},
-			},
-			wantErr: true,
-		},
-		{
-			name: "Consensus_ERR",
-			args: args{
-				urls:      []string{},
-				consensus: 200,
-			},
-			makeServers: []makeServer{
-				makeValidServer,
-			},
-			wantErr: true,
-		},
-		{
 			name: "OK",
 			args: args{
-				urls:      []string{},
-				consensus: 0,
+				urls: []string{},
 			},
 			makeServers: []makeServer{
 				makeValidServer,
@@ -583,7 +565,7 @@ func TestMakeClientBalanceRequest(t *testing.T) {
 				tt.args.urls = append(tt.args.urls, URL)
 			}
 
-			got, err := MakeClientBalanceRequest(context.TODO(), tt.args.clientID, tt.args.urls, tt.args.consensus)
+			got, err := MakeClientBalanceRequest(tt.args.clientID, tt.args.urls)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("MakeClientBalanceRequest() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -739,7 +721,7 @@ func TestGetTransactionStatus(t *testing.T) {
 }
 
 type mokeErrEntity struct {
-	mocks.Serializable
+	utilmocks.Serializable
 }
 
 func (ee *mokeErrEntity) Decode([]byte) error {
@@ -747,7 +729,7 @@ func (ee *mokeErrEntity) Decode([]byte) error {
 }
 
 type mokeEntity struct {
-	mocks.Serializable
+	utilmocks.Serializable
 }
 
 func (me *mokeEntity) Decode([]byte) error {
@@ -1148,7 +1130,7 @@ func TestSendSmartContractTxn(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if err := SendSmartContractTxn(tt.args.txn, tt.args.address, tt.args.value, tt.args.fee, tt.args.scData, tt.args.minerUrls, tt.args.minerUrls); (err != nil) != tt.wantErr {
+			if err := SendSmartContractTxn(tt.args.txn, tt.args.minerUrls, tt.args.minerUrls); (err != nil) != tt.wantErr {
 				t.Errorf("SendSmartContractTxn() error = %v, wantErr %v", err, tt.wantErr)
 			}
 			assert.Equal(t, nonce+2, node.Self.GetNextNonce())

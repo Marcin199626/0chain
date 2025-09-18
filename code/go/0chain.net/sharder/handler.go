@@ -1,6 +1,7 @@
 package sharder
 
 import (
+	"0chain.net/smartcontract/dbs/event"
 	"context"
 	"fmt"
 	"net/http"
@@ -10,20 +11,16 @@ import (
 
 	"0chain.net/chaincore/block"
 	"0chain.net/chaincore/chain"
-	"0chain.net/chaincore/config"
 	"0chain.net/chaincore/diagnostics"
 	"0chain.net/chaincore/node"
 	"0chain.net/core/build"
 	"0chain.net/core/common"
-)
-
-const (
-	getBlockV1Pattern = "/v1/block/get"
+	"0chain.net/core/config"
 )
 
 func handlersMap() map[string]func(http.ResponseWriter, *http.Request) {
 	reqRespHandlers := map[string]common.ReqRespHandlerf{
-		getBlockV1Pattern:                  common.ToJSONResponse(BlockHandler),
+		"/v1/block/get":                    common.ToJSONResponse(BlockHandler),
 		"/v1/block/magic/get":              common.ToJSONResponse(MagicBlockHandler),
 		"/v1/transaction/get/confirmation": common.ToJSONResponse(TransactionConfirmationHandler),
 		"/v1/healthcheck":                  common.ToJSONResponse(HealthcheckHandler),
@@ -31,9 +28,9 @@ func handlersMap() map[string]func(http.ResponseWriter, *http.Request) {
 		"/_chain_stats":                    ChainStatsWriter,
 		"/_healthcheck":                    HealthCheckWriter,
 		"/v1/sharder/get/stats":            common.ToJSONResponse(SharderStatsHandler),
-
-		"/v1/state/nodes":        common.ToJSONResponse(chain.StateNodesHandler),
-		"/v1/block/state_change": common.ToJSONResponse(BlockStateChangeHandler),
+		"/v1/state/nodes":                  common.ToJSONResponse(chain.StateNodesHandler),
+		"/v1/block/state_change":           common.ToJSONResponse(BlockStateChangeHandler),
+		"/_transaction_errors":             TransactionErrorWriter,
 	}
 
 	handlers := make(map[string]func(http.ResponseWriter, *http.Request))
@@ -48,10 +45,18 @@ func BlockStateChangeHandler(ctx context.Context, r *http.Request) (interface{},
 	return c.BlockStateChangeHandler(ctx, r)
 }
 
+// swgger:model
 type ChainInfo struct {
 	LatestFinalizedBlock *block.BlockSummary `json:"latest_finalized_block"`
 }
 
+// swagger:route GET /v1/healthcheck sharder GetHealthCheck
+// Health Check.
+// Retrieve the health check information of the sharder.
+//
+// responses:
+//  200: HealthCheckResponse
+//  400:
 func HealthcheckHandler(ctx context.Context, r *http.Request) (interface{}, error) {
 
 	return struct {
@@ -69,9 +74,34 @@ func HealthcheckHandler(ctx context.Context, r *http.Request) (interface{}, erro
 			LatestFinalizedBlock: chain.GetServerChain().GetLatestFinalizedBlockSummary(),
 		},
 	}, nil
+
 }
 
 /*BlockHandler - a handler to respond to block queries */
+// swagger:route GET /v1/block/get sharder GetBlock
+// Get Block.
+// Retrieve needed parts of block information, given either its round or its hash. At least one of them needs to be provided, if both are provided, however, the round will overwrite the hash.
+// If "content" == "full", the response has the full Block in `block` field.
+// If "content" == "header", the response has the BlockSummary in `header` field.
+// If "content" == "merkle_tree", the response has the Merkle Tree of the transactions in the block in `merkle_tree` field.
+//
+// parameters:
+//   +name: block
+//	 in: query
+//	 type: string
+//	 description: Hash of the block to retrieve.
+//   +name: round
+//	 in: query
+//	 type: string
+//	 description: Round of the block to retrieve.
+//   +name: content
+//	 in: query
+//	 type: string
+//	 description: A comma-separated list of parts of the block to retrieve. Possible values are "full" to retrieve the full block, "header" to retrieve summary, "merkle_tree" to retrieve Merkle Tree of the transactions inside the block. Default is "header".
+//
+// responses:
+//  200: BlockResponse
+//  400:
 func BlockHandler(ctx context.Context, r *http.Request) (interface{}, error) {
 	roundData := r.FormValue("round")
 	hash := r.FormValue("block")
@@ -126,6 +156,19 @@ func BlockHandler(ctx context.Context, r *http.Request) (interface{}, error) {
 }
 
 /*MagicBlockHandler - a handler to respond to magic block queries */
+// swagger:route GET /v1/block/magic/get sharder GetMagicBlock
+// Get Magic Block.
+// Retrieve the magic block given its number.
+//
+// parameters:
+//   +name: magic_block_number
+//	 in: query
+//	 type: string
+//	 description: Number of the magic block to retrieve.
+//
+// responses:
+//  200: Block
+//  400:
 func MagicBlockHandler(ctx context.Context, r *http.Request) (interface{}, error) {
 	magicBlockNumber := r.FormValue("magic_block_number")
 	sc := GetSharderChain()
@@ -146,16 +189,15 @@ func MagicBlockHandler(ctx context.Context, r *http.Request) (interface{}, error
 	return b, nil
 }
 
-/*ChainStatsHandler - a handler to provide block statistics */
 func ChainStatsHandler(ctx context.Context, r *http.Request) (interface{}, error) {
 	c := GetSharderChain().Chain
 	return diagnostics.GetStatistics(c, chain.SteadyStateFinalizationTimer, 1000000.0), nil
 }
 
-/*ChainStatsWriter - a handler to provide block statistics */
 func ChainStatsWriter(w http.ResponseWriter, r *http.Request) {
 	sc := GetSharderChain()
 	c := sc.Chain
+
 	w.Header().Set("Content-Type", "text/html")
 	chain.PrintCSS(w)
 	diagnostics.WriteStatisticsCSS(w)
@@ -206,6 +248,16 @@ func ChainStatsWriter(w http.ResponseWriter, r *http.Request) {
 	diagnostics.WriteHistogramStatistics(w, c, chain.FinalizationLagMetric)
 	fmt.Fprintf(w, "</td></tr>")
 
+	fmt.Fprintf(w, "</td><td valign='top'>")
+	fmt.Fprintf(w, "<h3>Kafka Event Push Latency Statistics (in milliseconds)</h3>")
+	diagnostics.WriteHistogramStatistics(w, c, event.KafkaEventPushLatencyMetric)
+	fmt.Fprintf(w, "</td></tr>")
+
+	fmt.Fprintf(w, "</td><td valign='top'>")
+	fmt.Fprintf(w, "<h3>Finalization To Kafka Event Push Latency Statistics (in milliseconds)</h3>")
+	diagnostics.WriteHistogramStatistics(w, c, event.FinalizationToKafkaLatencyMetric)
+	fmt.Fprintf(w, "</td></tr>")
+
 	fmt.Fprintf(w, "<tr><td>")
 	fmt.Fprintf(w, "<h3>Transactions Save Statistics</h3>")
 	diagnostics.WriteTimerStatistics(w, c, txnSaveTimer, 1000000.0)
@@ -230,15 +282,40 @@ func ChainStatsWriter(w http.ResponseWriter, r *http.Request) {
 	diagnostics.WriteTimerStatistics(w, c, chain.StatePruneDeleteTimer, 1000000.0)
 	fmt.Fprintf(w, "</td></tr>")
 
+	fmt.Fprintf(w, "<tr><td>")
+	fmt.Fprintf(w, "<h3>State Computation Statistics</h3>")
+	diagnostics.WriteHistogramStatistics(w, c, chain.StateComputationTimer)
+	fmt.Fprintf(w, "</td><td valign='top'>")
+	fmt.Fprintf(w, "<h3>Events Computation Statistics</h3>")
+	diagnostics.WriteHistogramStatistics(w, c, chain.EventsComputationTimer)
+	fmt.Fprintf(w, "</td></tr>")
+
 	if c.GetPruneStats() != nil {
 		fmt.Fprintf(w, "<tr><td>")
 		fmt.Fprintf(w, "<h3>Prune Stats</h3>")
 		diagnostics.WritePruneStats(w, c.GetPruneStats())
+		fmt.Fprintf(w, "</td><td valign='top'>")
+		fmt.Fprintf(w, "<h3>Sync catchup time Statistics</h3>")
+		diagnostics.WriteHistogramStatistics(w, c, syncCatchupTime)
+		fmt.Fprintf(w, "</td></tr>")
+	} else {
+		fmt.Fprintf(w, "<tr><td>")
+		fmt.Fprintf(w, "<h3>Sync catchup time Statistics</h3>")
+		diagnostics.WriteHistogramStatistics(w, c, syncCatchupTime)
 		fmt.Fprintf(w, "</td></tr>")
 	}
 
 	fmt.Fprintf(w, "</table>")
 }
+
+//
+// swagger:route GET /v1/sharder/get/stats sharder GetSharderStats
+// Get Sharder Stats.
+// Retrieve the sharder stats.
+//
+// responses:
+//  200: ExplorerStats
+//  404:
 
 func SharderStatsHandler(ctx context.Context, r *http.Request) (interface{}, error) {
 	sc := GetSharderChain()
@@ -253,10 +330,89 @@ func SharderStatsHandler(ctx context.Context, r *http.Request) (interface{}, err
 	}
 	selfNodeInfo := node.Self.Underlying().Info
 	return ExplorerStats{LastFinalizedRound: sc.Chain.GetLatestFinalizedBlock().Round,
-		StateHealth:            selfNodeInfo.StateMissingNodes,
+		StateHealth:            selfNodeInfo.GetStateMissingNodes(),
 		AverageBlockSize:       selfNodeInfo.AvgBlockTxns,
 		PrevInvocationCount:    previous.HealthCheckInvocations,
 		PrevInvocationScanTime: previousElapsed,
 		MeanScanBlockStatsTime: cc.BlockSyncTimer.Mean() / 1000000.0,
 	}, nil
+}
+func TransactionErrorWriter(w http.ResponseWriter, r *http.Request) {
+	transactionErrors, err := GetSharderChain().Chain.GetEventDb().GetTransactionErrors()
+
+	if err != nil {
+		fmt.Fprintf(w, "Error getting transaction errors: %v", err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html")
+	chain.PrintCSS(w)
+	diagnostics.WriteStatisticsCSS(w)
+
+	fmt.Fprintln(w, "<!DOCTYPE html>")
+	fmt.Fprintln(w, "<html>")
+	fmt.Fprintln(w, "<head>")
+	fmt.Fprintln(w, "\t<title>Transaction Error Writer</title>")
+	fmt.Fprintln(w, "\t<style>")
+	fmt.Fprintln(w, "\t\ttable {")
+	fmt.Fprintln(w, "\t\t\twidth: 100%;")
+	fmt.Fprintln(w, "\t\t\tborder-collapse: collapse;")
+	fmt.Fprintln(w, "\t\t}")
+	fmt.Fprintln(w, "\t\ttable td, table th {")
+	fmt.Fprintln(w, "\t\t\tpadding: 8px;")
+	fmt.Fprintln(w, "\t\t\tborder-bottom: 1px solid #ddd;")
+	fmt.Fprintln(w, "\t\t}")
+	fmt.Fprintln(w, "\t\ttable th {")
+	fmt.Fprintln(w, "\t\t\tbackground-color: #f2f2f2;")
+	fmt.Fprintln(w, "\t\t\tcolor: #444;")
+	fmt.Fprintln(w, "\t\t}")
+	fmt.Fprintln(w, "\t\ttable tr:nth-child(even) {")
+	fmt.Fprintln(w, "\t\t\tbackground-color: #f9f9f9;")
+	fmt.Fprintln(w, "\t\t}")
+	fmt.Fprintln(w, "\t\ttable tr:hover {")
+	fmt.Fprintln(w, "\t\t\tbackground-color: #f5f5f5;")
+	fmt.Fprintln(w, "\t\t}")
+	fmt.Fprintln(w, "\t</style>")
+	fmt.Fprintln(w, "</head>")
+	fmt.Fprintln(w, "<body>")
+	fmt.Fprintln(w, "\t<table>")
+	fmt.Fprintln(w, "\t\t<tr>")
+	fmt.Fprintln(w, "\t\t\t<th>Transaction Error</th>")
+	fmt.Fprintln(w, "\t\t\t<th>Count</th>")
+	fmt.Fprintln(w, "\t\t</tr>")
+
+	for transactionError, errorDetails := range transactionErrors {
+		count := 0
+		for _, detail := range errorDetails {
+			count += detail.Count
+		}
+		fmt.Fprintf(w, "\t\t<tr>")
+		fmt.Fprintf(w, "<td class='tname'><a href='#' onclick='toggleDetails(this)'>%s</a></td>", transactionError)
+		fmt.Fprintf(w, "<td>%d</td>", count)
+		fmt.Fprintf(w, "</tr>\n")
+
+		fmt.Fprintf(w, "\t\t<tr class='details-row' style='display:none;'>")
+		fmt.Fprintf(w, "<td colspan='2'>")
+		fmt.Fprintf(w, "<table>")
+		for _, detail := range errorDetails {
+			fmt.Fprintf(w, "<tr>")
+			fmt.Fprintf(w, "<td>%s</td>", detail.TransactionOutput)
+			fmt.Fprintf(w, "<td>%d</td>", detail.Count)
+			fmt.Fprintf(w, "</tr>\n")
+		}
+		fmt.Fprintf(w, "</table>")
+		fmt.Fprintf(w, "</td>")
+		fmt.Fprintf(w, "</tr>\n")
+	}
+
+	fmt.Fprintln(w, "\t</table>")
+	fmt.Fprintln(w, "\t<script>")
+	fmt.Fprintln(w, "\t\tfunction toggleDetails(element) {")
+	fmt.Fprintln(w, "\t\t\tvar row = element.parentNode.parentNode;")
+	fmt.Fprintln(w, "\t\t\tvar nextRow = row.nextElementSibling;")
+	fmt.Fprintln(w, "\t\t\tnextRow.style.display = (nextRow.style.display === 'none') ? 'table-row' : 'none';")
+	fmt.Fprintln(w, "\t\t}")
+	fmt.Fprintln(w, "\t</script>")
+	fmt.Fprintln(w, "</body>")
+	fmt.Fprintln(w, "</html>")
 }

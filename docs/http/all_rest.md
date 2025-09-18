@@ -154,7 +154,6 @@ File: 0Chain/code/go/0chain.net/smartcontract/storagesc/sc.go
 
 | Endpoint: fc.SmartContractExecutionStats | Handler |
 | ------ | ------ |
-| challenge_request | metrics.GetOrRegisterTimer |
 | challenge_response | metrics.GetOrRegisterTimer |
 | generate_challenges | metrics.GetOrRegisterTimer |
 
@@ -208,7 +207,6 @@ File: 0Chain/code/go/0chain.net/smartcontract/storagesc/sc.go
 
 | Endpoint: fc.SmartContractExecutionStats | Handler |
 | ------ | ------ |
-| new_read_pool | metrics.GetOrRegisterTimer |
 | read_pool_lock | metrics.GetOrRegisterTimer |
 | read_pool_unlock | metrics.GetOrRegisterTimer |
 
@@ -223,7 +221,6 @@ File: 0Chain/code/go/0chain.net/smartcontract/storagesc/sc.go
 | Endpoint: fc.SmartContractExecutionStats | Handler |
 | ------ | ------ |
 | write_pool_lock | metrics.GetOrRegisterTimer |
-| write_pool_unlock | metrics.GetOrRegisterTimer |
 
 
 > stake pool
@@ -237,7 +234,6 @@ File: 0Chain/code/go/0chain.net/smartcontract/storagesc/sc.go
 | ------ | ------ |
 | stake_pool_lock | metrics.GetOrRegisterTimer |
 | stake_pool_unlock | metrics.GetOrRegisterTimer |
-| stake_pool_pay_interests | metrics.GetOrRegisterTimer |
 
 
 > challenge pool
@@ -304,7 +300,6 @@ File: 0Chain/code/go/0chain.net/chaincore/chain/handler.go
 | Endpoint: http.HandleFunc | Handler |
 | ------ | ------ |
 | /v1/chain/get | GetChainHandler |
-| /v1/chain/put | PutChainHandler |
 | /v1/block/get | GetBlockHandler |
 | /v1/block/get/latest_finalized | LatestFinalizedBlockHandler |
 | /v1/block/get/latest_finalized_magic_block_summary | LatestFinalizedMagicBlockSummaryHandler |
@@ -313,7 +308,6 @@ File: 0Chain/code/go/0chain.net/chaincore/chain/handler.go
 | /v1/block/get/fee_stats | LatestBlockFeeStatsHandler |
 | / | HomePageHandler |
 | /_diagnostics | DiagnosticsHomepageHandler |
-| /_diagnostics/dkg_process | DiagnosticsDKGHandler |
 | /_diagnostics/round_info | RoundInfoHandler |
 | /v1/transaction/put | PutTransaction |
 | /_diagnostics/state_dump | StateDumpHandler |

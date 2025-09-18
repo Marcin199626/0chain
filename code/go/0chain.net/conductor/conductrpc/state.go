@@ -23,22 +23,25 @@ type State struct {
 	// for it.
 	//
 	// Byzantine blockchain
-	VRFS                        *config.Bad
-	RoundTimeout                *config.Bad
-	CompetingBlock              *config.Bad
-	SignOnlyCompetingBlocks     *config.Bad
-	DoubleSpendTransaction      *config.Bad
-	DoubleSpendTransactionHash  string // internal variable to ignore this transaction in ChainHasTransaction()
-	WrongBlockSignHash          *config.Bad
-	WrongBlockSignKey           *config.Bad
-	WrongBlockHash              *config.Bad
-	VerificationTicketGroup     *config.Bad
-	WrongVerificationTicketHash *config.Bad
-	WrongVerificationTicketKey  *config.Bad
-	WrongNotarizedBlockHash     *config.Bad
-	WrongNotarizedBlockKey      *config.Bad
-	NotarizeOnlyCompetingBlock  *config.Bad
-	NotarizedBlock              *config.Bad
+	VRFS                                    *config.Bad
+	RoundTimeout                            *config.Bad
+	CompetingBlock                          *config.Bad
+	SignOnlyCompetingBlocks                 *config.Bad
+	DoubleSpendTransaction                  *config.Bad
+	DoubleSpendTransactionHash              string // internal variable to ignore this transaction in ChainHasTransaction()
+	WrongBlockSignHash                      *config.Bad
+	WrongBlockSignKey                       *config.Bad
+	WrongBlockHash                          *config.Bad
+	WrongBlockRandomSeed                    *config.Bad
+	WrongBlockDDoS                          *config.Bad
+	VerificationTicketGroup                 *config.Bad
+	WrongVerificationTicketHash             *config.Bad
+	WrongVerificationTicketKey              *config.Bad
+	WrongNotarizedBlockHash                 *config.Bad
+	WrongNotarizedBlockKey                  *config.Bad
+	NotarizeOnlyCompetingBlock              *config.Bad
+	NotarizedBlock                          *config.Bad
+	CollectVerificationTicketsWhenMissedVRF *config.CollectVerificationTicketsWhenMissedVRF
 	// Byzantine blockchain sharders
 	FinalizedBlock    *config.Bad
 	MagicBlock        *config.Bad
@@ -64,14 +67,39 @@ type State struct {
 	MinerNotarisedBlockRequestor          *cases.MinerNotarisedBlockRequestor
 	FBRequestor                           *cases.FBRequestor
 	MissingLFBTicket                      *cases.MissingLFBTickets
+	RoundHasFinalizedConfig               *cases.RoundHasFinalized
+	RoundRandomSeed                       *cases.RoundRandomSeed
+
+	LockNotarizationAndSendNextRoundVRF *config.LockNotarizationAndSendNextRoundVRF
 
 	// Blobbers related states
-	StorageTree    *config.Bad // blobber sends bad files/tree responses
-	ValidatorProof *config.Bad // blobber sends invalid proof to validators
-	Challenges     *config.Bad // blobber ignores challenges
+	StorageTree             *config.Bad // blobber sends bad files/tree responses
+	ValidatorProof          *config.Bad // blobber sends invalid proof to validators
+	Challenges              *config.Bad // blobber ignores challenges
+	BlobberList             *config.BlobberList
+	BlobberDownload         *config.BlobberDownload
+	BlobberUpload           *config.BlobberUpload
+	BlobberDelete           *config.BlobberDelete
+	GenerateAllChallenges   bool
+	GenerateChallenge       *config.GenerateChallege
+	StopWMCommit            bool
+	StopChallengeGeneration bool
+	BlobberCommittedWM      bool
+	GetFileMetaRoot         bool
+	FailRenameCommit        []NodeID
+	FailUploadCommit        []NodeID
+	// Validators related states
+	CheckChallengeIsValid *cases.CheckChallengeIsValid
+	AdversarialValidator  *config.AdversarialValidator
 
-	ServerStatsCollectorEnabled bool
-	ClientStatsCollectorEnabled bool
+	// Authorizers related states
+	AdversarialAuthorizer *config.AdversarialAuthorizer
+
+	ServerStatsCollectorEnabled        bool
+	ClientStatsCollectorEnabled        bool
+	NotifyOnBlockGeneration            bool
+	NotifyOnValidationTicketGeneration bool
+	MissUpDownload bool
 }
 
 // Name returns NodeName by given NodeID.

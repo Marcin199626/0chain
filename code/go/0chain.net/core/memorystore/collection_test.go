@@ -2,14 +2,15 @@ package memorystore_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
 	"0chain.net/chaincore/chain"
-	"0chain.net/chaincore/config"
 	"0chain.net/chaincore/node"
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/common"
+	"0chain.net/core/config"
 	"0chain.net/core/datastore"
 	"0chain.net/core/encryption"
 	"0chain.net/core/memorystore"
@@ -52,16 +53,16 @@ func addTxnsToCollection(t *testing.T, txns ...*transaction.Transaction) {
 }
 
 func makeTestCollectionIterationHandler() datastore.CollectionIteratorHandler {
-	return func(ctx context.Context, ce datastore.CollectionEntity) bool {
+	return func(ctx context.Context, ce datastore.CollectionEntity) (bool, error) {
 		if ce.GetEntityMetadata().GetName() == "txn" {
 			ent := ce.(*transaction.Transaction)
 			if ent.Value > 5 {
 				ent.Value++
-				return true
+				return true, nil
 			}
-			return false
+			return false, nil
 		}
-		return false
+		return false, nil
 	}
 }
 
@@ -70,15 +71,20 @@ func TestStore_IterateCollection(t *testing.T) {
 
 	handler := makeTestCollectionIterationHandler()
 
+	txnData, err := json.Marshal(struct{}{})
+	require.NoError(t, err)
+
 	txn := transaction.Transaction{}
 	txn.SetKey("key")
+	txn.TransactionData = string(txnData)
 	scheme := encryption.NewBLS0ChainScheme()
-	err := scheme.GenerateKeys()
+	err = scheme.GenerateKeys()
 	require.NoError(t, err)
 	txn.PublicKey = scheme.GetPublicKey()
 
 	txn2 := transaction.Transaction{}
 	txn2.SetKey("key2")
+	txn2.TransactionData = string(txnData)
 	err = scheme.GenerateKeys()
 	require.NoError(t, err)
 
@@ -208,6 +214,9 @@ func TestStore_IterateCollectionAsc(t *testing.T) {
 
 	txn.SetKey("key")
 	txn.PublicKey = sch.GetPublicKey()
+	txnData, err := json.Marshal(struct{}{})
+	require.NoError(t, err)
+	txn.TransactionData = string(txnData)
 	writeTxnsToStorage(t, &txn)
 	addTxnsToCollection(t, &txn)
 

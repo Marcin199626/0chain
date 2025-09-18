@@ -2,9 +2,12 @@ package miner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
+	"runtime"
 	"strconv"
+	"sync"
 	"time"
 
 	"0chain.net/chaincore/block"
@@ -15,7 +18,8 @@ import (
 	"0chain.net/core/common"
 	"0chain.net/core/encryption"
 
-	. "0chain.net/core/logging"
+	"github.com/0chain/common/core/logging"
+	. "github.com/0chain/common/core/logging"
 	"go.uber.org/zap"
 
 	metrics "github.com/rcrowley/go-metrics"
@@ -34,18 +38,27 @@ func init() {
 }
 
 // SetDKG - starts the DKG process
-func SetDKG(ctx context.Context, mb *block.MagicBlock) error {
+func SetDKG(ctx context.Context, mb *block.MagicBlock, dkgSum ...*bls.DKGSummary) error {
 	mc := GetMinerChain()
-	if mc.ChainConfig.IsDkgEnabled() {
-		err := mc.SetDKGSFromStore(ctx, mb)
-		if err != nil {
-			return fmt.Errorf("error while setting dkg from store: %v\nstorage"+
-				" may be damaged or permissions may not be available?",
-				err.Error())
-		}
-	} else {
-		Logger.Info("DKG is not enabled. So, starting protocol")
+	if !mc.ChainConfig.IsDkgEnabled() {
+		Logger.Info("DKG is disabled. So, starting protocol")
+		return nil
 	}
+
+	if err := mc.SetDKGSFromStore(ctx, mb, dkgSum...); err != nil {
+		return fmt.Errorf("error while setting dkg from store: %v\nstorage"+
+			" may be damaged or permissions may not be available?",
+			err.Error())
+	}
+
+	dkg := mc.GetDKGByStartingRound(mb.StartingRound)
+	logging.Logger.Debug("[mvc] dkg process set dkg success",
+		zap.Int("dkg T", dkg.T),
+		zap.Int("dkg N", dkg.N),
+		zap.Int("gmpk len", len(dkg.GetMPKs())),
+		zap.Int64("mb number", mb.MagicBlockNumber),
+		zap.Int64("mb sr", mb.StartingRound),
+	)
 	return nil
 }
 
@@ -66,18 +79,36 @@ func SetDKGFromMagicBlocksChainPrev(ctx context.Context, mb *block.MagicBlock) e
 	return nil
 }
 
-func (mc *Chain) SetDKGSFromStore(ctx context.Context, mb *block.MagicBlock) (
+func (mc *Chain) SetDKGSFromStore(ctx context.Context, mb *block.MagicBlock, dkgSum ...*bls.DKGSummary) (
 	err error) {
+
+	startTotal := time.Now()
+	defer func() {
+		logging.Logger.Debug("[dkg_timing] SetDKGSFromStore total time",
+			zap.Duration("total_duration", time.Since(startTotal)))
+	}()
 
 	var (
 		selfNodeKey = node.Self.Underlying().GetKey()
 		id          = strconv.FormatInt(mb.MagicBlockNumber, 10)
-
-		summary *bls.DKGSummary
+		summary     *bls.DKGSummary
 	)
 
-	if summary, err = LoadDKGSummary(ctx, id); err != nil {
-		return
+	// Time loading DKG summary
+	startLoad := time.Now()
+	if len(dkgSum) > 0 {
+		summary = dkgSum[0]
+	} else {
+		summary, err = LoadDKGSummary(ctx, id)
+		if err != nil {
+			return
+		}
+	}
+	logging.Logger.Debug("[dkg_timing] Loading DKG summary",
+		zap.Duration("duration", time.Since(startLoad)))
+
+	if mb.StartingRound > 0 && !summary.IsFinalized {
+		return errors.New("DKG summary is not finalized")
 	}
 
 	if summary.SecretShares == nil {
@@ -85,50 +116,105 @@ func (mc *Chain) SetDKGSFromStore(ctx context.Context, mb *block.MagicBlock) (
 			"no saved shares for dkg")
 	}
 
+	// Time DKG creation
+	startDKG := time.Now()
 	var newDKG = bls.MakeDKG(mb.T, mb.N, selfNodeKey)
 	newDKG.MagicBlockNumber = mb.MagicBlockNumber
 	newDKG.StartingRound = mb.StartingRound
+	logging.Logger.Debug("[dkg_timing] DKG creation",
+		zap.Duration("duration", time.Since(startDKG)))
 
 	if mb.Miners == nil {
 		return common.NewError("failed to set dkg from store", "miners pool is not initialized in magic block")
 	}
 
-	for k := range mb.Miners.CopyNodesMap() {
-		if savedShare, ok := summary.SecretShares[ComputeBlsID(k)]; ok {
-			if err := newDKG.AddSecretShare(bls.ComputeIDdkg(k), savedShare, false); err != nil {
-				return err
-			}
-		} else if v, ok := mb.GetShareOrSigns().Get(k); ok {
-			if share, ok := v.ShareOrSigns[node.Self.Underlying().GetKey()]; ok && share.Share != "" {
-				if err := newDKG.AddSecretShare(bls.ComputeIDdkg(k), share.Share, false); err != nil {
-					return err
+	// Time secret shares processing - Parallelized version
+	startShares := time.Now()
+
+	// Create channels for parallel processing
+	errChan := make(chan error, 1)
+	semaphore := make(chan struct{}, runtime.NumCPU()) // Limit concurrent goroutines
+	var wg sync.WaitGroup
+
+	miners := mb.Miners.CopyNodesMap()
+	for k := range miners {
+		wg.Add(1)
+		go func(key string) {
+			defer wg.Done()
+
+			// Acquire semaphore
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+
+			if savedShare, ok := summary.SecretShares[ComputeBlsID(key)]; ok {
+				if err := newDKG.AddSecretShare(bls.ComputeIDdkg(key), savedShare, true); err != nil {
+					select {
+					case errChan <- err:
+					default:
+					}
+				}
+			} else if v, ok := mb.GetShareOrSigns().Get(key); ok {
+				if share, ok := v.ShareOrSigns[node.Self.Underlying().GetKey()]; ok && share.Share != "" {
+					if err := newDKG.AddSecretShare(bls.ComputeIDdkg(key), share.Share, true); err != nil {
+						select {
+						case errChan <- err:
+						default:
+						}
+					}
 				}
 			}
-		}
+		}(k)
 	}
+
+	// Wait in a separate goroutine
+	go func() {
+		wg.Wait()
+		close(errChan)
+	}()
+
+	// Check for errors
+	if err := <-errChan; err != nil {
+		return err
+	}
+
+	logging.Logger.Debug("[dkg_timing] Secret shares processing",
+		zap.Duration("duration", time.Since(startShares)))
 
 	if !newDKG.HasAllSecretShares() {
 		return common.NewError("failed to set dkg from store",
 			"not enough secret shares for dkg")
 	}
 
+	// Time key aggregation
+	startAgg := time.Now()
 	newDKG.AggregateSecretKeyShares()
+	logging.Logger.Debug("[dkg_timing] sec key aggregation",
+		zap.Duration("duration", time.Since(startAgg)))
+
+	startAgg = time.Now()
 	newDKG.Pi = newDKG.Si.GetPublicKey()
-	mpks, err := mb.Mpks.GetMpkMap()
-	if err != nil {
-		return err
-	}
+	mpks := mb.Mpks.GetMpkMapStrings()
+	newDKG.SetMpksMap(mpks)
+	logging.Logger.Debug("[dkg_timing] convert mpks",
+		zap.Duration("duration", time.Since(startAgg)))
 
-	if err := newDKG.AggregatePublicKeyShares(mpks); err != nil {
-		return err
-	}
+	startAgg = time.Now()
+	// if err := newDKG.AggregatePublicKeySharesParallel(mpks); err != nil {
+	// 	return err
+	// }
+	// logging.Logger.Debug("[dkg_timing] pub key aggregation",
+	// 	zap.Duration("duration", time.Since(startAgg)))
 
-	if err = mc.SetDKG(newDKG, mb.StartingRound); err != nil {
+	// Time final DKG setting
+	startSet := time.Now()
+	if err = mc.SetDKG(newDKG); err != nil {
 		Logger.Error("failed to set dkg", zap.Error(err))
-		return // error
+		return
 	}
+	logging.Logger.Debug("[dkg_timing] Final DKG setting",
+		zap.Duration("duration", time.Since(startSet)))
 
-	return // ok, set
+	return
 }
 
 // VerifySigShares - Verify the bls sig share is correct
@@ -181,7 +267,7 @@ func (mc *Chain) GetBlsMessageForRound(r *round.Round) (string, error) {
 		zap.Int("round_timeout", r.GetTimeoutCount()),
 		zap.Int64("prev_rseed", pr.GetRandomSeed()),
 		zap.String("prev round vrf random seed", prrs),
-		zap.Any("bls_msg", blsMsg))
+		zap.String("bls_msg", blsMsg))
 
 	return blsMsg, nil
 }
@@ -220,7 +306,8 @@ func (mc *Chain) GetBlsShare(ctx context.Context, r *round.Round) (string, error
 		zap.Int("rtc", r.GetTimeoutCount()),
 		zap.String("dkg_pi", dkg.Si.GetPublicKey().GetHexString()),
 		zap.Int64("dkg_sr", dkg.StartingRound),
-		zap.Int64("mb_sr", mb.StartingRound))
+		zap.Int64("mb_sr", mb.StartingRound),
+		zap.String("share", sigShare.GetHexString()))
 
 	return sigShare.GetHexString(), nil
 }
@@ -289,7 +376,7 @@ func (mc *Chain) AddVRFShare(ctx context.Context, mr *Round, vrfs *round.VRFShar
 		// cache the vrf share if the previous round is not ready yet
 		mr.vrfSharesCache.add(vrfs)
 
-		Logger.Warn("failed to get bls message", zap.Any("vrfs_share", vrfs.Share), zap.Any("round", mr.Round))
+		Logger.Warn("failed to get bls message", zap.String("vrfs_share", vrfs.Share), zap.Any("round", mr.Round))
 		return false
 	}
 
@@ -318,8 +405,8 @@ func verifyVRFShare(r *Round, vrfs *round.VRFShare, blsMsg string, dkg *bls.DKG)
 
 	if err := share.SetHexString(vrfs.Share); err != nil {
 		Logger.Error("failed to decode share hex string",
-			zap.Any("vrfs_share", vrfs.Share),
-			zap.Any("message", blsMsg))
+			zap.String("vrfs_share", vrfs.Share),
+			zap.String("message", blsMsg))
 		return false
 	}
 
@@ -327,10 +414,10 @@ func verifyVRFShare(r *Round, vrfs *round.VRFShare, blsMsg string, dkg *bls.DKG)
 		stringID := (&partyID).GetHexString()
 		pi := dkg.GetPublicKeyByID(partyID)
 		Logger.Error("failed to verify share",
-			zap.Any("share", share.GetHexString()),
-			zap.Any("message", blsMsg),
-			zap.Any("from", stringID),
-			zap.Any("pi", pi.GetHexString()),
+			zap.String("share", share.GetHexString()),
+			zap.String("message", blsMsg),
+			zap.String("from", stringID),
+			zap.String("pi", pi.GetHexString()),
 			zap.String("node_id", vrfs.GetParty().GetKey()),
 			zap.Int64("round", vrfs.Round),
 			zap.Int64("dkg_starting_round", dkg.StartingRound),
@@ -343,25 +430,26 @@ func verifyVRFShare(r *Round, vrfs *round.VRFShare, blsMsg string, dkg *bls.DKG)
 	Logger.Info("verified vrf",
 		zap.Int64("round", vrfs.Round),
 		zap.String("node_id", vrfs.GetParty().GetKey()),
-		zap.Any("share", share.GetHexString()),
-		zap.Any("from", (&partyID).GetHexString()),
-		zap.Any("message", blsMsg))
+		zap.String("share", share.GetHexString()),
+		zap.String("from", (&partyID).GetHexString()),
+		zap.String("message", blsMsg))
 	return true
 }
 
 func (mc *Chain) verifyCachedVRFShares(ctx context.Context, blsMsg string, r *Round, dkg *bls.DKG) {
 	if err := mc.verifyCachedVRFSharesWorker.Run(ctx, func() error {
 		var (
-			vrfShares    = r.vrfSharesCache.getAll()
-			blsThreshold = dkg.T
-			roundTC      = r.GetTimeoutCount()
+			vrfShares     = r.vrfSharesCache.getAll()
+			blsThreshold  = dkg.T
+			roundTC       = r.GetTimeoutCount()
+			removeVRFKeys = make(map[string]struct{}, len(vrfShares))
 		)
 
 		if len(vrfShares) == 0 {
 			return nil
 		}
 
-		defer r.vrfSharesCache.clean(roundTC)
+		defer r.vrfSharesCache.clean(removeVRFKeys)
 
 		for _, vrfs := range vrfShares {
 			if vrfs.GetRoundTimeoutCount() != roundTC {
@@ -373,6 +461,7 @@ func (mc *Chain) verifyCachedVRFShares(ctx context.Context, blsMsg string, r *Ro
 			}
 
 			r.AddVRFShare(vrfs, blsThreshold)
+			removeVRFKeys[vrfs.GetParty().GetKey()] = struct{}{}
 		}
 		return nil
 	}); err != nil {
@@ -434,8 +523,11 @@ func (mc *Chain) ThresholdNumBLSSigReceived(ctx context.Context, mr *Round, blsT
 	var rbOutput = encryption.Hash(groupSignature.GetHexString())
 	Logger.Info("receive bls sign",
 		zap.Int64("round", mr.GetRoundNumber()),
-		zap.Any("group_signature", groupSignature.GetHexString()),
-		zap.String("rboOutput", rbOutput))
+		zap.String("group_signature", groupSignature.GetHexString()),
+		zap.String("rboOutput", rbOutput),
+		zap.Int64("dkg_starting_round", dkg.StartingRound),
+		zap.Int64("dkg_mb_number", dkg.MagicBlockNumber),
+	)
 
 	//mc.computeRBO(ctx, mr, rbOutput)
 	if err := mc.computeRBO(ctx, mr, rbOutput); err != nil {
@@ -473,7 +565,10 @@ func getVRFShareInfo(mr *Round) ([]string, []string) {
 
 func (mc *Chain) computeRoundRandomSeed(ctx context.Context, pr round.RoundI, r *Round, rbo string) error {
 
-	var seed int64
+	var (
+		seed   int64
+		prSeed int64
+	)
 	if mc.ChainConfig.IsDkgEnabled() {
 		useed, err := strconv.ParseUint(rbo[0:16], 16, 64)
 		if err != nil {
@@ -482,8 +577,9 @@ func (mc *Chain) computeRoundRandomSeed(ctx context.Context, pr round.RoundI, r 
 		seed = int64(useed)
 	} else {
 		if pr != nil {
+			prSeed = pr.GetRandomSeed()
 			if mpr := pr.(*Round); mpr.IsVRFComplete() {
-				seed = rand.New(rand.NewSource(pr.GetRandomSeed())).Int63()
+				seed = rand.New(rand.NewSource(prSeed)).Int63()
 			}
 		} else {
 			return fmt.Errorf("pr is null")
@@ -495,8 +591,7 @@ func (mc *Chain) computeRoundRandomSeed(ctx context.Context, pr round.RoundI, r 
 		Logger.Info("Starting round with vrf", zap.Int64("round", r.GetRoundNumber()),
 			zap.Int("roundtimeout", r.GetTimeoutCount()),
 			zap.Int64("rseed", seed), zap.Int64("prev_round", pr.GetRoundNumber()),
-			//zap.Int("Prev_roundtimeout", pr.GetTimeoutCount()),
-			zap.Int64("Prev_rseed", pr.GetRandomSeed()))
+			zap.Int64("Prev_rseed", prSeed))
 	}
 	vrfStartTime := r.GetVrfStartTime()
 	if !vrfStartTime.IsZero() {

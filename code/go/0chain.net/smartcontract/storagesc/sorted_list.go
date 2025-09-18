@@ -9,6 +9,7 @@ import (
 // SortedList represents a unique sorted list of strings for O(logN) access
 type SortedList []string
 
+//nolint:unused
 func (sl SortedList) getIndex(id string) (i int, ok bool) {
 	i = sort.Search(len(sl), func(i int) bool {
 		return sl[i] >= id
@@ -27,6 +28,7 @@ func (sl *SortedList) removeByIndex(i int) {
 	(*sl) = append((*sl)[:i], (*sl)[i+1:]...)
 }
 
+//nolint:unused
 func (sl *SortedList) remove(id string) (ok bool) {
 	var i int
 	if i, ok = sl.getIndex(id); !ok {
@@ -36,6 +38,7 @@ func (sl *SortedList) remove(id string) (ok bool) {
 	return true // removed
 }
 
+//nolint:unused
 func (sl *SortedList) add(id string) (ok bool) {
 	if len(*sl) == 0 {
 		(*sl) = append((*sl), id)
@@ -66,25 +69,26 @@ type SortedBlobbers []*StorageNode
 //nolint:golint,unused
 func (sb SortedBlobbers) getIndex(id string) (i int, ok bool) {
 	i = sort.Search(len(sb), func(i int) bool {
-		return sb[i].ID >= id
+		return sb[i].Id() >= id
 	})
 	if i == len(sb) {
 		return // not found
 	}
-	if sb[i].ID == id {
+	if sb[i].Id() == id {
 		return i, true // found
 	}
 	return // not found
 }
 
+//nolint:unused
 func (sb SortedBlobbers) get(id string) (b *StorageNode, ok bool) {
 	var i = sort.Search(len(sb), func(i int) bool {
-		return sb[i].ID >= id
+		return sb[i].Id() >= id
 	})
 	if i == len(sb) {
 		return // not found
 	}
-	if sb[i].ID == id {
+	if sb[i].Id() == id {
 		return sb[i], true // found
 	}
 	return // not found
@@ -111,7 +115,7 @@ func (sb *SortedBlobbers) add(b *StorageNode) (ok bool) {
 		return true // added
 	}
 	var i = sort.Search(len(*sb), func(i int) bool {
-		return (*sb)[i].ID >= b.ID
+		return (*sb)[i].Id() >= b.Id()
 	})
 	// out of bounds
 	if i == len(*sb) {
@@ -119,7 +123,7 @@ func (sb *SortedBlobbers) add(b *StorageNode) (ok bool) {
 		return true // added
 	}
 	// the same
-	if (*sb)[i].ID == b.ID {
+	if (*sb)[i].Id() == b.Id() {
 		(*sb)[i] = b // replace
 		return false // already have
 	}
@@ -132,13 +136,14 @@ func (sb *SortedBlobbers) add(b *StorageNode) (ok bool) {
 //nolint:golint,unused
 func (sb *SortedBlobbers) update(b *StorageNode) (ok bool) {
 	var i int
-	if i, ok = sb.getIndex(b.ID); !ok {
+	if i, ok = sb.getIndex(b.Id()); !ok {
 		return
 	}
 	(*sb)[i] = b // replace
 	return
 }
 
+//nolint:unused
 func (sb SortedBlobbers) copy() (cp []*StorageNode) {
 	cp = make([]*StorageNode, 0, len(sb))
 	for _, b := range sb {

@@ -1,12 +1,13 @@
 package benchmark
 
 import (
+	"fmt"
 	"strconv"
 	"time"
 
-	"0chain.net/chaincore/currency"
-
+	"0chain.net/smartcontract/benchmark/main/cmd/log"
 	"0chain.net/smartcontract/dbs/event"
+	"github.com/0chain/common/core/currency"
 
 	"0chain.net/core/common"
 	"0chain.net/core/encryption"
@@ -15,20 +16,27 @@ import (
 )
 
 func AddMockEvents(eventDb *event.EventDb) {
-	for block_number := int64(0); block_number <= viper.GetInt64(benchmark.NumBlocks); block_number++ {
-		for i := int(0); i <= viper.GetInt(benchmark.NumTransactionPerBlock); i++ {
-			if viper.GetBool(benchmark.EventDbEnabled) {
-				event := event.Event{
-					BlockNumber: block_number,
-					TxHash:      GetMockTransactionHash(block_number, i),
-					Type:        int(event.TypeStats),
-					Tag:         3,
-					Index:       "mock index",
-					Data:        "mock data",
-				}
-				_ = eventDb.Store.Get().Create(&event)
-			}
+	if !viper.GetBool(benchmark.EventDbEnabled) {
+		return
+	}
+
+	var events []event.Event
+	for round := benchmark.GetOldestAggregateRound(); round < viper.GetInt64(benchmark.NumBlocks); round++ {
+		_ = eventDb.ManagePartitions(round)
+		for i := 0; i <= viper.GetInt(benchmark.NumTransactionPerBlock); i++ {
+			events = append(events, event.Event{
+				BlockNumber: round,
+				TxHash:      GetMockTransactionHash(round, i),
+				Type:        event.TypeStats,
+				Tag:         3,
+				Index:       "mock index",
+				Data:        "mock data",
+			})
+
 		}
+	}
+	if res := eventDb.Store.Get().Create(&events); res.Error != nil {
+		log.Fatal("adding mock events", res.Error)
 	}
 }
 
@@ -56,13 +64,18 @@ func AddMockTransactions(
 	if !viper.GetBool(benchmark.EventDbEnabled) {
 		return
 	}
-	const txnTypeSmartContract = 1000
-	for blockNumber := int64(0); blockNumber <= viper.GetInt64(benchmark.NumBlocks); blockNumber++ {
+
+	fmt.Printf("From AddMockTransactions, edb config = %+v\n", eventDb.Config())
+
+	const txnTxnSmartContract = 1000
+	for blockNumber := int64(1); blockNumber <= viper.GetInt64(benchmark.NumBlocks); blockNumber++ {
+		_ = eventDb.ManagePartitions(blockNumber)
 		for i := 0; i <= viper.GetInt(benchmark.NumTransactionPerBlock); i++ {
 			if viper.GetBool(benchmark.EventDbEnabled) {
 				transaction := event.Transaction{
 					Hash:              GetMockTransactionHash(blockNumber, i),
 					BlockHash:         GetMockBlockHash(blockNumber),
+					Round:             blockNumber,
 					Version:           "mock version",
 					ClientId:          clients[i%len(clients)],
 					ToClientId:        clients[int(blockNumber)%len(clients)],
@@ -70,7 +83,8 @@ func AddMockTransactions(
 					Signature:         "mock signature",
 					CreationDate:      int64(common.Now()),
 					Fee:               100,
-					TransactionType:   txnTypeSmartContract,
+					Nonce:             int64(i),
+					TransactionType:   txnTxnSmartContract,
 					TransactionOutput: "mock output",
 					OutputHash:        "mock output hash",
 					Status:            0,
@@ -80,7 +94,10 @@ func AddMockTransactions(
 				if err != nil {
 					panic(err)
 				}
-				_ = eventDb.Store.Get().Create(&transaction)
+				err = eventDb.Store.Get().Create(&transaction).Error
+				if err != nil {
+					panic(err)
+				}
 			}
 		}
 	}
@@ -93,27 +110,29 @@ func AddMockBlocks(
 	if !viper.GetBool(benchmark.EventDbEnabled) {
 		return
 	}
-	for block_number := int64(0); block_number <= viper.GetInt64(benchmark.NumBlocks); block_number++ {
+	for blockNumber := int64(1); blockNumber <= viper.GetInt64(benchmark.NumBlocks); blockNumber++ {
+		_ = eventDb.ManagePartitions(blockNumber)
 		if viper.GetBool(benchmark.EventDbEnabled) {
 			block := event.Block{
-				Hash:                  GetMockBlockHash(block_number),
+				Hash:                  GetMockBlockHash(blockNumber),
 				Version:               "mock version",
 				CreationDate:          int64(common.Now().Duration()),
-				Round:                 block_number,
-				MinerID:               miners[int(block_number)%len(miners)],
-				RoundRandomSeed:       block_number,
+				Round:                 blockNumber,
+				MinerID:               miners[int(blockNumber)%len(miners)],
+				RoundRandomSeed:       blockNumber,
 				MerkleTreeRoot:        "mock mt root",
 				StateHash:             "mock state hash",
 				ReceiptMerkleTreeRoot: "mock rmt root",
 				NumTxns:               viper.GetInt(benchmark.NumTransactionPerBlock),
 				MagicBlockHash:        "mock matic block hash",
-				PrevHash:              GetMockBlockHash(block_number - 1),
+				PrevHash:              GetMockBlockHash(blockNumber - 1),
 				Signature:             "mock signature",
 				ChainId:               "mock chain id",
+				StateChangesCount:     33,
 				RunningTxnCount:       "mock running txn count",
 				RoundTimeoutCount:     0,
-				CreatedAt:             time.Now(),
 			}
+			block.CreatedAt = time.Now()
 			_ = eventDb.Store.Get().Create(&block)
 		}
 	}
@@ -126,12 +145,16 @@ func AddMockUsers(
 	if !viper.GetBool(benchmark.EventDbEnabled) {
 		return
 	}
+	var users []event.User
 	for _, client := range clients {
 		user := event.User{
 			UserID:  client,
 			Balance: 100,
 		}
-		_ = eventDb.Store.Get().Create(&user)
+		users = append(users, user)
+	}
+	if res := eventDb.Store.Get().Create(&users); res.Error != nil {
+		log.Fatal(res.Error)
 	}
 }
 
@@ -144,17 +167,40 @@ func GetMockTransactionHash(blockNumber int64, index int) string {
 		strconv.FormatInt(blockNumber, 10) + "index" + strconv.Itoa(index))
 }
 
-func GetMockWriteMarkerLookUpHash(allocationNum int, index int) string {
-	return encryption.Hash("write marker look up hash" + "block" +
-		strconv.Itoa(allocationNum) + "index" + strconv.Itoa(index))
-}
+func AddAggregatePartitions(edb *event.EventDb) {
+	var (
+		period               = viper.GetInt(benchmark.EventDbPartitionChangePeriod)
+		keep                 = viper.GetInt(benchmark.EventDbPartitionKeepCount)
+		permanentPeriod      = viper.GetInt(benchmark.EventDbPermanentPartitionChangePeriod)
+		permanentKeep        = viper.GetInt(benchmark.EventDbPermanentPartitionKeepCount)
+		blocks               = viper.GetInt64(benchmark.NumBlocks)
+		firstPermanentPeriod = benchmark.GetOldestPermanentAggregateRound()
+		firstPeriod          = benchmark.GetOldestAggregateRound()
+	)
 
-func GetMockWriteMarkerContentHash(allocationNum int, index int) string {
-	return encryption.Hash("write marker content hash" + "block" +
-		strconv.Itoa(allocationNum) + "index" + strconv.Itoa(index))
-}
+	for i := 0; i < permanentKeep; i++ {
+		round := firstPermanentPeriod + int64(i*permanentPeriod)
+		if round < 0 {
+			continue
+		} else if round > blocks {
+			break
+		}
 
-func GetMockWriteMarkerFileName(index int) string {
-	return "mock write marker file_" + strconv.Itoa(index)
+		if err := edb.AddPermanentPartitions(round); err != nil {
+			log.Println(err)
+		}
+	}
 
+	for i := 0; i < keep; i++ {
+		round := firstPeriod + int64(i*period)
+		if round < 0 {
+			continue
+		} else if round > blocks {
+			break
+		}
+
+		if err := edb.AddPartitions(round); err != nil {
+			log.Println(err)
+		}
+	}
 }

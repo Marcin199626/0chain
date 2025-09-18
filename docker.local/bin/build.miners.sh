@@ -9,9 +9,6 @@ DOCKER_DIR="$ROOT/docker.local/build.miner"
 DOCKER_FILE="$DOCKER_DIR/Dockerfile"
 DOCKERCOMPOSE="$DOCKER_DIR/docker-compose.yml"
 
-# generate mocks
-make build-mocks
-
 cmd="build"
 
 if [[ "$*" == *"--dev"* ]]
@@ -34,7 +31,7 @@ else
 
     cd "$ROOT"
 
-    docker $cmd --build-arg GIT_COMMIT="$GIT_COMMIT" \
+    docker $cmd --no-cache --progress=plain --build-arg GIT_COMMIT="$GIT_COMMIT" \
         -f "$DOCKER_FILE" . -t miner --build-arg DEV=no
 fi
 

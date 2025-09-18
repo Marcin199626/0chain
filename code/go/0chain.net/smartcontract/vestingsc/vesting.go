@@ -11,7 +11,7 @@ import (
 
 	sci "0chain.net/chaincore/smartcontractinterface"
 
-	"0chain.net/chaincore/currency"
+	"github.com/0chain/common/core/currency"
 
 	"0chain.net/smartcontract"
 
@@ -21,7 +21,7 @@ import (
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/common"
 	"0chain.net/core/datastore"
-	"0chain.net/core/util"
+	"github.com/0chain/common/core/util"
 )
 
 //msgp:ignore info destInfo addRequest
@@ -874,6 +874,7 @@ func (vsc *VestingSmartContract) trigger(t *transaction.Transaction,
 // REST handlers
 //
 
+//nolint:unused
 func (vsc *VestingSmartContract) getPoolInfoHandler(ctx context.Context,
 	params url.Values, balances chainstate.StateContextI) (
 	resp interface{}, err error) {

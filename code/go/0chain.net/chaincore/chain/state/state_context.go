@@ -1,24 +1,31 @@
 package state
 
 import (
+	"errors"
 	"fmt"
+	"reflect"
+	"sort"
+	"strings"
 	"sync"
 
-	"0chain.net/core/logging"
+	"0chain.net/core/config"
+	"github.com/0chain/common/core/logging"
 	"go.uber.org/zap"
 
 	"0chain.net/core/common"
 
-	"0chain.net/chaincore/currency"
+	"github.com/0chain/common/core/currency"
+
+	"github.com/0chain/common/core/statecache"
 
 	"0chain.net/chaincore/block"
-	"0chain.net/chaincore/config"
 	"0chain.net/chaincore/state"
+	"0chain.net/chaincore/threshold/bls"
 	"0chain.net/chaincore/transaction"
 	"0chain.net/core/datastore"
 	"0chain.net/core/encryption"
-	"0chain.net/core/util"
 	"0chain.net/smartcontract/dbs/event"
+	"github.com/0chain/common/core/util"
 )
 
 //msgp:ignore StateContext, TimedQueryStateContext
@@ -27,16 +34,28 @@ import (
 type ApprovedMinter int
 
 const (
+	// old MPT max node size
+	MPTMaxAllowableNodeSize = 1024 * 1024 // 1 MB
+)
+
+const (
 	MinterMiner ApprovedMinter = iota
 	MinterStorage
 	MinterZcn
+)
+
+type NonceNameSpace int8
+
+const (
+	NonceNameSpaceMiner NonceNameSpace = 0
 )
 
 var (
 	approvedMinters = []string{
 		"6dba10422e368813802877a85039d3985d96760ed844092319743fb3a76712d9", // miner SC
 		"6dba10422e368813802877a85039d3985d96760ed844092319743fb3a76712d7", // storage SC
-		"6dba10422e368813802877a85039d3985d96760ed844092319743fb3a76712e0"} //zcn SC
+		"6dba10422e368813802877a85039d3985d96760ed844092319743fb3a76712e0", //zcn SC
+		"6dba10422e368813802877a85039d3985d96760ed844092319743fb3a76712d3"} //faucet SC
 )
 
 func GetMinter(minter ApprovedMinter) (string, error) {
@@ -58,6 +77,7 @@ func GetMinter(minter ApprovedMinter) (string, error) {
 
 type CommonStateContextI interface {
 	GetTrieNode(key datastore.Key, v util.MPTSerializable) error
+	InsertTrieNode(key datastore.Key, v util.MPTSerializable) (datastore.Key, error)
 	GetBlock() *block.Block
 	GetLatestFinalizedBlock() *block.Block
 }
@@ -76,50 +96,64 @@ type TimedQueryStateContextI interface {
 
 type Appender func(events []event.Event, current event.Event) []event.Event
 
+// StateContextI - a state context interface. These interface are available for the smart contract
+//
 //go:generate mockery --case underscore --name=StateContextI --output=./mocks
-//StateContextI - a state context interface. These interface are available for the smart contract
 type StateContextI interface {
 	QueryStateContextI
 	GetLastestFinalizedMagicBlock() *block.Block
 	GetChainCurrentMagicBlock() *block.MagicBlock
-	SetMagicBlock(block *block.MagicBlock)    // cannot use in smart contracts or REST endpoints
+	GetMagicBlock(round int64) *block.MagicBlock
+	GetMagicBlockNoOffset(round int64) *block.MagicBlock
+	LoadDKGSummary(magicBlockNum int64) (*bls.DKGSummary, error)
+	SetMagicBlock(block *block.MagicBlock) // cannot use in smart contracts or REST endpoints
+	SetBlockMagicBlock(block *block.MagicBlock)
+	SetDKG(dkg *bls.DKG) error
 	GetState() util.MerklePatriciaTrieI       // cannot use in smart contracts or REST endpoints
 	GetTransaction() *transaction.Transaction // cannot use in smart contracts or REST endpoints
+	GetClientState(clientID datastore.Key) (*state.State, error)
+	SetClientState(clientID datastore.Key, s *state.State) (util.Key, error)
+	GetMinerNonce(minerID datastore.Key) (int64, error)
+	SetMinerNonce(minerID datastore.Key, nonce int64) error
 	GetClientBalance(clientID datastore.Key) (currency.Coin, error)
 	SetStateContext(st *state.State) error // cannot use in smart contracts or REST endpoints
-	InsertTrieNode(key datastore.Key, node util.MPTSerializable) (datastore.Key, error)
 	DeleteTrieNode(key datastore.Key) (datastore.Key, error)
 	AddTransfer(t *state.Transfer) error
 	AddSignedTransfer(st *state.SignedTransfer)
-	AddMint(m *state.Mint) error
 	GetTransfers() []*state.Transfer // cannot use in smart contracts or REST endpoints
 	GetSignedTransfers() []*state.SignedTransfer
-	GetMints() []*state.Mint // cannot use in smart contracts or REST endpoints
 	Validate() error
-	GetBlockSharders(b *block.Block) []string
 	GetSignatureScheme() encryption.SignatureScheme
 	GetLatestFinalizedBlock() *block.Block
-	EmitEvent(event.EventType, event.EventTag, string, interface{}, ...Appender)
+	EmitEvent(eventType event.EventType, eventTag event.EventTag, index string, data interface{}, appender ...Appender)
+	EmitEventWithVersion(eventVersion event.EventVersion, eventType event.EventType, eventTag event.EventTag, index string, data interface{}, appender ...Appender)
 	EmitError(error)
 	GetEvents() []event.Event // cannot use in smart contracts or REST endpoints
+	GetMissingNodeKeys() []util.Key
+	Cache() *statecache.TransactionCache
 }
 
-//StateContext - a context object used to manipulate global state
+// StateContext - a context object used to manipulate global state
 type StateContext struct {
-	block                         *block.Block
-	state                         util.MerklePatriciaTrieI
-	txn                           *transaction.Transaction
-	transfers                     []*state.Transfer
-	signedTransfers               []*state.SignedTransfer
-	mints                         []*state.Mint
-	events                        []event.Event
-	getSharders                   func(*block.Block) []string
+	block           *block.Block
+	state           util.MerklePatriciaTrieI
+	txn             *transaction.Transaction
+	transfers       []*state.Transfer
+	signedTransfers []*state.SignedTransfer
+	events          []event.Event
+	// clientStates is the cache for storing client states, usually for storing txn.From and txn.To
+	clientStates                  map[string]*state.State
 	getLastestFinalizedMagicBlock func() *block.Block
 	getLatestFinalizedBlock       func() *block.Block
+	getMagicBlock                 func(round int64) *block.MagicBlock
+	getMagicBlockNoOffset         func(round int64) *block.MagicBlock
 	getChainCurrentMagicBlock     func() *block.MagicBlock
+	getDKGSummary                 func(magicBlockNum int64) (*bls.DKGSummary, error)
+	setDKG                        func(dkg *bls.DKG) error
 	getSignature                  func() encryption.SignatureScheme
 	eventDb                       *event.EventDb
 	mutex                         *sync.Mutex
+	setMagicBlock                 func(mb *block.MagicBlock)
 }
 
 type GetNow func() common.Timestamp
@@ -145,103 +179,107 @@ func NewStateContext(
 	b *block.Block,
 	s util.MerklePatriciaTrieI,
 	t *transaction.Transaction,
-	getSharderFunc func(*block.Block) []string,
+	getMagicBlock func(int64) *block.MagicBlock,
+	getMagicBlockNoOffset func(int64) *block.MagicBlock,
+	setMagicBlock func(mb *block.MagicBlock),
 	getLastestFinalizedMagicBlock func() *block.Block,
 	getChainCurrentMagicBlock func() *block.MagicBlock,
 	getChainSignature func() encryption.SignatureScheme,
 	getLatestFinalizedBlock func() *block.Block,
+	getDKGSummary func(magicBlockNum int64) (*bls.DKGSummary, error),
+	setDKG func(dkg *bls.DKG) error,
 	eventDb *event.EventDb,
 ) (
 	balances *StateContext,
 ) {
+
 	return &StateContext{
 		block:                         b,
 		state:                         s,
 		txn:                           t,
-		getSharders:                   getSharderFunc,
+		getMagicBlock:                 getMagicBlock,
+		getMagicBlockNoOffset:         getMagicBlockNoOffset,
 		getLastestFinalizedMagicBlock: getLastestFinalizedMagicBlock,
 		getLatestFinalizedBlock:       getLatestFinalizedBlock,
 		getChainCurrentMagicBlock:     getChainCurrentMagicBlock,
 		getSignature:                  getChainSignature,
+		getDKGSummary:                 getDKGSummary,
+		setDKG:                        setDKG,
+		setMagicBlock:                 setMagicBlock,
 		eventDb:                       eventDb,
+		clientStates:                  make(map[string]*state.State),
 		mutex:                         new(sync.Mutex),
 	}
 }
 
-//GetBlock - get the block associated with this state context
+// GetBlock - get the block associated with this state context
 func (sc *StateContext) GetBlock() *block.Block {
 	return sc.block
 }
 
-func (sc *StateContext) SetMagicBlock(block *block.MagicBlock) {
+func (sc *StateContext) SetBlockMagicBlock(block *block.MagicBlock) {
 	sc.block.MagicBlock = block
 }
 
-//GetState - get the state MPT associated with this state context
+func (sc *StateContext) SetMagicBlock(block *block.MagicBlock) {
+	sc.setMagicBlock(block)
+}
+
+func (sc *StateContext) GetMagicBlockNoOffset(round int64) *block.MagicBlock {
+	return sc.getMagicBlockNoOffset(round)
+}
+
+// GetState - get the state MPT associated with this state context
 func (sc *StateContext) GetState() util.MerklePatriciaTrieI {
 	return sc.state
 }
 
-//GetTransaction - get the transaction associated with this context
+// GetTransaction - get the transaction associated with this context
 func (sc *StateContext) GetTransaction() *transaction.Transaction {
 	return sc.txn
 }
 
-//AddTransfer - add the transfer
+func (sc *StateContext) LoadDKGSummary(magicBlockNum int64) (*bls.DKGSummary, error) {
+	return sc.getDKGSummary(magicBlockNum)
+}
+
+func (sc *StateContext) SetDKG(dkg *bls.DKG) error {
+	return sc.setDKG(dkg)
+}
+
+// AddTransfer - add the transfer
 func (sc *StateContext) AddTransfer(t *state.Transfer) error {
 	sc.mutex.Lock()
 	defer sc.mutex.Unlock()
-	if t.ClientID != sc.txn.ClientID && t.ClientID != sc.txn.ToClientID {
-		return state.ErrInvalidTransfer
+	if !encryption.IsHash(t.ToClientID) {
+		return errors.New("invalid transaction ToClientID")
 	}
 	sc.transfers = append(sc.transfers, t)
 
 	return nil
 }
 
-//AddSignedTransfer - add the signed transfer
+// AddSignedTransfer - add the signed transfer
 func (sc *StateContext) AddSignedTransfer(st *state.SignedTransfer) {
 	// Signature on the signed transfer will be checked on call to sc.Validate()
 	sc.signedTransfers = append(sc.signedTransfers, st)
 }
 
-//AddMint - add the mint
-func (sc *StateContext) AddMint(m *state.Mint) error {
-	sc.mutex.Lock()
-	defer sc.mutex.Unlock()
-	if !sc.isApprovedMinter(m) {
-		return state.ErrInvalidMint
-	}
-	sc.mints = append(sc.mints, m)
-
-	return nil
-}
-
-func (sc *StateContext) isApprovedMinter(m *state.Mint) bool {
-	for _, minter := range approvedMinters {
-		if m.Minter == minter && sc.txn.ToClientID == minter {
-			return true
-		}
-	}
-	return false
-}
-
-//GetTransfers - get all the transfers
+// GetTransfers - get all the transfers
 func (sc *StateContext) GetTransfers() []*state.Transfer {
 	return sc.transfers
 }
 
-//GetSignedTransfers - get all the signed transfers
+// GetSignedTransfers - get all the signed transfers
 func (sc *StateContext) GetSignedTransfers() []*state.SignedTransfer {
 	return sc.signedTransfers
 }
 
-//GetMints - get all the mints and fight bad breath
-func (sc *StateContext) GetMints() []*state.Mint {
-	return sc.mints
+func (sc *StateContext) EmitEvent(eventType event.EventType, tag event.EventTag, index string, data interface{}, appenders ...Appender) {
+	sc.EmitEventWithVersion(event.Version1, eventType, tag, index, data, appenders...)
 }
 
-func (sc *StateContext) EmitEvent(eventType event.EventType, tag event.EventTag, index string, data interface{}, appenders ...Appender) {
+func (sc *StateContext) EmitEventWithVersion(eventVersion event.EventVersion, eventType event.EventType, tag event.EventTag, index string, data interface{}, appenders ...Appender) {
 	sc.mutex.Lock()
 	defer sc.mutex.Unlock()
 	if index == "" {
@@ -250,13 +288,17 @@ func (sc *StateContext) EmitEvent(eventType event.EventType, tag event.EventTag,
 			zap.Any("tag", tag),
 			zap.Any("data", data))
 	}
+	if len(eventVersion) == 0 || eventVersion == "0" {
+		eventVersion = event.Version1
+	}
 	e := event.Event{
 		BlockNumber: sc.block.Round,
 		TxHash:      sc.txn.Hash,
-		Type:        int(eventType),
-		Tag:         int(tag),
+		Type:        eventType,
+		Tag:         tag,
 		Index:       index,
 		Data:        data,
+		Version:     eventVersion,
 	}
 	if len(appenders) != 0 {
 		sc.events = appenders[0](sc.events, e)
@@ -270,7 +312,7 @@ func (sc *StateContext) EmitError(err error) {
 		{
 			BlockNumber: sc.block.Round,
 			TxHash:      sc.txn.Hash,
-			Type:        int(event.TypeError),
+			Type:        event.TypeError,
 			Data:        err.Error(),
 		},
 	}
@@ -284,7 +326,7 @@ func (sc *StateContext) GetEventDB() *event.EventDb {
 	return sc.eventDb
 }
 
-//Validate - implement interface
+// Validate - implement interface
 func (sc *StateContext) Validate() error {
 	var (
 		amount currency.Coin
@@ -295,10 +337,6 @@ func (sc *StateContext) Validate() error {
 			amount, err = currency.AddCoin(amount, transfer.Amount)
 			if err != nil {
 				return err
-			}
-		} else {
-			if transfer.ClientID != sc.txn.ToClientID {
-				return state.ErrInvalidTransfer
 			}
 		}
 	}
@@ -327,39 +365,104 @@ func (sc *StateContext) Validate() error {
 	return nil
 }
 
-func (sc *StateContext) getClientState(clientID string) (*state.State, error) {
+func (sc *StateContext) GetClientState(clientID string) (*state.State, error) {
+	sc.mutex.Lock()
+	defer sc.mutex.Unlock()
+	if s, ok := sc.clientStates[clientID]; ok {
+		return s.Clone(), nil
+	}
+
 	s := &state.State{}
-	err := sc.state.GetNodeValue(util.Path(clientID), s)
+	path := util.Path(clientID)
+	err := sc.state.GetNodeValue(path, s)
 	if err != nil {
 		if err != util.ErrValueNotPresent {
 			return nil, err
 		}
+		if er := sc.SetStateContext(s); er != nil {
+			return s, er
+		}
 		return s, err
 	}
 	//TODO: should we apply the pending transfers?
+	sc.clientStates[clientID] = s.Clone()
 	return s, nil
 }
 
-//GetClientBalance - get the balance of the client
+func getNamespaceNoncePath(clientID string, namespace NonceNameSpace) util.Path {
+	return util.Path(encryption.Hash(fmt.Sprintf("namespace_nonce_%d_%s", namespace, clientID)))
+}
+
+func GetNamespaceNonce(clientState util.MerklePatriciaTrieI, clientID string, namespace NonceNameSpace) (*state.NamespaceNonce, error) {
+	ns := &state.NamespaceNonce{}
+	path := getNamespaceNoncePath(clientID, namespace)
+	err := clientState.GetNodeValue(path, ns)
+	if err != nil {
+		return nil, err
+	}
+	return ns, nil
+}
+
+func (sc *StateContext) GetMinerNonce(minerID datastore.Key) (int64, error) {
+	ns, err := GetNamespaceNonce(sc.GetState(), minerID, NonceNameSpaceMiner)
+	if err != nil && err != util.ErrValueNotPresent {
+		return 0, err
+	}
+
+	if err == util.ErrValueNotPresent {
+		return 0, nil
+	}
+
+	if ns.Namespace != int8(NonceNameSpaceMiner) {
+		return 0, fmt.Errorf("invalid namespace: %d", ns.Namespace)
+	}
+
+	return ns.Nonce, nil
+}
+
+func (sc *StateContext) SetMinerNonce(minerID datastore.Key, nonce int64) error {
+	ns := &state.NamespaceNonce{
+		Namespace: int8(NonceNameSpaceMiner),
+		Nonce:     nonce,
+	}
+
+	_, err := sc.state.Insert(getNamespaceNoncePath(minerID, NonceNameSpaceMiner), ns)
+	return err
+}
+
+func (sc *StateContext) SetClientState(clientID string, s *state.State) (util.Key, error) {
+	k, err := sc.state.Insert(util.Path(clientID), s)
+	if err != nil {
+		return nil, err
+	}
+
+	sc.mutex.Lock()
+	sc.clientStates[clientID] = s.Clone()
+	sc.mutex.Unlock()
+
+	return k, nil
+}
+
+// GetClientBalance - get the balance of the client
 func (sc *StateContext) GetClientBalance(clientID string) (currency.Coin, error) {
-	s, err := sc.getClientState(clientID)
+	s, err := sc.GetClientState(clientID)
 	if err != nil {
 		return 0, err
 	}
 	return s.Balance, nil
 }
 
-//GetClientNonce - get the nonce of the client
+// GetClientNonce - get the nonce of the client
 func (sc *StateContext) GetClientNonce(clientID string) (int64, error) {
-	s, err := sc.getClientState(clientID)
+	s, err := sc.GetClientState(clientID)
 	if err != nil {
 		return 0, err
 	}
 	return s.Nonce, nil
 }
 
-func (sc *StateContext) GetBlockSharders(b *block.Block) []string {
-	return sc.getSharders(b)
+func (sc *StateContext) GetMagicBlock(round int64) *block.MagicBlock {
+	return sc.getMagicBlock(round)
 }
 
 func (sc *StateContext) GetLastestFinalizedMagicBlock() *block.Block {
@@ -375,23 +478,65 @@ func (sc *StateContext) GetSignatureScheme() encryption.SignatureScheme {
 }
 
 func (sc *StateContext) GetTrieNode(key datastore.Key, v util.MPTSerializable) error {
-	key_hash := encryption.Hash(key)
-	return sc.state.GetNodeValue(util.Path(key_hash), v)
+	// // // get from MPT
+	// if err := sc.getNodeValue(key, v); err != nil {
+	// 	// fmt.Println("get node value error", err)
+	// 	return err
+	// }
+
+	// return nil
+
+	cv, ok := sc.Cache().Get(key)
+	if ok {
+		ccv, ok := statecache.Copyable(v)
+		if !ok {
+			panic("state context cache - get trie node not copyable")
+		}
+
+		if !ccv.CopyFrom(cv) {
+			panic("state context cache - get trie node copy from failed")
+		}
+		return nil
+	}
+
+	// get from MPT
+	if err := sc.getNodeValue(key, v); err != nil {
+		// fmt.Println("get node value error", err)
+		return err
+	}
+
+	// cache it if it's cacheable
+	if cv, ok := statecache.Cacheable(v); ok {
+		sc.Cache().Set(key, cv)
+	}
+	return nil
 }
 
 func (sc *StateContext) InsertTrieNode(key datastore.Key, node util.MPTSerializable) (datastore.Key, error) {
-	key_hash := encryption.Hash(key)
-	byteKey, err := sc.state.Insert(util.Path(key_hash), node)
-	return datastore.Key(byteKey), err
+	k, err := sc.setNodeValue(key, node)
+	if err != nil {
+		return "", err
+	}
+
+	vn, ok := statecache.Cacheable(node)
+	if ok {
+		sc.Cache().Set(key, vn)
+	}
+
+	return k, nil
 }
 
 func (sc *StateContext) DeleteTrieNode(key datastore.Key) (datastore.Key, error) {
-	key_hash := encryption.Hash(key)
-	byteKey, err := sc.state.Delete(util.Path(key_hash))
-	return datastore.Key(byteKey), err
+	k, err := sc.deleteNode(key)
+	if err != nil {
+		return "", err
+	}
+
+	sc.Cache().Remove(key)
+	return k, nil
 }
 
-//SetStateContext - set the state context
+// SetStateContext - set the state context
 func (sc *StateContext) SetStateContext(s *state.State) error {
 	s.SetRound(sc.block.Round)
 	return s.SetTxnHash(sc.txn.Hash)
@@ -399,4 +544,164 @@ func (sc *StateContext) SetStateContext(s *state.State) error {
 
 func (sc *StateContext) GetLatestFinalizedBlock() *block.Block {
 	return sc.getLatestFinalizedBlock()
+}
+
+func (sc *StateContext) getNodeValue(key datastore.Key, v util.MPTSerializable) error {
+	return sc.state.GetNodeValue(util.Path(encryption.Hash(key)), v)
+}
+
+func (sc *StateContext) setNodeValue(key datastore.Key, node util.MPTSerializable) (datastore.Key, error) {
+	path := util.Path(encryption.Hash(key))
+
+	if actErr := WithActivation(sc, "jason", func() error {
+		if node == nil {
+			// continue the process
+			return nil
+		}
+
+		v, _ := node.MarshalMsg(nil)
+		if len(v) > MPTMaxAllowableNodeSize {
+			// the error should be the same as the error returned by the common package.
+			msg := fmt.Sprintf("node exceeds maximum permissible size of %d bytes for path: %s", MPTMaxAllowableNodeSize, string(path))
+			err := common.NewError("failed to insert node", msg)
+			return err
+		}
+		return nil
+	}, func() error {
+		return nil
+	}); actErr != nil {
+		return "", actErr
+	}
+
+	newKey, err := sc.state.Insert(path, node)
+	if err != nil {
+		return "", err
+	}
+
+	return datastore.Key(newKey), nil
+}
+
+func (sc *StateContext) deleteNode(key datastore.Key) (datastore.Key, error) {
+	newKey, err := sc.state.Delete(util.Path(encryption.Hash(key)))
+	if err != nil {
+		return "", err
+	}
+
+	return datastore.Key(newKey), nil
+}
+
+// GetMissingNodeKeys returns missing node keys
+func (sc *StateContext) GetMissingNodeKeys() []util.Key {
+	return sc.state.GetMissingNodeKeys()
+}
+
+func (sc *StateContext) Cache() *statecache.TransactionCache {
+	return sc.state.Cache()
+}
+
+// ErrInvalidState checks if the error is an invalid state error
+func ErrInvalidState(err error) bool {
+	return err != nil && strings.Contains(err.Error(), util.ErrNodeNotFound.Error())
+}
+
+// ErrInvalidState checks if the error is an invalid state error
+func ErrValueNotPresent(err error) bool {
+	return err != nil && strings.Contains(err.Error(), util.ErrValueNotPresent.Error())
+}
+
+type errorIndex struct {
+	err   error
+	index int
+}
+
+type GetItemFunc[T any] func(id string, balance StateContextI) (T, error)
+
+type rspIndex struct {
+	index int
+	item  interface{}
+}
+
+// GetItemsByIDs read items by ids from MPT concurrently and safely with consistent values
+// Note: the GetItemFunc should not return custom error that wraps the error returned from
+// StateContextI
+func GetItemsByIDs[T any](ids []string, getItem GetItemFunc[*T], balances StateContextI) ([]*T, error) {
+	var (
+		itemC     = make(chan rspIndex, len(ids))
+		stateErrC = make(chan error, len(ids))
+		errC      = make(chan errorIndex, len(ids))
+		wg        sync.WaitGroup
+	)
+
+	for i, id := range ids {
+		wg.Add(1)
+		go func(idx int, id string) {
+			defer wg.Done()
+			item, err := getItem(id, balances)
+			if err != nil {
+				if err != util.ErrValueNotPresent {
+					stateErrC <- err
+					return
+				}
+
+				errC <- errorIndex{
+					err:   err,
+					index: idx,
+				}
+				return
+			}
+
+			if reflect.ValueOf(item).IsNil() {
+				errC <- errorIndex{
+					err:   fmt.Errorf("nil item returned without ErrValueNotPresent"),
+					index: idx,
+				}
+				return
+			}
+
+			itemC <- rspIndex{
+				index: idx,
+				item:  item,
+			}
+		}(i, id)
+	}
+	wg.Wait()
+	close(itemC)
+	close(errC)
+
+	// check internal error first
+	select {
+	case err := <-stateErrC:
+		return nil, err
+	default:
+	}
+
+	errIdxs := make([]errorIndex, 0, len(ids))
+	for ei := range errC {
+		errIdxs = append(errIdxs, ei)
+	}
+
+	if len(errIdxs) > 0 {
+		sort.SliceStable(errIdxs, func(i, j int) bool {
+			return errIdxs[i].index < errIdxs[j].index
+		})
+
+		// we would only return one 'value not present' error (the first one) to avoid too much
+		// error data added to transaction output.
+		logging.Logger.Error("could not get items", zap.Any("errors", errIdxs))
+		retErr := errIdxs[0]
+		return nil, fmt.Errorf("could not get item %q: %v", ids[retErr.index], retErr.err)
+	}
+
+	//ensure original ordering
+	items := make([]*T, len(ids))
+	for item := range itemC {
+		v, ok := item.item.(*T)
+		if !ok {
+			return nil, fmt.Errorf("invalid item type: %v", reflect.TypeOf(item.item))
+		}
+
+		items[item.index] = v
+	}
+
+	return items, nil
 }

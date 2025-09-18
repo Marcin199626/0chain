@@ -9,12 +9,13 @@ import (
 
 	"0chain.net/chaincore/block"
 	"0chain.net/core/common"
-	"0chain.net/core/logging"
+	"0chain.net/core/config"
+	"github.com/0chain/common/core/logging"
 	"go.uber.org/zap"
 )
 
-// HandleVRFShare - handles the vrf share.
-func (mc *Chain) HandleVRFShare(ctx context.Context, msg *BlockMessage) {
+// handleVRFShare - handles the vrf share.
+func (mc *Chain) handleVRFShare(ctx context.Context, msg *BlockMessage) {
 
 	var mr = mc.getOrCreateRound(ctx, msg.VRFShare.Round)
 	if mr == nil {
@@ -122,7 +123,7 @@ func (mc *Chain) BlockVerifyWorkers(ctx context.Context) {
 						logging.Logger.Error("process verify block failed",
 							zap.Int64("round", b.Round),
 							zap.String("block", b.Hash),
-							zap.Any("duration", time.Since(ts)),
+							zap.Duration("duration", time.Since(ts)),
 							zap.Error(err))
 						continue
 					}
@@ -244,10 +245,6 @@ func (mc *Chain) processVerifyBlock(ctx context.Context, b *block.Block) error {
 	}
 
 	vts := mr.GetVerificationTickets(b.Hash)
-	if len(vts) == 0 {
-		mc.AddToRoundVerification(ctx, mr, b)
-		return nil
-	}
 
 	// TODO: mc.MergeVerificationTickets does not verify block's own tickets, might be a problem!
 	mc.MergeVerificationTickets(b, vts)
@@ -289,7 +286,7 @@ func (mc *Chain) handleVerificationTicketMessage(ctx context.Context,
 
 	cctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	if err := mc.VerifyTickets(cctx, bvt.BlockID, []*block.VerificationTicket{&bvt.VerificationTicket}, rn); err != nil {
+	if err := mc.VerifyTickets(cctx, bvt.BlockID, []*block.VerificationTicket{&bvt.VerificationTicket}, rn, nil); err != nil {
 		logging.Logger.Error("handle vt. msg - verification ticket failed",
 			zap.Error(err),
 			zap.Int64("round", bvt.Round),
@@ -373,7 +370,7 @@ func (mc *Chain) NotarizationProcessWorker(ctx context.Context) {
 					logging.Logger.Info("process notarization success",
 						zap.Int64("round", not.Round),
 						zap.String("block", not.BlockID),
-						zap.Any("duration", time.Since(ts)))
+						zap.Duration("duration", time.Since(ts)))
 				case <-cctx.Done():
 					logging.Logger.Error("process notarization timeout",
 						zap.Int64("round", not.Round),
@@ -414,7 +411,8 @@ func (mc *Chain) notarizationProcess(ctx context.Context, not *Notarization) err
 
 	if !b.IsStateComputed() {
 		logging.Logger.Debug("Computing state for block we received notarization for")
-		if err := mc.GetBlockStateChangeForce(ctx, b); err != nil {
+		// if err := mc.GetBlockStateChangeForce(ctx, b); err != nil {
+		if err := mc.ComputeOrSyncState(ctx, b); err != nil {
 			return fmt.Errorf("can't get block state change for notarization, err: %v", err)
 		}
 	}
@@ -449,54 +447,14 @@ func (mc *Chain) notarizationProcess(ctx context.Context, not *Notarization) err
 
 	mc.AddNotarizedBlockToRound(r, b)
 	mc.ProgressOnNotarization(r)
-
-	// update LFB if the LFB is far away behind the LFB ticket(fetch from sharder)
-	lfb := mc.GetLatestFinalizedBlock()
-	if lfb == nil {
-		return nil
-	}
-
-	if lfbTK := mc.GetLatestLFBTicket(ctx); lfbTK != nil && lfbTK.Round-lfb.Round >= int64(mc.PruneStateBelowCount()/3) {
-		if b.Round >= lfbTK.Round {
-			// try to get LFB ticket block from local
-			lfb, err := mc.GetBlock(ctx, lfbTK.LFBHash)
-			if err != nil {
-				// acquire from sharder
-				logging.Logger.Debug("process notarization - ensure LFB from sharder",
-					zap.Int64("round", b.Round),
-					zap.Int64("LFB ticket round", lfbTK.Round),
-					zap.String("LFB ticket block", lfbTK.LFBHash))
-				_, err := mc.ensureLatestFinalizedBlock(ctx)
-				return err
-			}
-			logging.Logger.Debug("process notarization - update LFB, round > tk round",
-				zap.Int64("round", b.Round),
-				zap.Int64("lfb round", lfb.Round),
-				zap.Int64("LFB ticket round", lfbTK.Round),
-				zap.String("LFB ticket block", lfbTK.LFBHash))
-			mc.SetLatestFinalizedBlock(ctx, lfb)
-			return nil
-		}
-
-		logging.Logger.Debug("process notarization - update LFB, round <= tk round",
-			zap.Int64("round", b.Round),
-			zap.Int64("lfb round", lfb.Round),
-			zap.Int64("LFB ticket round", lfbTK.Round),
-			zap.String("LFB ticket block", lfbTK.LFBHash))
-		_, err := mc.ensureLatestFinalizedBlock(ctx)
-		return err
-	}
-
 	return nil
 }
 
 func (mc *Chain) ProgressOnNotarization(notRound *Round) {
 	curNumber := mc.GetCurrentRound()
-	if curNumber <= notRound.Number {
+	if curNumber <= notRound.Number && int(notRound.Number-curNumber) <= config.GetLFBTicketAhead() {
 		logging.Logger.Info("process notarization - start next round",
 			zap.Int64("new round", notRound.Number+1))
-		//notRound.CancelVerification()
-		//notRound.TryCancelBlockGeneration()
 		//TODO implement round centric context, that is cancelled when transition to the next happens
 		curRound := mc.GetMinerRound(curNumber)
 		go mc.moveToNextRoundNotAhead(common.GetRootContext(), notRound)
@@ -513,8 +471,8 @@ func (mc *Chain) handleNotarizationMessage(ctx context.Context, msg *BlockMessag
 	mc.processNotarization(ctx, msg.Notarization)
 }
 
-// HandleNotarizedBlockMessage - handles a notarized block for a previous round.
-func (mc *Chain) HandleNotarizedBlockMessage(ctx context.Context,
+// handleNotarizedBlockMessage - handles a notarized block for a previous round.
+func (mc *Chain) handleNotarizedBlockMessage(ctx context.Context,
 	msg *BlockMessage) {
 
 	nb := msg.Block
@@ -522,7 +480,7 @@ func (mc *Chain) HandleNotarizedBlockMessage(ctx context.Context,
 	var mr = mc.getOrCreateRound(ctx, nb.Round)
 	if mr == nil {
 		logging.Logger.Debug("can't create round",
-			zap.String("block", nb.Hash), zap.Any("round", nb.Round),
+			zap.String("block", nb.Hash), zap.Int64("round", nb.Round),
 			zap.Bool("has_pr", mc.GetMinerRound(nb.Round-1) != nil))
 		return // can't handle yet
 	}

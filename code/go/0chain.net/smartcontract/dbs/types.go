@@ -1,38 +1,105 @@
 package dbs
 
-import "0chain.net/chaincore/currency"
+import (
+	"0chain.net/core/common"
+	"0chain.net/smartcontract/stakepool/spenum"
+	"github.com/0chain/common/core/currency"
+)
+
+type DbHealthCheck struct {
+	ID              string           `json:"id"`
+	LastHealthCheck common.Timestamp `json:"last_health_check"`
+	Downtime        uint64           `json:"downtime"`
+}
 
 type DbUpdates struct {
 	Id      string                 `json:"id"`
 	Updates map[string]interface{} `json:"updates"`
 }
 
-func NewDbUpdates(id string) *DbUpdates {
-	return &DbUpdates{
-		Id:      id,
-		Updates: make(map[string]interface{}),
-	}
+type DbUpdateProvider struct {
+	DbUpdates
+	Type spenum.Provider `json:"type"`
 }
 
-type StakePoolId struct {
-	ProviderId   string `json:"provider_id"`
-	ProviderType int    `json:"provider_type"`
+func NewDbUpdateProvider(id string, typ spenum.Provider) *DbUpdateProvider {
+	return &DbUpdateProvider{
+		DbUpdates: DbUpdates{
+			Id:      id,
+			Updates: make(map[string]interface{}),
+		},
+		Type: typ,
+	}
+
+}
+
+type ProviderID struct {
+	ID   string          `json:"provider_id"`
+	Type spenum.Provider `json:"provider_type"`
+}
+
+func (p *ProviderID) GetID() string {
+	return p.ID
 }
 
 type StakePoolReward struct {
-	StakePoolId
-	Reward          currency.Coin    `json:"reward"`
-	DelegateRewards map[string]int64 `json:"delegate_rewards"`
+	ProviderID
+	Reward     currency.Coin `json:"reward"`
+	RewardType spenum.Reward `json:"reward_type"`
+	// rewards delegate pools
+	DelegateRewards map[string]currency.Coin `json:"delegate_rewards"`
+	// penalties delegate pools
+	DelegatePenalties map[string]currency.Coin `json:"delegate_penalties"`
+	// allocation id
+	AllocationID string `json:"allocation_id"`
+
+	DelegateWallet string `json:"delegate_wallet"`
 }
 
-type StakePoolUpdate struct {
-	StakePoolId
-	Updates         map[string]interface{} `json:"updates"`
-	DelegateUpdates map[string]map[string]interface{}
+func (sp *StakePoolReward) TotalReward() currency.Coin {
+	totalReward := sp.Reward
+	for _, reward := range sp.DelegateRewards {
+		totalReward += reward
+	}
+
+	return totalReward
+}
+
+func (sp *StakePoolReward) TotalDelegateReward() currency.Coin {
+	totalReward := sp.Reward
+	for id, reward := range sp.DelegateRewards {
+		if id == sp.DelegateWallet {
+			totalReward += reward
+			break
+		}
+	}
+
+	return totalReward
+}
+
+func (sp *StakePoolReward) TotalPenalty() currency.Coin {
+	totalPenalty := currency.Coin(0)
+	for _, penalty := range sp.DelegatePenalties {
+		totalPenalty += penalty
+	}
+
+	return totalPenalty
+}
+
+func (sp *StakePoolReward) TotalDelegatePenalty() currency.Coin {
+	totalPenalty := currency.Coin(0)
+	for id, penalty := range sp.DelegatePenalties {
+		if id == sp.DelegateWallet {
+			totalPenalty += penalty
+			break
+		}
+	}
+
+	return totalPenalty
 }
 
 type DelegatePoolId struct {
-	StakePoolId
+	ProviderID
 	PoolId string `json:"pool_id"`
 }
 
@@ -41,23 +108,23 @@ type DelegatePoolUpdate struct {
 	Updates map[string]interface{} `json:"updates"`
 }
 
-func NewDelegatePoolUpdate(pool, provider string, pType int) *DelegatePoolUpdate {
+func NewDelegatePoolUpdate(pool, provider string, pType spenum.Provider) *DelegatePoolUpdate {
 	var dpu DelegatePoolUpdate
 	dpu.PoolId = pool
-	dpu.ProviderId = provider
-	dpu.ProviderType = pType
+	dpu.ID = provider
+	dpu.Type = pType
 	dpu.Updates = make(map[string]interface{})
 	return &dpu
 }
 
 type SpBalance struct {
-	StakePoolId
+	ProviderID
 	Balance         int64            `json:"sp_reward"`
 	DelegateBalance map[string]int64 `json:"delegate_reward"`
 }
 
 type SpReward struct {
-	StakePoolId
+	ProviderID
 	SpReward       int64            `json:"sp_reward"`
 	DelegateReward map[string]int64 `json:"delegate_reward"`
 }

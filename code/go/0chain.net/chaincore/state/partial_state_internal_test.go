@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"0chain.net/core/util"
+	"github.com/0chain/common/core/util"
 )
 
 func TestPartialState_SaveState(t *testing.T) {
@@ -27,6 +27,7 @@ func TestPartialState_SaveState(t *testing.T) {
 		Version   string
 		StartRoot util.Key
 		Nodes     []util.Node
+		DeadNodes []util.Node `json:"-" msgpack:"-"`
 		mndb      *util.MemoryNodeDB
 		root      util.Node
 	}
